@@ -99,7 +99,7 @@ impl Game<'_> {
         }
         // `GrowingPlantHeadBlock.getMaxAgeState`.
         let max_age = b.table.set_int(state, b.props.age, 25);
-        self.audio.play(
+        self.play_audio(
             "minecraft:block.growing_plant.crop",
             Some([
                 f64::from(pos[0]) + 0.5,

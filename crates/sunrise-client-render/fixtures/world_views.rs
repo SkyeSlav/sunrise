@@ -263,15 +263,16 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         &[],
         &[],
         (&white, 16, 16),
+        None,
         (&zero, 1, 1),
         (&zero, 1, 1),
         (&zero, 1),
         Arc::new(client::gfx::panorama::Faces::colour([0, 0, 0, 255])),
         None,
-        None,
+        sunrise_client_render::gfx::RendererDevice::New,
         GraphicsApi::Vulkan,
         false,
-        true,
+        (true, false),
         &client::graphics::Graphics::default(),
         Default::default(),
         Default::default(),
@@ -345,7 +346,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
     // then the frame drawn with them.
     let camera = DVec3::new(8.0, 104.0, 0.5);
     let entity_frusta = |renderer: &mut Renderer| {
-        renderer.camera_frustum(camera, 85.0, 0.0, 0.0, glam::Mat4::IDENTITY, 1000.0)
+        renderer.camera_frustum(camera, 85.0, 0.0, 0.0, 0.0, glam::Mat4::IDENTITY, 1000.0)
     };
     let shot = |renderer: &mut Renderer, name: &str, views: Vec<WorldView>| {
         *VIEWS.lock().unwrap() = views;
@@ -901,12 +902,14 @@ fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         camera: glam::DVec3::new(8.0, 104.0, 0.5),
         yaw: 0.0,
         pitch: 0.0,
+        roll: 0.0,
         fov_degrees: 85.0,
         cull_fov_degrees: 85.0,
         eye: glam::DVec3::new(8.0, 104.0, 0.5),
         eye_rotation: [0.0, 0.0],
         first_person: true,
         bob: glam::Mat4::IDENTITY,
+        view_transform: glam::Mat4::IDENTITY,
         spin: glam::Mat4::IDENTITY,
         sky: client::environment::Sky::default(),
         shadow_scene_revision: (0, 0),

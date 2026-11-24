@@ -26,9 +26,9 @@ impl dyn Registrar + '_ {
     /// loads and refuses one that doesn't fit, naming it. A `Reference` field is refused; name
     /// other entries with `Identifier`.
     ///
-    /// The type's ID must be in a namespace owned by the calling mod's manifest. An unowned
-    /// namespace (including vanilla's), an empty name, a duplicate ID or an invalid schema
-    /// refuses registration at startup and names the mod.
+    /// A bare name uses this mod's namespace; an explicit valid `namespace:path` keeps its
+    /// namespace. A malformed name, a duplicate ID, a built-in feature type ID or an invalid
+    /// schema refuses registration at startup and names the mod.
     pub fn register_feature_type<T: crate::FeatureType>(
         &mut self,
         name: &str,
@@ -42,9 +42,9 @@ impl dyn Registrar + '_ {
     /// `PLACEMENT_MODIFIER_TYPE` registers once at startup: a placed feature's
     /// `placement` entry with `"type": "modid:below_sea_level"` then decodes
     /// and runs by `ty`'s code in the placement chain beside vanilla's
-    /// modifiers. The id's namespace must be owned by the calling mod's
-    /// manifest; another mod's namespace, an empty name and an id registered
-    /// twice refuse the mods at startup, naming the mod.
+    /// modifiers. A bare name uses this mod's namespace; an explicit valid
+    /// `namespace:path` keeps its namespace. A malformed name and an id
+    /// registered twice refuse the mods at startup, naming the mod.
     pub fn register_placement_modifier_type<T: crate::PlacementModifierType>(
         &mut self,
         name: &str,

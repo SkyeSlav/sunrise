@@ -71,6 +71,7 @@ OUT_DIR file checked by the generator before writing it.
 | `parts/shared.rs::WORLDGEN_PARTS` | `RwLock<(u64,Option<Arc<Parts>>)>` | Parts lookup table | Part table the server published for world generation, with its generation, replaced at world open and /reload. |
 | `parts/shared.rs::WORLDGEN_TABLE` | `RefCell<Option<(u64,Option<Arc<Parts>>)>>` | Parts lookup table | Per-thread handle on the published worldgen Part table and its generation. |
 | `parts/shared.rs::requested_keys::EMPTY` | `LazyLock<sunrise_mod_runtime::registry_keys::Requests>` | immutable cache | Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one. |
+| `runtime.rs::ACTIVE_LISTENERS` | `std::cell::RefCell<Vec<(usize,&'staticstr)>>` | reentrancy guard | Per-thread stack of active non-reentrant hook callbacks so reentering the same listener for the same hook is refused. |
 | `runtime.rs::HOOK_DISPATCH_DEPTH` | `std::cell::Cell<u32>` | dispatch table | Thread-local depth of active hook panic-containment guards. The crash hook defers only while this call is inside a guarded native dispatch. |
 | `runtime.rs::ISOLATED_FAILURES` | `std::cell::Cell<u64>` | dispatch table | Per-thread count of trapped listener failures; owning decide/fire/apply actions compare it to decide whether to abort tentative Host writes. |
 | `runtime.rs::MODS` | `OnceLock<Installed>` | dispatch table | Dependency-ordered hook routing and its per-mod enabled bits remain engine-owned. |
@@ -81,4 +82,7 @@ OUT_DIR file checked by the generator before writing it.
 | `world/server_reload.rs::functions_ref::ID` | `LazyLock<Identifier>` | immutable cache | Immutable vanilla reload-boundary identifier, allocated once and shared by anchor declarations. |
 | `world/startup_progress.rs::SCREEN` | `OnceLock<Arc<dynStartupScreen>>` | dispatch table | One engine-installed startup-screen service; registration contexts carry this same resource to mods, and retained progress handles use it after registration. |
 | `world/startup_progress.rs::TEST_SCREEN` | `std::cell::RefCell<Option<Arc<dynStartupScreen>>>` | dispatch table | Thread-local startup screen override lent to registration fixtures and restored on scope exit. |
+| `world/ticket_controller.rs::NEXT_TOKEN` | `AtomicU64` | monotonic counter | Monotonic sequence counter mixed into opaque TicketController registration tokens so no handle identity is reused. |
 | `world/ticket_controller.rs::TEST_CONTROLLERS` | `std::cell::Cell<Option<&'static[ControllerInfo]>>` | Parts lookup table | Thread-local test lookup of installed Parts metadata by engine-issued slot. |
+| `world/ticket_controller.rs::issue_token::SALT` | `OnceLock<u64>` | immutable cache | Per-process random salt mixed into opaque TicketController registration tokens; initialized once and immutable. |
+| `world/ticket_controller.rs::take_for_startup::CLAIMED` | `OnceLock<()>` | set-once socket | One-shot latch ensuring installed TicketActivation startup authority can only be claimed once before native mods load. |

@@ -102,6 +102,7 @@ fn gui_options_snapshot(s: &sunrise_client::settings::Settings) -> ClientGuiOpti
         notification_display_time: s.notification_display_time as f32,
         text_background_opacity: s.text_background_opacity as f32,
         menu_blur: s.menu_blur,
+        screen_effect_scale: s.file.double("screenEffectScale") as f32,
         // The factor the engine's own hurt tilt reads (`fov.rs`, `bob_hurt`).
         damage_tilt_strength: s.file.double("damageTiltStrength"),
     }
@@ -130,6 +131,11 @@ mod tests {
                 enabled
             );
         }
+        settings.file.set(
+            "screenEffectScale",
+            sunrise_client::options_file::V::Double(0.25),
+        );
+        assert_eq!(gui_options_snapshot(&settings).screen_effect_scale, 0.25);
     }
 
     /// The snapshot carries the Damage Tilt option as the player sets it, off and full included.

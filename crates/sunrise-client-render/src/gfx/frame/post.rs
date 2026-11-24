@@ -174,6 +174,9 @@ impl Renderer {
                 );
             }
             let pages = &self.pack_pages;
+            // The pack's terrain programs read the normal stream beside each run's vertices
+            // (`pack_atlas::TerrainDraws::Normals`).
+            let normals = self.pack_terrain_draws() == pack_atlas::TerrainDraws::Normals;
             let mut terrain =
                 |rp: &mut wgpu::RenderPass<'_>,
                  list: pack_post::TerrainList,
@@ -234,7 +237,15 @@ impl Renderer {
                                     (shadow_first + shadow_solid, shadow_translucent)
                                 }
                             };
-                            self.draw_sections_paged(rp, &self.indirect, first, count, page);
+                            if normals {
+                                let bind = |rp: &mut wgpu::RenderPass<'_>, key: u32| {
+                                    rp.set_vertex_buffer(2, self.normals_binding(key));
+                                    page(rp, key);
+                                };
+                                self.draw_sections_paged(rp, &self.indirect, first, count, &bind);
+                            } else {
+                                self.draw_sections_paged(rp, &self.indirect, first, count, page);
+                            }
                         }
                     }
                 };
@@ -250,6 +261,16 @@ impl Renderer {
                 indices: self.indices.clone(),
                 quads: cloud_quads,
             }));
+            if let Some(wp) = self.world_primitives.as_ref() {
+                for &(name, value) in wp.pack_uniforms() {
+                    post.set_mod_uniform(name, crate::mod_pipelines::mod_uniform_value(value));
+                }
+                post.fill_mod_draws(|bound_slots, out| {
+                    wp.pack_bound_chunks_into(bound_slots, out);
+                });
+            } else {
+                post.fill_mod_draws(|_, _| {});
+            }
             // Fails only on a wait that found the device lost: the frame stops here, with
             // the pack kept for the next one and nothing more encoded.
             let ran = post.run(

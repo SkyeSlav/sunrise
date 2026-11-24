@@ -26,7 +26,8 @@ impl mod_api::Hooks for StorageMod {
     fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
         let items = r
             .register_attachment_type(
-                AttachmentDescriptor::new("storage_test:items", Vec::new).serialize(ITEM_STACKS),
+                AttachmentDescriptor::new("storage_test:items", StackList::new)
+                    .serialize(ITEM_STACKS),
             )
             .unwrap();
         let energy = r
@@ -65,7 +66,7 @@ fn with_storage_game(test: impl FnOnce(&mut Game<'_>, &StorageKeys)) {
 fn attached_items_are_undone_by_an_abort_and_saved_by_their_codec() {
     with_storage_game(|game, keys| {
         let dirt = ItemResource::of(&ItemStack::new("minecraft:dirt", 1).try_into_api().unwrap());
-        let slots = AttachedItems::new(&keys.items, CHUNK, 9, 64, |_| true).unwrap();
+        let slots = AttachedItems::new(&keys.items, CHUNK, 9, 64, |_| true);
         let host: &mut dyn ServerHost = game;
         let aborted = host
             .transaction(|host, tx| Err::<(), _>(slots.insert_at(host, tx, 4, &dirt, 10).unwrap()));
@@ -81,8 +82,7 @@ fn attached_items_are_undone_by_an_abort_and_saved_by_their_codec() {
             .unwrap()
             .unwrap();
         let reloaded = (ITEM_STACKS.decode)(&(ITEM_STACKS.encode)(&held).unwrap()).unwrap();
-        assert_eq!(reloaded[4], Some((dirt, 10)));
-        assert!(reloaded[..4].iter().all(Option::is_none));
+        assert_eq!(reloaded, StackList::from([(4, (dirt, 10))]));
     });
 }
 

@@ -2,14 +2,22 @@
 
 Ability names are plain, case-sensitive strings with no namespace. They are not registry identifiers.
 
-An item's Part can change the answer to an ability question. The hook receives a read-only Host. Keep answers pure functions of the stack and ability so the client and server agree.
+An item's Part can change the answer to an ability question. The hook receives an [`ItemAbilityContext`] and a borrowed [`ItemStackView`]. The answer depends only on the stack and the ability: the game asks from gameplay action sites and from `neoforge:can_item_perform_ability` loot predicates, and both must get the same answer, so the hook has no host or level (NeoForge's has none either). The context lends only the merged [`Tags`] (`context.tags()`). Behaviour that depends on the world belongs in the hook for that moment, such as block breaking or item use. Call `event.stack.project()` only when you need components or an owned copy.
 
 A client without this mod predicts vanilla here; the server corrects it.
 
 ```rust,ignore
 #[sunrise_part]
 impl ItemPart for CarvingTool {
-    fn can_perform_action(&self, _: &dyn Host, event: &mut CanPerformActionEvent<'_>) {
+    fn can_perform_action(
+        &self,
+        context: &ItemAbilityContext<'_>,
+        event: &mut CanPerformActionEvent<'_>,
+    ) {
+        // Only the merged tags: the same answer for gameplay and loot predicates.
+        let _tags = context.tags();
+        // Fast metadata reads avoid cloning components; call `event.stack.project()` only if needed.
+        let _item = event.stack.item();
         if event.ability == "shears_carve" {
             event.can_perform = true;
         }

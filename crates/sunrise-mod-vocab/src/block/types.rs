@@ -7,6 +7,15 @@ use crate::*;
 // exhaustive: its field is private, so only registration creates a key
 pub struct BlockKey(pub(crate) u32);
 
+impl BlockKey {
+    /// Whether this block is in `tag` (`BlockState.is(TagKey)`), over `tags`'s current
+    /// authoritative snapshot. An unknown tag is `Some(false)`; unavailable tags or mappings
+    /// return `None`.
+    pub fn is_in_tag(self, tags: &dyn Tags, tag: TagKey) -> Option<bool> {
+        tags.block_in_tag(self, tag)
+    }
+}
+
 /// A block entity type requested at registration. Its slot remains stable for the process.
 // no wire: decoding validates the u32 slot with BlockEntityTypeKey::from_slot on the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

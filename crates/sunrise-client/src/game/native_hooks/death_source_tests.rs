@@ -69,7 +69,10 @@ impl Hooks for Probe {
             event.entity as u32,
             event.kind,
             event.source,
-            event.weapon,
+            event
+                .weapon
+                .and_then(mod_api::ItemStackView::project)
+                .as_ref(),
         ));
         Flow::Continue
     }

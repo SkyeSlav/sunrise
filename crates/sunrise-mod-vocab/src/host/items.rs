@@ -87,14 +87,14 @@ pub trait ItemsHost {
     #[published(entity_type_default_attribute)]
     fn entity_type_default_attribute(&self, entity_type: &str, attribute: &str) -> Option<f64>;
     /// Side: both.
-    /// Decodes a saved-item compound from SNBT, for example
-    /// `{id:"minecraft:diamond_sword",count:1,components:{"minecraft:damage":5}}`.
-    /// A missing `count` defaults to 1, unknown fields such as `Count` are ignored, and
-    /// `stone` means `minecraft:stone`. Returns `None` unless the input is one compound
-    /// with only whitespace around it. Air, unknown items and patches naming a transient
-    /// component are refused. A present `count` must be numeric and in 1 to 99 after
-    /// Java's `Number.intValue` conversion. The text parser also enforces binary NBT's
-    /// 2 MiB input and 512-level nesting bounds.
+    /// Parse one complete SNBT compound as a saved `ItemStack.CODEC` item:
+    /// `{id:"minecraft:diamond_sword",count:1,components:{"minecraft:damage":5}}`
+    /// (`stone` is `minecraft:stone`). `count` defaults to 1; a present number must be in
+    /// 1..=99 after Java’s `Number.intValue`. Unknown fields such as `Count` are ignored.
+    /// Trailing whitespace is allowed. The shared SNBT parser's structural rules apply,
+    /// but no binary NBT byte quota is applied to the text. Bad syntax, an invalid item or
+    /// component patch, and an unknown item return `None` and log the failure reason.
+    #[forward_api_output]
     fn item_from_snbt(&self, snbt: &str) -> Option<ItemStack>;
     /// Side: both. Read the creative catalog against this world's active holders and flags.
     /// On a cache miss, build it with explicit `permissions` and dispatch
@@ -118,59 +118,9 @@ pub trait ItemsHost {
         &self,
     ) -> Result<Option<std::sync::Arc<CreativeModeTabs>>, CreativeTabReadError>;
 }
-/// The server host's methods of the `items` area, implemented by the game and reached through [`ServerHost`].
-#[sunrise_mod_api_macros::host_area]
-pub trait ItemsServerHost {
-    /// Side: server.
-    /// Drop one item as DefaultDispenseItemBehavior does. For a dispenser hook:
-    /// return this remainder in its answer with `CLICK`; the caller plays the
-    /// answer's event and smoke once. The detached stack keeps its actual count
-    /// until one item is dropped; placement limits apply only to the final slot write.
-    /// An enclosing transaction defers the drop in the dispenser's level until commit.
-    /// A client, another dimension or an unloaded chunk keeps the input stack unchanged.
-    #[forward_api_inputs]
-    #[forward_api_output]
-    fn dispense_default(
-        &mut self,
-        dimension: &str,
-        pos: [i32; 3],
-        facing: Direction,
-        stack: ItemStack,
-    ) -> Result<Option<ItemStack>, StackWriteError>;
-    /// Side: server.
-    /// `DefaultDispenseItemBehavior.consumeWithRemainder`: one of `stack` is used and
-    /// `remainder` replaces it, a single `stack` by becoming it, else into the dispenser at
-    /// `pos` (`DispenserBlockEntity.insertItem`) or, where it doesn't fit, out of its front with
-    /// the click and smoke. Returns the detached active-slot remainder immediately. Inside a
-    /// transaction, insertion into another slot is provisional; slot notices, overflow drops,
-    /// click and smoke are published in the source level only when the enclosing transaction
-    /// commits at the root. A client, another dimension or an unloaded chunk keeps `stack`
-    /// unchanged.
-    fn dispense_with_remainder(
-        &mut self,
-        dimension: &str,
-        pos: [i32; 3],
-        facing: Direction,
-        stack: ItemStack,
-        remainder: ItemStack,
-    ) -> Result<Option<ItemStack>, StackWriteError>;
-}
 /// The client host's methods of the `items` area, implemented by the game and reached through [`crate::ClientHost`].
 #[sunrise_mod_api_macros::host_area]
 pub trait ItemsClientHost {
-    /// Side: client.
-    /// Creative mode only: puts `stack`, components and all, into the local player's
-    /// inventory as `Inventory.add` does: onto matching stacks (the selected slot, the off
-    /// hand, the hotbar, then the main inventory), then into empty slots, up to the stack's
-    /// effective maximum (`minecraft:max_stack_size` included). Every slot it changed goes to
-    /// the server at once as `MultiPlayerGameMode.handleCreativeModeItemAdd` does
-    /// (`ServerboundSetCreativeModeSlotPacket`; the off hand is slot 45), even while a
-    /// container menu is open. `Ok(Some(remainder))` is what did not fit; nothing is dropped.
-    /// A [`CreativeGiveError`] gives nothing (including `FeatureDisabled` when the connected
-    /// server does not enable the item's required feature flags).
-    #[forward_api_inputs]
-    #[forward_api_output]
-    fn give_stack(&mut self, stack: &ItemStack) -> Result<Option<ItemStack>, CreativeGiveError>;
     /// Side: client.
     /// The creative search tab's final display order, for ranking stacks in inventory sorters.
     /// This requests the same catalog as the creative screen (using the player's permission and
@@ -191,20 +141,6 @@ pub trait ItemsClientHost {
 pub trait ItemsBackend {
     /// Side: both. Normalize a creative membership key against the game's item prototypes.
     fn creative_stack_key(&self, stack: &ItemStack) -> Option<ItemStack>;
-
-    // The editor checks the active callback on both sides; setup and reload can only return Stale.
-    /// Side: both. Read the current entries through the active creative tab editor.
-    fn creative_tab_entries(
-        &self,
-        edit: CreativeTabEdit,
-        list: CreativeTabList,
-    ) -> Result<Vec<ItemStack>, CreativeTabEditError>;
-    /// Side: both. Apply a change to the active creative tab editor.
-    fn creative_tab_change(
-        &self,
-        edit: CreativeTabEdit,
-        change: CreativeTabChange,
-    ) -> Result<(), CreativeTabEditError>;
 
     /// Side: both. Effective damageability after defaults and the stack patch.
     fn item_resource_damageable(&self, stack: &ItemStack) -> bool;
@@ -264,8 +200,17 @@ pub trait ItemsBackend {
     /// container/port, in a level not in place, and on a client's copy of the world.
     fn container_size(&self, at: BlockSide) -> Option<usize>;
     /// Side: server.
-    /// The stack in slot `slot` of those `at`'s side reaches (`container_size`).
-    fn container_stack(&self, at: BlockSide, slot: usize) -> Option<ItemStack>;
+    /// Lend the resident stack once in side-local `slot` among those `at` reaches
+    /// ([`Self::container_size`]). For an empty, unreadable or unavailable slot, return
+    /// without invoking the reader. Never generates loot or loads chunks.
+    #[forward_api_inputs]
+    #[decline_unavailable]
+    fn lend_container_stack(
+        &self,
+        at: BlockSide,
+        slot: usize,
+        read: &mut dyn for<'a> FnMut(ItemStackView<'a>),
+    );
     /// Side: server.
     /// How many of `stack` slot `slot` of those `at`'s side reaches holds when empty, as
     /// NeoForge's `isValid` and `getCapacityAsLong` answer: none where it may not go in (a
@@ -448,6 +393,15 @@ pub trait ItemsBackendMut {
         tx: &TransactionContext,
     ) -> bool;
 
+    /// Side: server. Wear a stack nobody wears, behind [`ItemStack::hurt_and_break`]
+    /// (`ItemStack.hurtAndBreak(amount, level, player, onBreak)`).
+    fn item_stack_hurt_and_break(
+        &mut self,
+        stack: &ItemStack,
+        level: LevelRef,
+        amount: i32,
+        player: Option<PlayerRef>,
+    ) -> Result<Option<ItemStack>, StackWriteError>;
     /// Side: server. Roll an enchantment result with the named level's random source.
     fn item_resource_enchant_randomly(
         &mut self,
@@ -459,7 +413,7 @@ pub trait ItemsBackendMut {
     /// Side: server. The durability `stack`'s enchantments repair for `points` experience points
     /// (`EnchantmentHelper.modifyDurabilityToRepairFromXp`), drawing from the active level's
     /// random where an effect's conditions do.
-    fn item_resource_durability_to_repair_from_xp(&mut self, stack: &ItemStack, points: u32)
+    fn item_resource_durability_to_repair_from_xp(&mut self, stack: &ItemStack, points: i32)
     -> u32;
     /// Side: server.
     /// Puts up to `amount` of `resource` into slot `slot` of those `at`'s side reaches, as a hopper

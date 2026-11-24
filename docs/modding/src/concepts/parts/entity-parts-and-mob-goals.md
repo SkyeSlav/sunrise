@@ -56,10 +56,14 @@ mob's two selectors beside the species' own, with the same priorities, flag lock
 struct ZombieGoals;
 #[mod_api::sunrise_part]
 impl EntityPart for ZombieGoals {
-    fn register_goals(&self, goals: &mut GoalRegistrar<'_>) {
-        // goals.mob().id() is "minecraft:zombie": branch as per-species code does.
-        goals.add_goal(7, Stare::default());
-        goals.add_target_goal(3, Remember::default());
+    fn register_goals(
+        &self,
+        _host: &mut dyn ServerHost,
+        event: &mut RegisterGoalsEvent<'_, '_>,
+    ) {
+        // event.goals.mob().id() is "minecraft:zombie": branch as per-species code does.
+        event.goals.add_goal(7, Stare::default());
+        event.goals.add_target_goal(3, Remember::default());
     }
 }
 ```
@@ -164,7 +168,7 @@ let full = self.edit_state(host, robot, |_, _tx, charge| {
 
 ## Brain behaviors
 
-`EntityPart::register_behaviors` receives a `BehaviorRegistrar` whenever a brain-driven species builds or rebuilds its brain. Use `add(activity, priority, min_duration, max_duration, requirements, behavior)` to join a fresh `Behavior` to the species' supported activity. Registration returns a `BehaviorRefusal` for an unsupported activity or invalid duration. Behaviors start and stop in vanilla `Brain.tick` order: priority, activity bucket, then insertion order, with mod behaviors after vanilla behaviors in the same bucket. Their state is not saved. `BehaviorCx` provides the mob, host, random source and typed brain memory access; each species refuses memories it does not support.
+`EntityPart::register_behaviors` receives a `RegisterBehaviorsEvent` carrying `event.behaviors: &mut BehaviorRegistrar<'_>` whenever a brain-driven species builds or rebuilds its brain. Use `event.behaviors.add(activity, priority, min_duration, max_duration, requirements, behavior)` to join a fresh `Behavior` to the species' supported activity. Registration returns a `BehaviorRefusal` for an unsupported activity or invalid duration. Behaviors start and stop in vanilla `Brain.tick` order: priority, activity bucket, then insertion order, with mod behaviors after vanilla behaviors in the same bucket. Their state is not saved. `BehaviorCx` provides the mob, host, random source and typed brain memory access; each species refuses memories it does not support.
 
 ## Spawn groups and shearing
 
@@ -173,9 +177,12 @@ The part's `spawn_cluster_size` changes how large a natural spawn group of the t
 shows it.
 
 `is_shearable` and `on_sheared` make the type shearable, as NeoForge's `IShearable` does: shears in a player's
-hand and a dispenser's ask `is_shearable` first, and the part that says `Some(true)` shears the entity in
-`on_sheared` and returns the drops, which the game spawns before damaging the shears. `Some(false)` keeps the
-entity unsheared, and `None` leaves it to the species (a sheep keeps shearing as vanilla's does).
+hand and a dispenser's ask `is_shearable` first with an `IsShearableEvent` carrying `event.entity`,
+`event.player` and a lazy `event.shears: ItemStackView<'_>`, and the part that says `Some(true)` shears the
+entity in `on_sheared` by pushing drops into `event.drops: &mut Vec<ItemStack>`, which the game spawns before
+damaging the shears. `Some(false)` keeps the entity unsheared, and `None` leaves it to the species (a sheep
+keeps shearing as vanilla's does).
+Both hooks run on both sides, as `ShearsItem.interactLivingEntity` does: their first parameter is a `HostSide`, a client predicting a player's click answers `is_shearable` and runs `on_sheared` on its copy of the mob, and the drops, the shears' damage and a dispenser's shearing stay the server's.
 
 ## Equipped durability
 

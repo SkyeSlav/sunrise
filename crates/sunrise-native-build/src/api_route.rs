@@ -19,9 +19,11 @@ pub(super) struct Options<'a> {
 
 /// Compile the mods in dependency order against API metadata and the runtime's dynamic
 /// closure. Return the unchanged executable and its runtime libraries, followed by mod dylibs.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn compile(
     rust: &dyn Toolchain,
     package: &prebuilt::Package,
+    sdk: &prebuilt::Identity,
     out: &Path,
     projects: &[api::Project<'_>],
     declared: &[Vec<dependencies::Dependency>],
@@ -29,7 +31,6 @@ pub(super) fn compile(
     options: Options<'_>,
 ) -> Result<Option<(PathBuf, Vec<PathBuf>)>, String> {
     let (runtime, api) = (package.runtime.as_path(), package.api.as_path());
-    let sdk = prebuilt::identity(runtime)?;
     fs::create_dir_all(out).map_err(|e| e.to_string())?;
     let deps = api.join("deps");
     let host = api.join("host");
@@ -82,7 +83,7 @@ pub(super) fn compile(
     if options.check_only {
         return Ok(None);
     }
-    let mut installed = prebuilt::runtime_libraries(rust, &sdk, runtime)?;
+    let mut installed = prebuilt::runtime_libraries(rust, sdk, runtime)?;
     for &index in &resolution.order {
         installed.push(rlibs[projects[index].bundle.manifest.id.as_str()].clone());
     }

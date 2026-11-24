@@ -20,7 +20,7 @@ use sunrise_world::attributes::{Modifier, Operation};
 // `flag` aggressive, `flag2` was on ground, `vector[0]` direction):
 // `head` the swallowed block, `sulfur_fuse` the fuse and its synced `MAX_FUSE`,
 // `ints[3]` the pickup timer, `scratch[1]` the sounds pending (1 a fuse just
-// lit, 2 a hit),
+// lit),
 // `scratch[2]` the push sound cooldown, `scratch[3]` from a bucket,
 // `point` the item it is after.
 pub const PICKUP_TIMER: i32 = 100;
@@ -232,7 +232,11 @@ pub const ARCHETYPES: [Archetype; 12] = [
         0.05
     ),
 ];
-/// `SulfurCubeArchetype.DEFAULT_*`: no block swallowed.
+/// `SulfurCubeArchetype.DEFAULT_KNOCKBACK_MODIFIERS`.
+const DEFAULT_KNOCKBACK: (f32, f32) = (0.33, 0.06);
+/// Hit sound from `SulfurCubeArchetype.DEFAULT_SOUND_SETTINGS`.
+const DEFAULT_HIT_SOUND: &str = "entity.sulfur_cube.regular.hit";
+/// `SulfurCubeArchetype.DEFAULT_SOUND_SETTINGS`: push settings without a matching archetype.
 const DEFAULT_PUSH: (&str, f32, f32) = ("entity.sulfur_cube.regular.push", 0.5, 0.2);
 static ITEMS: OnceLock<Vec<HashSet<String>>> = OnceLock::new();
 /// The items of each archetype's `#sulfur_cube_archetype/<name>` tag.
@@ -1117,10 +1121,10 @@ fn vertical_hit_angle_power_transfer(
     }
     (powers.0 * (1.0 - ratio), powers.1 * (1.0 + ratio))
 }
-/// The `knockback_resistance` attribute's value: vanilla clamps it to -2..1, and a negative one
-/// (an explosive or bouncy block) adds knockback.
-fn resistance(attribute: f64) -> f32 {
-    attribute.clamp(-2.0, 1.0) as f32
+/// `Attributes.KNOCKBACK_RESISTANCE` ranges from -2 to 1; a negative resistance (an
+/// explosive or bouncy block) adds knockback.
+fn resistance(attribute: f64) -> f64 {
+    attribute.clamp(-2.0, 1.0)
 }
 /// `playerPush`'s scale: `Math.max(0, 1 - knockback_resistance)`, in double like vanilla.
 fn push_factor(attribute: f64) -> f64 {
@@ -1133,7 +1137,7 @@ fn push_factor(attribute: f64) -> f64 {
 #[allow(clippy::too_many_arguments)]
 fn launch(
     powers: (f32, f32),
-    resistance: f32,
+    resistance: f64,
     damage: f32,
     (xd, zd): (f64, f64),
     attacker_feet: [f64; 3],
@@ -1170,8 +1174,9 @@ fn launch(
     let k = damage.sqrt() * effect_scale;
     h *= k;
     v *= k;
-    h *= 1.0 - resistance;
-    v *= 1.0 - resistance;
+    let resistance_scale = (1.0 - resistance) as f32;
+    h *= resistance_scale;
+    v *= resistance_scale;
     h *= 0.4;
     let (h, v) = (h.clamp(-128.0, 128.0), v.clamp(-128.0, 128.0));
     let (xd, zd) = (f64::from(xd), f64::from(zd));
@@ -1184,8 +1189,7 @@ fn launch(
     [-kx, f64::from(v) * 1.2, -kz]
 }
 /// `LivingEntity.dealDefaultKnockback` for a cube with a block: from where the blow came
-/// (`source.getSourcePosition()`) with `knockback(0.4, ...)`. A source with a causing entity goes
-/// through `SulfurCube.knockback`; one with none (a cactus, a fall) through `super.knockback`.
+/// (`source.getSourcePosition()`) with the short `knockback(0.4, ...)` entry.
 fn deal_default_knockback(m: &mut Mob, level: &mut DamageLevel<'_>, source: &Damage, damage: f32) {
     // A projectile knocks the way it travelled (`calculateHorizontalHurtKnockbackDirection`),
     // else from the source's position.
@@ -1195,29 +1199,34 @@ fn deal_default_knockback(m: &mut Mob, level: &mut DamageLevel<'_>, source: &Dam
             .from
             .map_or((0.0, 0.0), |f| (f[0] - m.position.x, f[2] - m.position.z)),
     };
-    if source.attacker.is_some() {
-        knockback(m, (xd, zd), source.from, damage, None);
-    } else {
-        m.knockback(level, f64::from(0.4_f32), xd, zd, source, damage);
-    }
+    m.knockback(level, f64::from(0.4_f32), xd, zd, source, damage);
 }
-/// `SulfurCube.knockback` with a block and a causing entity: the archetype's powers, turned by
+/// `SulfurCube.knockback` with a body item and a causing entity: the launch powers, turned by
 /// where the blow came from and by the entity's aim (`Mob::attacker_aim`, from the game).
-pub fn knockback(
+pub(super) fn knockback(
     m: &mut Mob,
     direction: (f64, f64),
     from: Option<[f64; 3]>,
     damage: f32,
     effect_power: Option<f64>,
-) -> bool {
-    let Some(a) = archetype(m) else {
-        return false;
+) {
+    let (powers, knockback_resistance, hit_sound) = match archetype(m) {
+        Some(a) => (
+            (a.horizontal_power, a.vertical_power),
+            a.knockback_resistance,
+            a.hit_sound,
+        ),
+        None => (
+            DEFAULT_KNOCKBACK,
+            m.knockback_resistance(),
+            DEFAULT_HIT_SOUND,
+        ),
     };
     let aim = m.attacker_aim.take();
     let from = from.unwrap_or([m.position.x, m.position.y, m.position.z]);
     let delta = launch(
-        (a.horizontal_power, a.vertical_power),
-        resistance(a.knockback_resistance),
+        powers,
+        resistance(knockback_resistance),
         damage,
         direction,
         aim.map_or(from, |a| a.feet),
@@ -1232,11 +1241,12 @@ pub fn knockback(
         m.velocity.y + delta[1],
         m.velocity.z + delta[2],
     );
-    // The hit sound plays on the next tick (no event queue here).
-    m.extra.scratch[1] = 2;
     // needsSync: the push reaches the other players at once.
     m.needs_sync = true;
-    true
+    // `Entity.playSound(hitSound.value())`: at the cube's feet, nothing while silent.
+    let mut events = std::mem::take(&mut m.outbox);
+    m.sound(hit_sound, &mut events);
+    m.outbox = events;
 }
 /// `SulfurCube.tickFuse`: count down and discard at zero before the living
 /// tick, including NoAI cubes. Pickup and push cooldowns belong to AI instead.
@@ -1275,15 +1285,10 @@ pub fn tick_fuse(m: &mut Mob, events: &mut Vec<MobEvent>) {
 /// the timers, a swallowed block's stillness, buoyancy and
 /// facing, growing up, and players pushing it.
 pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
-    // primeTime's sound, then knockback's: a burning arrow plays both.
+    // primeTime's sound.
     let pending = m.extra.scratch[1];
     if pending & 1 != 0 {
         events.push(MobEvent::Sound("entity.tnt.primed", m.center(), 1.0, 1.0));
-    }
-    if pending & 2 != 0
-        && let Some(a) = archetype(m)
-    {
-        events.push(MobEvent::Sound(a.hit_sound, m.center(), 1.0, 1.0));
     }
     m.extra.scratch[1] = 0;
     if m.extra.ints[3] > 0 {
@@ -1823,6 +1828,46 @@ mod fuse_anim_tests {
         );
         assert!(m.velocity.x < 0.0);
     }
+    #[test]
+    fn knockback_plays_one_hit_sound_per_launch_at_feet_unless_silent() {
+        let sounds = |m: &Mob| {
+            m.outbox
+                .iter()
+                .filter_map(|e| match e {
+                    MobEvent::Sound(name, at, volume, pitch) => Some((*name, *at, *volume, *pitch)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // Exercise the default launch without installing an archetype table. The
+        // resource-backed living-knockback test also covers the explosive archetype.
+        let mut m = cube();
+        m.position = Vec3::new(1.0, 2.0, 3.0);
+        m.extra.set_body(Some("minecraft:iron_sword".into()));
+        m.attrs.knockback_resistance = 0.9;
+        knockback(&mut m, (1.0, 0.0), Some([2.0, 2.0, 3.0]), 4.0, None);
+        let expected_h = 0.33_f32 * 2.0 * ((1.0_f64 - 0.9_f64) as f32) * 0.4;
+        assert_eq!(m.velocity.x, -f64::from(expected_h));
+        assert_ne!(
+            m.velocity.x,
+            -f64::from(0.33_f32 * 2.0 * (1.0_f32 - 0.9_f64 as f32) * 0.4)
+        );
+        knockback(&mut m, (1.0, 0.0), Some([2.0, 2.0, 3.0]), 4.0, Some(1.0));
+        assert_eq!(m.extra.scratch[1], 0);
+        assert_eq!(
+            sounds(&m),
+            [
+                ("entity.sulfur_cube.regular.hit", [1.0, 2.0, 3.0], 1.0, 1.0),
+                ("entity.sulfur_cube.regular.hit", [1.0, 2.0, 3.0], 1.0, 1.0),
+            ]
+        );
+
+        m.outbox.clear();
+        m.silent = true;
+        knockback(&mut m, (1.0, 0.0), Some([2.0, 2.0, 3.0]), 4.0, None);
+        assert!(m.outbox.is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -1838,7 +1883,7 @@ mod launch_tests {
     fn the_launch_follows_the_vanilla_helpers() {
         struct Case {
             powers: (f32, f32),
-            resistance: f32,
+            resistance: f64,
             damage: f32,
             /// The direct entity's position.
             from: [f64; 3],
@@ -1987,6 +2032,15 @@ mod resistance_tests {
         let bouncy = push(-2.0, 4.0);
         assert!((explosive[0] / base[0] - 2.0).abs() < 1.0e-6);
         assert!((bouncy[0] / base[0] - 3.0).abs() < 1.0e-6);
+        let fractional = push(0.9, 4.0);
+        assert_eq!(
+            fractional[0],
+            -f64::from(1.0_f32 * 2.0 * ((1.0_f64 - 0.9_f64) as f32) * 0.4)
+        );
+        assert_ne!(
+            fractional[0],
+            -f64::from(1.0_f32 * 2.0 * (1.0_f32 - 0.9_f64 as f32) * 0.4)
+        );
     }
 }
 

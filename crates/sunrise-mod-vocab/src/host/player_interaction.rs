@@ -118,24 +118,29 @@ pub trait PlayerInteractionBackendMut {
     ) -> Option<bool>;
     /// Side: server.
     /// `ServerPlayerGameMode.destroyBlock`: breaks the block at `pos` in the player's level as
-    /// this player breaks it, as FTB Ultimine does for each block of a vein. The player's own
-    /// checks hold: a spectator, an adventure player whose tool can't break it, a held item that
-    /// can't break blocks (a sword in creative), a game master block without the permission and
-    /// a dedicated server's spawn protection leave it. Then `break_block` hears it and may cancel
-    /// it, and the break runs as the player's own: the block's effects, events, particles and
-    /// sound, `player_destroyed_block`, the loot rolled for the held item and its enchantments,
-    /// `block_drops` with this player as the breaker, the item's wear, the mined statistic and
-    /// the exhaustion. A vein miner takes each block's drops and experience in `block_drops` and
-    /// sets them down where it wants with `LevelRef::pop_resource` and
-    /// `LevelRef::award_experience`; what else the break sets loose (a torch losing its support,
-    /// a container's contents) still drops in the world. With `into_inventory`, the drops left
-    /// after `block_drops` go to the player's inventory instead, and what doesn't fit drops from
-    /// them as `Inventory.placeItemBackInInventory` drops it. The player needn't reach or look at
-    /// the block. Breaking from `break_block` or `block_drops` makes them hear these breaks too:
-    /// a mod keeps its own guard, and a break started from inside eight others is refused (a
-    /// Sunrise safeguard that the reference does not have). True when the block was removed; false, with nothing broken, for a stale handle, a player who
-    /// isn't here, is dead or is in another level than the hook's, air, an unloaded block, a block no survival player can break
-    /// (bedrock), a canceled break, and off a server.
+    /// this player breaks it, as FTB Ultimine does for each block of a vein. On a live block,
+    /// `break_block` posts in NeoForge `CommonHooks.fireBlockBreak` order: pre-canceled when
+    /// the main-hand item, game mode, or game-master permissions refuse the break, and hard
+    /// game-mode and game-master restrictions still prevent removal even if a
+    /// `#[listener(receive_cancelled)]` listener clears the cancel. Unlike a dig packet
+    /// (`handleBlockBreakAction`), this does not check spawn protection, reach, or whether
+    /// normal mining could finish the block.
+    /// The break runs the block's effects, `player_destroyed_block`, the loot rolled for the
+    /// main-hand item and its enchantments, `block_drops` with this player as the breaker, item
+    /// wear, the mined statistic and exhaustion. A vein miner can take the drops and experience
+    /// in `block_drops` and place them with `LevelRef::pop_resource` and
+    /// `LevelRef::award_experience`. Indirect drops (such as a chest's contents) still spawn in
+    /// the world. With `into_inventory`, the block's remaining item drops go to the player's
+    /// inventory; overflow drops from them as in `Inventory.placeItemBackInInventory`.
+    /// Chained calls fire the break hooks without a fixed nesting limit. A break of the same
+    /// block from inside its own `break_block` callback does not call it again: it removes the
+    /// block as a nested break and the outer call then does nothing more. The position is read
+    /// from the level (a column that is not resident is loaded to read it), and `break_block`
+    /// fires for what it holds, air included.
+    /// True only if this call removed a block. False off the server, for a stale, dead or
+    /// out-of-level player, for air, on a restriction or veto, or
+    /// if a listener already removed the block or completed a nested player break at that
+    /// position in that level (even if a non-air block or fluid remains).
     fn player_destroy_block(
         &mut self,
         player: PlayerRef,

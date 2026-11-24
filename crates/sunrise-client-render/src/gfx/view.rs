@@ -29,8 +29,24 @@ impl View {
     /// The flat-screen view: vanilla's camera rotation and a symmetric
     /// vertical field of view.
     pub fn screen(yaw: f32, pitch: f32, fov_degrees: f32, aspect: f32, far: f32) -> Self {
+        Self::screen_rolled(yaw, pitch, 0.0, fov_degrees, aspect, far)
+    }
+
+    /// Flat-screen view with camera roll in degrees (`ViewportEvent.ComputeCameraAngles`).
+    pub fn screen_rolled(
+        yaw: f32,
+        pitch: f32,
+        roll: f32,
+        fov_degrees: f32,
+        aspect: f32,
+        far: f32,
+    ) -> Self {
         Self {
-            view: crate::camera::view_matrix(yaw, pitch),
+            view: if roll == 0.0 {
+                crate::camera::view_matrix(yaw, pitch)
+            } else {
+                crate::camera::view_matrix_rolled(yaw, pitch, roll)
+            },
             projection: super::world_projection(fov_degrees, aspect, far),
             aspect,
             tan_half_fov: (fov_degrees.to_radians() / 2.0).tan(),
@@ -82,16 +98,18 @@ impl ViewSet {
     /// Build separate draw and cull views for the frame.
     pub(super) fn for_frame(frame: &Frame, width: u32, height: u32) -> Self {
         let aspect = width as f32 / height.max(1) as f32;
-        let view = View::screen(
+        let view = View::screen_rolled(
             frame.yaw,
             frame.pitch,
+            frame.roll,
             frame.fov_degrees,
             aspect,
             frame.depth_far,
         );
-        let cull = View::screen(
+        let cull = View::screen_rolled(
             frame.yaw,
             frame.pitch,
+            frame.roll,
             cull_fov(frame.fov_degrees, frame.cull_fov_degrees),
             aspect,
             frame.depth_far,
@@ -113,15 +131,17 @@ impl ViewSet {
         &self.cull
     }
 
-    /// Unposed culling transform (`Camera.prepareCullFrustum`: no view bob or nausea spin).
-    pub fn cull_view_proj(&self) -> Mat4 {
-        self.cull.view_proj(Mat4::IDENTITY)
+    /// The culling transform (`Camera.prepareCullFrustum`: no view bob or nausea spin), with a
+    /// mod's `render_view_transform` as the only pose, so what it turns behind the camera
+    /// is still drawn.
+    pub fn cull_view_proj(&self, view_transform: Mat4) -> Mat4 {
+        self.cull.view_proj(view_transform)
     }
 
     /// Composed draw transform for drawing and eye recovery, beside the unposed cull transform.
-    pub(super) fn frame_transforms(&self, pose: Mat4) -> FrameTransforms {
+    pub(super) fn frame_transforms(&self, pose: Mat4, view_transform: Mat4) -> FrameTransforms {
         let draw_view_proj = self.primary().view_proj(pose);
-        let cull_view_proj = self.cull_view_proj();
+        let cull_view_proj = self.cull_view_proj(view_transform);
         FrameTransforms {
             draw_view_proj,
             cull_view_proj,
@@ -178,12 +198,13 @@ impl Renderer {
         fov_degrees: f32,
         yaw: f32,
         pitch: f32,
-        _bob: Mat4,
+        roll: f32,
+        view_transform: Mat4,
         depth_far: f32,
     ) -> JoinedFrusta {
-        let views = ViewSet::single(self.screen_view(fov_degrees, yaw, pitch, depth_far));
+        let views = ViewSet::single(self.screen_view(fov_degrees, yaw, pitch, roll, depth_far));
         // Vanilla Camera.prepareCullFrustum omits view bob and nausea spin.
-        let planes = frustum(views.cull_view_proj());
+        let planes = frustum(views.cull_view_proj(view_transform));
         self.ask_world_views(camera, depth_far, Frustum::from_planes(planes))
     }
     /// A conservative view for geometry built before TAA chooses this frame's
@@ -195,19 +216,89 @@ impl Renderer {
         fov_degrees: f32,
         yaw: f32,
         pitch: f32,
-        _bob: Mat4,
+        roll: f32,
+        view_transform: Mat4,
         depth_far: f32,
     ) -> JoinedFrusta {
-        let views = ViewSet::single(self.screen_view(fov_degrees, yaw, pitch, depth_far));
+        let views = ViewSet::single(self.screen_view(fov_degrees, yaw, pitch, roll, depth_far));
         let size = self
             .world_post
             .taa_render_size([self.config.width, self.config.height]);
-        self.asked_world_views(taa_frustum(views.cull_view_proj(), size))
+        self.asked_world_views(taa_frustum(views.cull_view_proj(view_transform), size))
     }
-    fn screen_view(&self, fov_degrees: f32, yaw: f32, pitch: f32, far: f32) -> View {
+    /// Validator for the live bob transform. The world/shadow cull, the native post
+    /// projection and the shader-pack model-view do not invert the same product.
+    pub fn view_transform_validator(
+        &self,
+        [yaw, pitch, roll]: [f32; 3],
+        fov: f32,
+        far: f32,
+        vanilla_bob: Mat4,
+        spin: Mat4,
+    ) -> impl Fn([f32; 16]) -> bool + use<> {
+        let window = [self.config.width, self.config.height];
+        let capture = self.screenshot_size();
+        let views = [Some(window), capture].map(|size| {
+            size.map(|[w, h]| {
+                View::screen_rolled(yaw, pitch, roll, fov, w as f32 / h.max(1) as f32, far)
+            })
+        });
+        let pack_post = self.pack_post.as_ref().is_some_and(|p| p.1.is_some());
+        let pack_rotation = pack_post
+            .then(|| sunrise_render_shaderpack::joml::view_rotation_matrix(yaw, pitch, roll).0);
+        let native_projections = self.native.as_ref().map(|native| {
+            let taa = !pack_post && native.post.is_none();
+            let scale = self.world_post.scale;
+            let window_sizes = self.world_post.render_sizes(window, scale, taa);
+            let capture_sizes = capture.map(|size| {
+                self.world_post.render_sizes(
+                    size,
+                    super::screenshot::screenshot_world_scale(scale),
+                    taa,
+                )
+            });
+            window_sizes
+                .chain(capture_sizes.into_iter().flatten())
+                .map(move |[w, h]| super::world_projection(fov, w as f32 / h.max(1) as f32, far))
+        });
+        move |matrix| {
+            let bob = vanilla_bob * Mat4::from_cols_array(&matrix);
+            let pose = bob * spin;
+            views
+                .iter()
+                .flatten()
+                .all(|view| usable_view_transform(view, bob, spin))
+                && pack_rotation.is_none_or(|rotation| invertible(pose * rotation))
+                && native_projections
+                    .clone()
+                    .into_iter()
+                    .flatten()
+                    .all(|projection| {
+                        invertible(super::native_post::view_projection(projection, bob, spin))
+                    })
+        }
+    }
+
+    fn screen_view(&self, fov_degrees: f32, yaw: f32, pitch: f32, roll: f32, far: f32) -> View {
         let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
-        View::screen(yaw, pitch, fov_degrees, aspect, far)
+        View::screen_rolled(yaw, pitch, roll, fov_degrees, aspect, far)
     }
+}
+
+fn invertible(matrix: Mat4) -> bool {
+    if !matrix.is_finite() {
+        return false;
+    }
+    let determinant = matrix.determinant();
+    determinant != 0.0 && determinant.is_finite() && matrix.inverse().is_finite()
+}
+
+fn usable_view_transform(view: &View, bob: Mat4, spin: Mat4) -> bool {
+    invertible(super::native_post::view_projection(
+        view.projection,
+        bob,
+        spin,
+    )) && invertible(view.view_proj(bob * spin))
 }
 
 /// Where a perspective `view_proj` sees from, in its own (camera-relative)
@@ -257,6 +348,23 @@ pub fn test_frustum(planes: [Vec4; 6]) -> JoinedFrusta {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_finite_transform_that_overflows_the_frame_projection_is_refused() {
+        let view = View::screen(0.0, 0.0, 70.0, 16.0 / 9.0, 512.0);
+        let enormous = Mat4::from_translation(Vec3::new(0.0, 3.0e38, 0.0));
+        assert!(invertible(enormous));
+        assert!(!(view.projection * enormous).is_finite());
+        mod_api::ViewTransform::with_frame(
+            |matrix| usable_view_transform(&view, Mat4::from_cols_array(&matrix), Mat4::IDENTITY),
+            |transform| {
+                assert!(transform.translate(1.0, 0.0, 0.0));
+                let accepted = transform.matrix();
+                assert!(!transform.translate(0.0, 3.0e38, 0.0));
+                assert_eq!(transform.matrix(), accepted);
+            },
+        );
+    }
+
     /// The formulas `Renderer` used before views existed, kept to pin the
     /// screen view to them bit for bit.
     fn legacy_view_proj(fov: f32, yaw: f32, pitch: f32, pose: Mat4, aspect: f32, far: f32) -> Mat4 {
@@ -299,6 +407,30 @@ mod tests {
             );
             assert_eq!(view.aspect.to_bits(), aspect.to_bits());
         }
+    }
+
+    #[test]
+    fn a_half_turn_view_transform_keeps_what_is_behind_the_camera_in_the_cull_view() {
+        let set = ViewSet::single(View::screen(0.0, 0.0, 70.0, 16.0 / 9.0, 512.0));
+        let seen = |matrix: Mat4, point: glam::Vec4| {
+            let clip = matrix * point;
+            clip.w > 0.0 && clip.x.abs() <= clip.w && clip.y.abs() <= clip.w
+        };
+        // The point on the side the untransformed view does not look at.
+        let ahead = glam::Vec4::new(0.0, 0.0, -10.0, 1.0);
+        let behind = if seen(set.cull_view_proj(Mat4::IDENTITY), ahead) {
+            glam::Vec4::new(0.0, 0.0, 10.0, 1.0)
+        } else {
+            ahead
+        };
+        let visible = |matrix: Mat4| seen(matrix, behind);
+        assert!(!visible(set.cull_view_proj(Mat4::IDENTITY)));
+        let half_turn = Mat4::from_rotation_y(std::f32::consts::PI);
+        assert!(visible(set.cull_view_proj(half_turn)));
+        // The drawn view, posed the same way, shows the same point.
+        assert!(visible(
+            set.frame_transforms(half_turn, half_turn).draw_view_proj
+        ));
     }
 
     #[test]
@@ -426,10 +558,13 @@ mod tests {
             let set = ViewSet::for_frame(&frame, width as u32, height as u32);
             assert_eq!(*set.primary(), render_view);
             assert_eq!(*set.cull(), cull_view);
-            let transforms = set.frame_transforms(frame.bob * frame.spin);
+            let transforms =
+                set.frame_transforms(frame.posed_bob() * frame.spin, frame.view_transform);
             assert_eq!(
                 transforms.cull_view_proj.to_cols_array().map(f32::to_bits),
-                set.cull_view_proj().to_cols_array().map(f32::to_bits),
+                set.cull_view_proj(Mat4::IDENTITY)
+                    .to_cols_array()
+                    .map(f32::to_bits),
                 "{name} draw_frame cull transform must be unposed"
             );
             assert_eq!(

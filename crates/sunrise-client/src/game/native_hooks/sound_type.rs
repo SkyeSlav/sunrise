@@ -4,9 +4,9 @@ use sunrise_core::position::BlockPos;
 use sunrise_world::registry::BlockStateId;
 
 impl FrictionView<'_> {
-    /// `IBlockExtension.getSoundType(state, level, pos, entity)`: a subscribed state is asked
-    /// with the side's borrowed level, the position, the entity (if any) and the sound about to
-    /// play.
+    /// `IBlockExtension.getSoundType`: a subscribed state is asked with the side's borrowed
+    /// level, as the friction query is, at the shared selection sites (`Entity.playStepSound`'s
+    /// path, `BlockItem.place`, the break and fall sounds), including client prediction.
     pub(in crate::game) fn native_sound_type(
         &self,
         pos: BlockPos,

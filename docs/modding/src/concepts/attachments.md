@@ -11,16 +11,16 @@ let counter = registrar.register_attachment_type(
 )?;
 ```
 
-The registrar records refusals even if you ignore the result. Only the namespace owner (by
-manifest or `served_by` delegation) can declare the ID, and each ID is declared once; a package
-that depends on the owner looks up the same typed handle with
-`registrar.attachment_key::<T>("namespace:name")`. An undeclared use reports
-`AttachmentError::Undeclared`. `.serialize(codec)` persists, `.sync(codec)` synchronizes to
-clients and `.copy_on_death()` copies on respawn, independently of each other; the last needs a
-persistence codec. Declaring a synced type requires a client-compared package; a
-`side = "server"` package can use another package's synced type but cannot declare its own. A key
-belongs to the installation that issued it: one kept from an earlier installation is refused with
-`AttachmentError::StaleKey`.
+The registrar records refusals even if you ignore the result. Any valid lowercase
+`namespace:path` ID not already declared is accepted, and the submitting package becomes its
+declaring owner, whatever the key's namespace; a package that depends on the owner looks up
+the same typed handle with `registrar.attachment_key::<T>("namespace:name")`. An undeclared
+use reports `AttachmentError::Undeclared`. `.serialize(codec)` persists, `.sync(codec)`
+synchronizes to clients and `.copy_on_death()` copies on respawn, independently of each other;
+the last needs a persistence codec. Declaring a synced type requires a client-compared package;
+a `side = "server"` package can use another package's synced type but cannot declare its own.
+A key belongs to the installation that issued it: one kept from an earlier installation is
+refused with `AttachmentError::StaleKey`.
 
 ## Reading and writing
 
@@ -93,6 +93,15 @@ and there is no custom copy handler, per-recipient predicate or partial update. 
 failure outcomes (logged drops vs. queue disconnect) and connection-epoch behavior across
 reconfigurations, see `AttachmentKey::sync_data` in the
 [generated API reference](../reference/api.md).
+
+## Player construction and saved data
+
+On the server, `entity_constructing` runs with a fresh player attachment map. Set
+initial values there without reading the player's saved state. On join, disk entries
+overwrite matching constructor entries before `player_load_from_file`. On death or End
+credits respawn, the eligible entries from the old player overwrite matching constructor
+entries before `player_clone`. Entries set by the constructor that the load or copy does
+not replace stay on the new player, including entries without a codec.
 
 ## Copying on respawn and conversion
 

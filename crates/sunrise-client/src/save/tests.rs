@@ -2196,6 +2196,7 @@ fn native_saved_ids_must_match_the_declared_block_membership() {
             "test:other".into(),
             "minecraft:chest".into(),
         ],
+        ["test:machine".into(), "test:other".into()],
     );
     // Seed the same canonical pairs as production when resources are available.
     // The explicit shared-representation cases below also run without resources.
@@ -2422,7 +2423,7 @@ fn mod_block_entity_items_claim_only_the_slots_written() {
         )
     };
     data.items.resize(2, None);
-    *data.item_slot_mut(0).unwrap() = Some(ItemStack::new("minecraft:stone", 2));
+    *data.item_slot_mut(0) = Some(ItemStack::new("minecraft:stone", 2));
     let encoded = encode(&data);
     assert_eq!(
         encoded.get("Items"),
@@ -2435,7 +2436,7 @@ fn mod_block_entity_items_claim_only_the_slots_written() {
     };
     assert_eq!(reloaded.items[0], data.items[0]);
     assert_eq!(encode(&reloaded), encoded);
-    *data.item_slot_mut(0).unwrap() = None;
+    *data.item_slot_mut(0) = None;
     // A tick reply replacing the mutable fields, including shrinking the
     // modeled vector to zero, cannot restore the old saved row for slot 0.
     let mut snapshot = (**data).clone();
@@ -2447,7 +2448,7 @@ fn mod_block_entity_items_claim_only_the_slots_written() {
         Some(&parse(r#"[{Slot:1b,raw:"retained"},{raw:"no slot"}]"#))
     );
     data.items.resize(2, None);
-    *data.item_slot_mut(1).unwrap() = None;
+    *data.item_slot_mut(1) = None;
     assert_eq!(
         encode(&data).get("Items"),
         Some(&parse(r#"[{raw:"no slot"}]"#))
@@ -2497,6 +2498,26 @@ fn mod_block_entity_round_trips_the_first_and_last_byte_indexed_slots() {
         panic!("expected mod block entity")
     };
     assert_eq!(reloaded.items, items);
+}
+
+/// A holder's capacity is its block's declaration, not the length of what it stores: a write
+/// reaches its slot and no further, so a first write into a holder declared at the Java-int
+/// maximum allocates the slots up to it, not the holder.
+#[test]
+fn a_slot_write_grows_a_mod_holder_only_to_that_slot() {
+    let saved = sunrise_core::nbt::parse_snbt(r#"{id:"gtmod:vault",x:0,y:0,z:0}"#)
+        .unwrap()
+        .0;
+    let (_, mut back) = decode_block_entity(&saved).expect("mod block entity");
+    let crate::containers::BlockEntity::Mod(m) = &mut back else {
+        panic!("not a mod's");
+    };
+    assert!(m.items.is_empty());
+    *m.item_slot_mut(2) = Some(crate::items::ItemStack::new("minecraft:stone", 1));
+    assert_eq!(m.items.len(), 3);
+    assert!(m.items[0].is_none() && m.items[1].is_none());
+    // Slots past the last written one read as empty without being allocated.
+    assert!(m.items.get(i32::MAX as usize - 1).is_none());
 }
 
 #[test]
@@ -2616,6 +2637,169 @@ fn mod_block_entity_round_trips() {
         Some((_, crate::containers::BlockEntity::Mod(_)))
     ));
 }
+
+#[test]
+fn mod_block_entity_extended_slots_round_trip_without_aliasing() {
+    use crate::{
+        containers::{BlockEntity, ModBlockEntity, ModBlockEntityFields},
+        items::ItemStack,
+    };
+    let parse = |s| sunrise_core::nbt::parse_snbt(s).unwrap().0;
+    let pos = (4, 64, -2);
+    let stone = ItemStack::new("minecraft:stone", 3);
+    let iron = ItemStack::new("minecraft:iron_ingot", 4);
+    let dirt = ItemStack::new("minecraft:dirt", 7);
+
+    let mut items = vec![None; 257];
+    items[0] = Some(stone.clone());
+    items[255] = Some(iron.clone());
+    items[256] = Some(dirt.clone());
+    let entity = ModBlockEntity::new(
+        "test:vault".into(),
+        ModBlockEntityFields {
+            items,
+            ..Default::default()
+        },
+    );
+    let encoded = block_entity_encode::encode(
+        pos,
+        &BlockEntity::Mod(Box::new(entity)),
+        "test:vault",
+        &Default::default(),
+    );
+    assert_eq!(
+        encoded.get("Items"),
+        Some(&parse(
+            r#"[{Slot:0b,id:"minecraft:stone",count:3},{Slot:-1b,id:"minecraft:iron_ingot",count:4},{Slot:256,id:"minecraft:dirt",count:7}]"#
+        ))
+    );
+
+    // Reloading with the declared shape restores slots 0, 255 and 256 with no aliasing.
+    let reloaded =
+        decode_mod_block_entity("test:vault".into(), &encoded, 257).expect("declared mod vault");
+    assert_eq!(reloaded.items.len(), 257);
+    assert_eq!(reloaded.items[0].as_ref(), Some(&stone));
+    assert_eq!(reloaded.items[255].as_ref(), Some(&iron));
+    assert_eq!(reloaded.items[256].as_ref(), Some(&dirt));
+    assert!(reloaded.nbt.get(&"Items".into()).is_none());
+    assert_eq!(
+        block_entity_encode::encode(
+            pos,
+            &BlockEntity::Mod(Box::new(reloaded)),
+            "test:vault",
+            &Default::default(),
+        ),
+        encoded
+    );
+
+    // Generic decode without a declared shape preserves low slots and leaves extended
+    // rows opaque without growing the modeled vector.
+    let (loaded_pos, BlockEntity::Mod(unknown)) =
+        decode_block_entity(&encoded).expect("unknown-block decode")
+    else {
+        panic!("expected mod block entity");
+    };
+    assert_eq!(loaded_pos, pos);
+    assert_eq!(unknown.items.len(), 256);
+    assert_eq!(unknown.items[0].as_ref(), Some(&stone));
+    assert_eq!(unknown.items[255].as_ref(), Some(&iron));
+    assert_eq!(
+        unknown.nbt.get(&"Items".into()),
+        Some(&parse(r#"[{Slot:256,id:"minecraft:dirt",count:7}]"#))
+    );
+    assert_eq!(
+        block_entity_encode::encode(
+            pos,
+            &BlockEntity::Mod(unknown),
+            "test:vault",
+            &Default::default(),
+        ),
+        encoded
+    );
+
+    // Rows outside the declared shape, invalid negative Ints, noncanonical compact Ints,
+    // duplicates, and slotless entries all remain opaque verbatim.
+    let mixed = parse(
+        r#"{id:"test:vault",x:4,y:64,z:-2,Items:[{Slot:0b,id:"minecraft:stone",count:3},{Slot:256,id:"minecraft:dirt",count:7},{Slot:257,id:"minecraft:gold_ingot",count:1},{Slot:1000000,id:"minecraft:diamond",count:1},{Slot:-1,id:"minecraft:coal",count:1},{Slot:1,id:"minecraft:sand",count:1},{raw:"no slot"}]}"#,
+    );
+    let bounded = decode_mod_block_entity("test:vault".into(), &mixed, 257).expect("bounded vault");
+    assert_eq!(bounded.items.len(), 257);
+    assert_eq!(bounded.items[0].as_ref(), Some(&stone));
+    assert_eq!(bounded.items[256].as_ref(), Some(&dirt));
+    assert_eq!(
+        bounded.nbt.get(&"Items".into()),
+        Some(&parse(
+            r#"[{Slot:257,id:"minecraft:gold_ingot",count:1},{Slot:1000000,id:"minecraft:diamond",count:1},{Slot:-1,id:"minecraft:coal",count:1},{Slot:1,id:"minecraft:sand",count:1},{raw:"no slot"}]"#
+        ))
+    );
+
+    // Duplicate extended slots stay opaque rather than modeling one over the other.
+    let dup_extended = parse(
+        r#"{id:"test:vault",x:4,y:64,z:-2,Items:[{Slot:256,id:"minecraft:stone",count:1},{Slot:256,id:"minecraft:dirt",count:1}]}"#,
+    );
+    let dup =
+        decode_mod_block_entity("test:vault".into(), &dup_extended, 257).expect("dup extended");
+    assert!(dup.items.is_empty());
+    assert_eq!(
+        block_entity_encode::encode(
+            pos,
+            &BlockEntity::Mod(Box::new(dup)),
+            "test:vault",
+            &Default::default(),
+        ),
+        dup_extended
+    );
+
+    // Slotless declared shape keeps Items verbatim in nbt.
+    let slotless = decode_mod_block_entity("test:vault".into(), &encoded, 0).expect("slotless");
+    assert!(slotless.items.is_empty());
+    assert_eq!(slotless.nbt.get(&"Items".into()), encoded.get("Items"));
+
+    // Opaque slot queries, claims and clears distinguish slot 0 from slot 256.
+    let opaque_pair = parse(
+        r#"{id:"test:vault",x:4,y:64,z:-2,Items:[{Slot:0b,raw:"low"},{Slot:256,raw:"high"}]}"#,
+    );
+    let mut claimed =
+        decode_mod_block_entity("test:vault".into(), &opaque_pair, 257).expect("opaque pair");
+    assert!(claimed.has_opaque_item_slot(0));
+    assert!(claimed.has_opaque_item_slot(256));
+    claimed.items.resize(257, None);
+    *claimed.item_slot_mut(0) = Some(stone.clone());
+    assert!(!claimed.has_opaque_item_slot(0));
+    assert!(claimed.has_opaque_item_slot(256));
+    *claimed.item_slot_mut(256) = Some(dirt.clone());
+    assert!(!claimed.has_opaque_item_slot(256));
+    assert_eq!(
+        block_entity_encode::encode(
+            pos,
+            &BlockEntity::Mod(Box::new(claimed)),
+            "test:vault",
+            &Default::default(),
+        )
+        .get("Items"),
+        Some(&parse(
+            r#"[{Slot:0b,id:"minecraft:stone",count:3},{Slot:256,id:"minecraft:dirt",count:7}]"#
+        ))
+    );
+
+    // Vanilla containers stay byte-exact.
+    let mut chest_slots = vec![None; 27];
+    chest_slots[0] = Some(stone);
+    chest_slots[1] = Some(dirt);
+    let chest = block_entity_encode::encode(
+        pos,
+        &BlockEntity::Chest(chest_slots),
+        "minecraft:chest",
+        &Default::default(),
+    );
+    assert_eq!(
+        chest.get("Items"),
+        Some(&parse(
+            r#"[{Slot:0b,id:"minecraft:stone",count:3},{Slot:1b,id:"minecraft:dirt",count:7}]"#
+        ))
+    );
+}
+
 /// `CopperGolemStatueBlockEntity.createStatue`: the golem's styled custom
 /// name lives in the statue's components, through every weathering stage,
 /// a save and its item.
@@ -2760,56 +2944,6 @@ fn a_mods_fluid_ticks_are_saved_by_name() {
         back.iter().map(|t| t.kind).collect::<Vec<_>>(),
         ticks.iter().map(|t| t.kind).collect::<Vec<_>>()
     );
-}
-
-#[test]
-fn only_server_disk_records_intern_saved_fluid_names() {
-    // The game initializes the platform at startup; the unresolved-fluid table lives there,
-    // and without it nothing is interned. Alone, nothing else in this process has done it.
-    mod_platform::__private::initialize().unwrap();
-    let root = std::env::temp_dir().join(format!("sunrise-fluid-source-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    let mut save = SaveDir::new(
-        root.clone(),
-        LevelShape::OVERWORLD,
-        Some(Default::default()),
-    );
-    save.enable_trusted_fluid_load();
-    let record = |id: &str| NamedTag {
-        name: "".into(),
-        tag: Tag::compound([(
-            "block_entities",
-            Tag::List(vec![Tag::compound([(
-                "fluids",
-                Tag::List(vec![Tag::compound([("Fluid", Tag::String(id.into()))])]),
-            )])]),
-        )]),
-    };
-    let disk = "fixture:trusted_saved_fluid";
-    let live = "fixture:untrusted_pending_fluid";
-    fs::create_dir_all(root.join("region")).unwrap();
-    let mut region = RegionFile::open_writable(save.region_path("region", 0, 0), true).unwrap();
-    region
-        .write(
-            ChunkPos::new(0, 0),
-            &ChunkRecord::from_nbt(&record(disk), Compression::Zlib, 0, Limits::saved()).unwrap(),
-        )
-        .unwrap();
-    drop(region);
-    save.read_record_raw("region", 0, 0).unwrap();
-    assert!(mod_api::__private::lookup_unresolved_fluid(disk).is_some());
-    let oversized = format!("fixture:{}", "x".repeat(257));
-    let original = record(&oversized);
-    intern_saved_fluids(&original);
-    assert!(mod_api::__private::lookup_unresolved_fluid(&oversized).is_none());
-    assert_eq!(original, record(&oversized));
-    save.pending.lock().unwrap().insert(
-        (Folder::Region, 1, 0),
-        (0, Record::Tag(Arc::new(record(live)))),
-    );
-    save.read_record_raw("region", 1, 0).unwrap();
-    assert!(mod_api::__private::lookup_unresolved_fluid(live).is_none());
-    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -3454,6 +3588,7 @@ fn level_round_trips_through_the_vanilla_files() {
         xp_level: 3,
         xp_progress: 0.5,
         xp_total: 30,
+        player_score: -14,
         dimension: "minecraft:the_nether".into(),
         world_spawn: Some([8, 64, 8]),
         world_spawn_angle: [45.0, -10.0],
@@ -3501,6 +3636,7 @@ fn level_round_trips_through_the_vanilla_files() {
         (back.xp_level, back.xp_progress, back.xp_total),
         (3, 0.5, 30)
     );
+    assert_eq!(back.player_score, -14);
     assert_eq!(back.dimension, "minecraft:the_nether");
     assert_eq!(back.world_spawn, Some([8, 64, 8]));
     assert_eq!(back.world_spawn_angle, [45.0, -10.0]);

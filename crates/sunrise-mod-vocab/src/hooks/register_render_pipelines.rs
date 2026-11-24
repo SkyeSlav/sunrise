@@ -76,11 +76,10 @@ pipeline quads draw after the plain quads and lines, in submission order."#]
         side = "client",
         contract = "collect",
         out = "pipelines",
-        registration_append = "register",
-        collect_validator = "crate::client::render_pipeline::validate_render_pipelines",
+        registration_append = "attributed",
         context = "registration",
         neoforge = "RegisterRenderPipelinesEvent",
-        version = 3
+        version = 4
     )]
     fn register_render_pipelines(pipelines: &mut Vec<mod_api::RenderPipeline>);
 }

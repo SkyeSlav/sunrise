@@ -209,14 +209,14 @@ impl FlatTerrain {
         }
         Some(surface)
     }
-    /// The generator of a level a mod opens with the default superflat layers (`Some(layers)`:
-    /// bedrock, two dirt, grass block, over plains) or with air alone (`None`: the void).
-    /// `None` when the registry lacks one of the blocks.
+    /// The generator of a level a mod opens with the default superflat layers (`flat = true`:
+    /// bedrock, two dirt, grass block) or with air alone (`flat = false`: the void), over
+    /// the world's resolved biome id. `None` when the registry lacks one of the blocks.
     pub fn of_layers(
         registry: &BlockRegistry,
-        biomes: &crate::biome::Biomes,
         shape: LevelShape,
         flat: bool,
+        biome: u16,
     ) -> Option<Self> {
         let names: &[&str] = if flat {
             &[
@@ -232,11 +232,6 @@ impl FlatTerrain {
             .iter()
             .map(|name| Some(registry.default_state(name)?.0))
             .collect::<Option<Vec<_>>>()?;
-        let biome = biomes.id(if flat {
-            "minecraft:plains"
-        } else {
-            "minecraft:the_void"
-        });
         let surface = Self::surface(&layers, registry, shape, biome)?;
         Some(Self {
             shape,
@@ -397,7 +392,12 @@ impl ChunkGenerator for FlatTerrain {
     fn lod_surface(&self, _: &mut (), _: i32, _: i32) -> Option<crate::columns::Surface> {
         self.surface
     }
-    fn proto(&self, _: &mut (), cx: i32, cz: i32) -> crate::streaming::Proto {
+    fn proto(
+        &self,
+        _: &mut (),
+        cx: i32,
+        cz: i32,
+    ) -> std::result::Result<crate::streaming::Proto, String> {
         let mut chunk = Chunk::with_layout(cx, cz, self.shape.column());
         for s in &mut chunk.sections {
             std::sync::Arc::make_mut(s).biomes = sunrise_core::paletted::PalettedContainer::new(
@@ -434,7 +434,7 @@ impl ChunkGenerator for FlatTerrain {
         for s in &mut chunk.sections {
             std::sync::Arc::make_mut(s).compact();
         }
-        Box::new(chunk)
+        Ok(Box::new(chunk))
     }
     /// FlatLevelSource.spawnOriginalMobs is empty: no generation-time spawns.
     fn finish(&self, proto: crate::streaming::Proto) -> Chunk {
@@ -532,7 +532,7 @@ mod tests {
             .unwrap()
         };
         let block = |terrain: &FlatTerrain, [x, y, z]: [i32; 3]| {
-            let chunk = terrain.finish(terrain.proto(&mut (), x >> 4, z >> 4));
+            let chunk = terrain.finish(terrain.proto(&mut (), x >> 4, z >> 4).unwrap());
             registry.state(chunk.block(x, y, z)).unwrap().name.clone()
         };
         // The Void preset (flat_level_generator_preset/the_void): the_void's

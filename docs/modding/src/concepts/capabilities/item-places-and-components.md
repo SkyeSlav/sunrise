@@ -10,8 +10,9 @@ register a `PlaceProvider` with `r.place_provider` and use `ItemPlace::Mod`. `It
 `place.with_stack(host, |stack| stack.item())` reads the item at a nonempty place. The
 callback receives an `ItemStackView` for that call only. Read `item()`, `count()` and
 `damage()` there without copying a resident stack. If you only need to know whether
-the place is occupied, use `place.amount(host) != 0`. For components or an owned
-`ItemStack` beyond the callback, project it explicitly:
+the place is occupied, use `place.amount(host) != 0`. Read one stored component
+override with `stack.get(&component)`; it does not consult item defaults. To read
+the whole patch or keep an owned `ItemStack` beyond the callback, project it explicitly:
 
 ```rust,ignore
 match place.with_stack(host, |stack| stack.project()) {

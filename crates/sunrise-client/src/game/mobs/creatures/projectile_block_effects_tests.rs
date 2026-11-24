@@ -45,8 +45,7 @@ fn fire_lava_and_water_reach_a_projectile_in_its_tick() {
     // entering fire observes the post-sweep burning state.
     if std::env::var(CASE).as_deref() == Ok("lava_impact_batch") {
         use mod_api::{
-            EntityTickListenedEvent, EntityTickPostEvent, Flow, HearsProjectileImpactsEvent, Hooks,
-            HostBlockStates, HostSide, ProjectileImpactEvent, Registrar, RegistrationContext,
+            EntityTickPostEvent, Flow, Hooks, HostBlockStates, HostSide, ProjectileImpactEvent,
             ServerHost,
         };
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -58,16 +57,6 @@ fn fire_lava_and_water_reach_a_projectile_in_its_tick() {
         }
         #[mod_api::__subscriptions]
         impl Hooks for Probe {
-            fn register(&self, r: &mut (dyn Registrar + '_), _: &RegistrationContext) {
-                r.entity_tick_each("minecraft:snowball");
-            }
-            fn hears_projectile_impacts(
-                &self,
-                _: &dyn mod_api::Host,
-                event: &mut HearsProjectileImpactsEvent,
-            ) {
-                event.hears = true;
-            }
             fn projectile_impact(
                 &self,
                 host: &mut dyn ServerHost,
@@ -83,12 +72,9 @@ fn fire_lava_and_water_reach_a_projectile_in_its_tick() {
                 }
                 Flow::Continue
             }
-            fn entity_tick_listened(&self, _: HostSide<'_>, event: &mut EntityTickListenedEvent) {
-                event.listened = true;
-            }
             fn entity_tick_post(&self, host: HostSide<'_>, event: &mut EntityTickPostEvent<'_>) {
                 if let HostSide::Server(host) = host
-                    && event.entities.contains(&self.snowball_id)
+                    && event.entity == self.snowball_id
                     && let Some(entity) = host.entity(self.snowball_id)
                     && entity.fire_ticks(host).is_some_and(|ticks| ticks > 0)
                 {

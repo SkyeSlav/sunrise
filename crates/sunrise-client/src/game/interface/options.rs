@@ -164,6 +164,9 @@ impl Game<'_> {
         ui.minecart_improvements = minecart_improvements;
         ui.languages = lang::available(&[&self.pack.source]);
         self.refresh_pack_lists();
+        if let Page::NativeMod(index) = page {
+            self.native_settings_refresh(index);
+        }
     }
     /// While the resource pack screen is open, `resourcepacks/` is looked at once a second
     /// and the list found again when its packs changed (`PackSelectionScreen.tick`'s
@@ -400,7 +403,7 @@ impl Game<'_> {
     pub(in crate::game) fn handle_option_events(&mut self, events: Vec<Event>) -> Result<()> {
         for e in events {
             match e {
-                Event::ButtonClick => self.audio.play_button_click(),
+                Event::ButtonClick => self.play_audio_button_click(),
                 Event::DebugEntriesChanged => self.debug_entries.invalidate(),
                 Event::Changed => {
                     self.settings.save(&Self::options_path());

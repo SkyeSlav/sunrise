@@ -8,15 +8,17 @@
 //! The shader's composition and checks live in `sunrise_mod_pipeline`, shared with
 //! `cargo sunrise-mod check`.
 use mod_api::{
-    Identifier, PipelineBlend, PipelineTexture, PipelineTextureError, RenderPipeline,
-    RenderPipelineError, RenderPipelineRef, WorldDepth,
+    Identifier, PackGlslInput, PackPassSlot, PackUniformType, PackUniformValue, PipelineBlend,
+    PipelineTexture, PipelineTextureError, RenderPipeline, RenderPipelineError, RenderPipelineRef,
+    WorldDepth,
 };
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::OnceLock;
 use sunrise_mod_pipeline::{FOLDER, compose_with};
 
 static REGISTERED: OnceLock<Vec<RenderPipeline>> = OnceLock::new();
+static PACK_UNIFORMS: OnceLock<HashMap<&'static str, PackUniformType>> = OnceLock::new();
 
 /// The built-in tables exported by `RenderPipelines.requiredPipelines` and `optionalPipelines`.
 #[derive(serde::Deserialize)]
@@ -597,6 +599,302 @@ pub fn texture_refusal(cause: PipelineTextureError) -> String {
     format!("{cause:?}: {cause}")
 }
 
+/// Convert a mod-API [`PackUniformType`] to `sunrise-render-shaderpack`'s [`ModUniformType`].
+pub fn mod_uniform_type(
+    ty: PackUniformType,
+) -> sunrise_render_shaderpack::pack_post::ModUniformType {
+    use sunrise_render_shaderpack::pack_post::ModUniformType as M;
+    match ty {
+        PackUniformType::Float => M::Float,
+        PackUniformType::Int => M::Int,
+        PackUniformType::Vec2 => M::Vec2,
+        PackUniformType::Vec3 => M::Vec3,
+        PackUniformType::Vec4 => M::Vec4,
+        PackUniformType::Mat3 => M::Mat3,
+        PackUniformType::Mat4 => M::Mat4,
+        _ => M::Float,
+    }
+}
+
+/// Convert a mod-API [`PackUniformValue`] to `sunrise-render-shaderpack`'s [`ModUniformValue`].
+pub fn mod_uniform_value(
+    value: PackUniformValue,
+) -> sunrise_render_shaderpack::pack_post::ModUniformValue {
+    use sunrise_render_shaderpack::pack_post::ModUniformValue as M;
+    match value {
+        PackUniformValue::Float(v) => M::Float(v),
+        PackUniformValue::Int(v) => M::Int(v),
+        PackUniformValue::Vec2(v) => M::Vec2(v),
+        PackUniformValue::Vec3(v) => M::Vec3(v),
+        PackUniformValue::Vec4(v) => M::Vec4(v),
+        PackUniformValue::Mat3(v) => M::Mat3(v),
+        PackUniformValue::Mat4(v) => M::Mat4(v),
+        _ => M::Float(0.0),
+    }
+}
+
+fn mod_pass_slot(slot: PackPassSlot) -> sunrise_render_shaderpack::pack_post::ModPassSlot {
+    use sunrise_render_shaderpack::pack_post::ModPassSlot as S;
+    match slot {
+        PackPassSlot::Shadow => S::Shadow,
+        PackPassSlot::AfterSky => S::AfterSky,
+        PackPassSlot::AfterOpaqueGbuffers => S::AfterOpaqueGbuffers,
+        PackPassSlot::AfterTranslucentGbuffers => S::AfterTranslucentGbuffers,
+        PackPassSlot::AfterWeather => S::AfterWeather,
+        _ => S::AfterOpaqueGbuffers,
+    }
+}
+
+fn shader_group_for_slot(slot: PackPassSlot) -> sunrise_shaders::Group {
+    match slot {
+        PackPassSlot::Shadow => sunrise_shaders::Group::Shadow,
+        PackPassSlot::AfterSky | PackPassSlot::AfterOpaqueGbuffers => {
+            sunrise_shaders::Group::Gbuffers
+        }
+        PackPassSlot::AfterTranslucentGbuffers | PackPassSlot::AfterWeather => {
+            sunrise_shaders::Group::Translucent
+        }
+        _ => sunrise_shaders::Group::Gbuffers,
+    }
+}
+
+fn pack_blend_for(blend: PipelineBlend) -> Option<sunrise_shaders::Blend> {
+    use sunrise_shaders::Factor;
+    match blend {
+        PipelineBlend::Translucent => Some(sunrise_shaders::TRANSLUCENT_BLEND),
+        PipelineBlend::Additive => Some([Factor::SrcAlpha, Factor::One, Factor::Zero, Factor::One]),
+        _ => Some(sunrise_shaders::TRANSLUCENT_BLEND),
+    }
+}
+
+fn glsl_input_expr(input: &PackGlslInput) -> String {
+    match (input.source.as_str(), input.ty) {
+        ("position" | "pos", PackUniformType::Vec3) => "mod_position".to_owned(),
+        ("position" | "pos", PackUniformType::Vec4) => "vec4(mod_position, 1.0)".to_owned(),
+        ("uv" | "uv0", PackUniformType::Vec2) => "mod_uv".to_owned(),
+        ("uv" | "uv0", PackUniformType::Vec4) => "vec4(mod_uv, 0.0, 1.0)".to_owned(),
+        ("color", PackUniformType::Vec4) => "mod_color".to_owned(),
+        ("color", PackUniformType::Vec3) => "mod_color.rgb".to_owned(),
+        ("normal", PackUniformType::Vec3) => "vec3(0.0, 1.0, 0.0)".to_owned(),
+        ("light" | "uv2", PackUniformType::Vec2) => "vec2(240.0, 240.0)".to_owned(),
+        (_, PackUniformType::Float) => "0.0".to_owned(),
+        (_, PackUniformType::Int) => "0".to_owned(),
+        (_, PackUniformType::Vec2) => "vec2(0.0)".to_owned(),
+        (_, PackUniformType::Vec3) => "vec3(0.0)".to_owned(),
+        (_, PackUniformType::Vec4) => "vec4(0.0)".to_owned(),
+        (_, PackUniformType::Mat3) => "mat3(1.0)".to_owned(),
+        (_, PackUniformType::Mat4) => "mat4(1.0)".to_owned(),
+        _ => "0.0".to_owned(),
+    }
+}
+
+fn mod_pipeline_gbuffers_inputs(
+    binding: Option<&mod_api::PackBinding>,
+) -> sunrise_shaders::GbuffersInputs {
+    let mut attributes = vec![
+        ("vaPosition".to_owned(), "mod_position".to_owned()),
+        ("vaColor".to_owned(), "mod_color".to_owned()),
+        ("vaUV0".to_owned(), "mod_uv".to_owned()),
+        ("vaUV2".to_owned(), "ivec2(240, 240)".to_owned()),
+        ("vaNormal".to_owned(), "vec3(0.0, 1.0, 0.0)".to_owned()),
+    ];
+    if let Some(binding) = binding {
+        for input in &binding.glsl_bindings {
+            let expr = glsl_input_expr(input);
+            if let Some(existing) = attributes.iter_mut().find(|(k, _)| k == &input.glsl_name) {
+                existing.1 = expr;
+            } else {
+                attributes.push((input.glsl_name.clone(), expr));
+            }
+        }
+    }
+    sunrise_shaders::GbuffersInputs {
+        declarations: "layout(location = 0) in vec3 mod_position;\n\
+             layout(location = 1) in vec2 mod_uv;\n\
+             layout(location = 2) in vec4 mod_color;\n"
+            .to_owned(),
+        body: "    hz_Vertex = vec4(mod_position, 1.0);\n\
+             hz_Color = mod_color;\n\
+             hz_MultiTexCoord0 = vec4(mod_uv, 0.0, 1.0);\n\
+             hz_MultiTexCoord1 = vec4(240.0, 240.0, 0.0, 1.0);\n\
+             hz_MultiTexCoord2 = hz_MultiTexCoord1;\n\
+             hz_Normal = vec3(0.0, 1.0, 0.0);\n"
+            .to_owned(),
+        attributes,
+        ..Default::default()
+    }
+}
+
+/// Deduplicated shader-pack preprocessor defines across all registered pipelines.
+pub fn pack_defines() -> Vec<(&'static str, &'static str)> {
+    pack_defines_of(registered())
+}
+
+pub(crate) fn pack_defines_of(pipelines: &[RenderPipeline]) -> Vec<(&str, &str)> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for pipeline in pipelines {
+        let Some(binding) = &pipeline.pack_binding else {
+            continue;
+        };
+        for (name, value) in &binding.defines {
+            if seen.insert(name.as_str()) {
+                out.push((name.as_str(), value.as_deref().unwrap_or("")));
+            }
+        }
+    }
+    out
+}
+
+/// Shader-pack program resolution requests for every registered pipeline with a pack slot
+/// and candidate program chain.
+pub fn pack_program_requests() -> Vec<sunrise_shaders::ModPackProgramRequest> {
+    pack_program_requests_of(registered())
+}
+
+pub(crate) fn pack_program_requests_of(
+    pipelines: &[RenderPipeline],
+) -> Vec<sunrise_shaders::ModPackProgramRequest> {
+    let mut out = Vec::new();
+    for (slot, pipeline) in pipelines.iter().enumerate() {
+        let Some(pass_slot) = pipeline.effective_pack_slot() else {
+            continue;
+        };
+        let programs: Vec<String> = pipeline
+            .effective_pack_programs()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        if programs.is_empty() {
+            continue;
+        }
+        out.push(sunrise_shaders::ModPackProgramRequest {
+            slot,
+            programs,
+            group: shader_group_for_slot(pass_slot),
+            inputs: mod_pipeline_gbuffers_inputs(pipeline.pack_binding.as_ref()),
+            default_blend: match pass_slot {
+                PackPassSlot::AfterOpaqueGbuffers | PackPassSlot::Shadow => None,
+                PackPassSlot::AfterSky
+                | PackPassSlot::AfterTranslucentGbuffers
+                | PackPassSlot::AfterWeather => pack_blend_for(pipeline.blend),
+                _ => None,
+            },
+        });
+    }
+    out
+}
+
+/// Owned runtime descriptors (`depth_targets`, `uniforms`, `pipelines`) for `PackPost`.
+pub fn pack_runtime_specs() -> sunrise_render_shaderpack::pack_post::OwnedModPackRuntime {
+    pack_runtime_specs_of(registered())
+}
+
+pub(crate) fn pack_runtime_specs_of(
+    pipelines: &[RenderPipeline],
+) -> sunrise_render_shaderpack::pack_post::OwnedModPackRuntime {
+    use sunrise_render_shaderpack::pack_post::{
+        ModDepthTargetDecl, ModPipelinePackSpec, ModUniformDecl, OwnedModPackRuntime,
+    };
+    let mut depth_targets = Vec::new();
+    let mut depth_target_ids: Vec<Identifier> = Vec::new();
+    let mut uniforms = Vec::new();
+    let mut seen_uniforms = HashSet::new();
+    let mut specs = Vec::new();
+
+    for (slot, pipeline) in pipelines.iter().enumerate() {
+        if let Some(binding) = &pipeline.pack_binding {
+            for uniform in &binding.frame_uniforms {
+                if seen_uniforms.insert(uniform.name.as_str()) {
+                    uniforms.push(ModUniformDecl {
+                        name: uniform.name.clone(),
+                        ty: mod_uniform_type(uniform.ty),
+                        previous_name: uniform.previous_name.clone(),
+                    });
+                }
+            }
+        }
+        let Some(pass_slot) = pipeline.effective_pack_slot() else {
+            continue;
+        };
+        if pipeline.effective_pack_programs().is_empty() {
+            continue;
+        }
+        let depth_target = pipeline
+            .pack_binding
+            .as_ref()
+            .and_then(|b| b.depth_target.as_ref())
+            .map(|target| {
+                if let Some(idx) = depth_target_ids.iter().position(|id| id == &target.id) {
+                    idx
+                } else {
+                    let idx = depth_targets.len();
+                    depth_target_ids.push(target.id.clone());
+                    depth_targets.push(ModDepthTargetDecl {
+                        label: target.id.to_string(),
+                        depth_samplers: target.depth_samplers.clone(),
+                        opaque_depth_samplers: target.opaque_depth_samplers.clone(),
+                    });
+                    idx
+                }
+            });
+        let depth_test = !matches!(pipeline.depth, WorldDepth::ThroughWalls);
+        let depth_write = depth_test
+            && (depth_target.is_some()
+                || matches!(
+                    pass_slot,
+                    PackPassSlot::AfterOpaqueGbuffers | PackPassSlot::Shadow
+                ));
+        specs.push(ModPipelinePackSpec {
+            slot,
+            pass_slot: mod_pass_slot(pass_slot),
+            depth_target,
+            depth_write,
+            depth_test,
+        });
+    }
+
+    OwnedModPackRuntime {
+        depth_targets,
+        uniforms,
+        pipelines: specs,
+    }
+}
+
+fn pack_uniform_map(pipelines: &[RenderPipeline]) -> HashMap<&str, PackUniformType> {
+    let mut map = HashMap::new();
+    for pipeline in pipelines {
+        let Some(binding) = &pipeline.pack_binding else {
+            continue;
+        };
+        for uniform in &binding.frame_uniforms {
+            map.entry(uniform.name.as_str()).or_insert(uniform.ty);
+        }
+    }
+    map
+}
+
+/// Look up the registered `'static` name and [`PackUniformType`] of a pack frame uniform in O(1)
+/// without per-frame allocation.
+pub fn lookup_pack_uniform(name: &str) -> Option<(&'static str, PackUniformType)> {
+    let pipelines = REGISTERED.get()?;
+    let table = PACK_UNIFORMS.get_or_init(|| pack_uniform_map(pipelines));
+    table.get_key_value(name).map(|(&k, &ty)| (k, ty))
+}
+
+/// Look up the declared [`PackUniformType`] of a registered pack frame uniform by name.
+pub fn lookup_pack_uniform_type(name: &str) -> Option<PackUniformType> {
+    lookup_pack_uniform(name).map(|(_, ty)| ty)
+}
+
+#[cfg(test)]
+pub(crate) fn lookup_pack_uniform_type_in(
+    pipelines: &[RenderPipeline],
+    name: &str,
+) -> Option<PackUniformType> {
+    pack_uniform_map(pipelines).get(name).copied()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1119,5 +1417,118 @@ fn pipeline_fragment(input: PipelineInput) -> vec4<f32> {
         .unwrap_err();
         assert!(bad_define.contains("mod_one"), "{bad_define}");
         assert!(bad_define.contains("VALID"), "{bad_define}");
+    }
+
+    #[test]
+    fn pack_runtime_helpers_deduplicate_targets_uniforms_and_defines() {
+        use mod_api::{
+            PackBinding, PackDepthTarget, PackGlslInput, PackUniformDecl, PipelineGeometryClass,
+        };
+        let shared_depth = PackDepthTarget::new(id("example:aux_depth"))
+            .depth_sampler("modDepthTex0")
+            .opaque_depth_sampler("modDepthTex1");
+        let opaque = RenderPipeline::new(
+            id("example:opaque"),
+            id("example:opaque"),
+            PipelineBlend::Translucent,
+            WorldDepth::Tested,
+        )
+        .geometry_class(PipelineGeometryClass::Terrain)
+        .pack_binding(
+            PackBinding::new()
+                .program("custom_terrain")
+                .define("EXAMPLE_EXT")
+                .define_value("EXAMPLE_LEVEL", "2")
+                .depth_target(shared_depth.clone())
+                .frame_uniform(
+                    PackUniformDecl::new("modProj", PackUniformType::Mat4)
+                        .with_previous("prevModProj"),
+                )
+                .glsl_binding(PackGlslInput::new(
+                    "color",
+                    "modColor",
+                    PackUniformType::Vec4,
+                )),
+        );
+        let water = RenderPipeline::new(
+            id("example:water"),
+            id("example:water"),
+            PipelineBlend::Translucent,
+            WorldDepth::Tested,
+        )
+        .geometry_class(PipelineGeometryClass::Translucent)
+        .pack_binding(
+            PackBinding::new()
+                .program("custom_water")
+                .define("EXAMPLE_EXT")
+                .depth_target(shared_depth)
+                .frame_uniform(PackUniformDecl::new("modNear", PackUniformType::Float)),
+        );
+        let uniform_only = RenderPipeline::new(
+            id("example:uniform_only"),
+            id("example:uniform_only"),
+            PipelineBlend::Translucent,
+            WorldDepth::Tested,
+        )
+        .pack_binding(
+            PackBinding::new()
+                .frame_uniform(PackUniformDecl::new("modFar", PackUniformType::Float)),
+        );
+        let plain = pipeline("example:plain", "example:plain");
+        let list = [opaque, water, uniform_only, plain];
+
+        let defines = pack_defines_of(&list);
+        assert_eq!(defines, vec![("EXAMPLE_EXT", ""), ("EXAMPLE_LEVEL", "2")]);
+
+        let reqs = pack_program_requests_of(&list);
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].slot, 0);
+        assert_eq!(reqs[0].programs[0], "custom_terrain");
+        assert_eq!(reqs[0].programs[1], "gbuffers_terrain");
+        assert_eq!(reqs[0].group, sunrise_shaders::Group::Gbuffers);
+        assert_eq!(reqs[0].default_blend, None);
+        assert!(
+            reqs[0]
+                .inputs
+                .attributes
+                .iter()
+                .any(|(k, v)| k == "modColor" && v == "mod_color")
+        );
+        assert_eq!(reqs[1].slot, 1);
+        assert_eq!(reqs[1].programs[0], "custom_water");
+        assert_eq!(reqs[1].programs[1], "gbuffers_water");
+        assert_eq!(reqs[1].group, sunrise_shaders::Group::Translucent);
+        assert_eq!(
+            reqs[1].default_blend,
+            Some(sunrise_shaders::TRANSLUCENT_BLEND)
+        );
+
+        let runtime = pack_runtime_specs_of(&list);
+        assert_eq!(runtime.depth_targets.len(), 1);
+        assert_eq!(
+            runtime.depth_targets[0].depth_samplers,
+            vec!["modDepthTex0"]
+        );
+        assert_eq!(
+            runtime.depth_targets[0].opaque_depth_samplers,
+            vec!["modDepthTex1"]
+        );
+        assert_eq!(runtime.uniforms.len(), 3);
+        assert!(runtime.uniforms.iter().any(|u| u.name == "modFar"));
+        assert_eq!(runtime.pipelines.len(), 2);
+        assert_eq!(runtime.pipelines[0].depth_target, Some(0));
+        assert_eq!(runtime.pipelines[1].depth_target, Some(0));
+        assert!(runtime.pipelines[0].depth_write);
+        assert!(runtime.pipelines[1].depth_write);
+
+        assert_eq!(
+            lookup_pack_uniform_type_in(&list, "modProj"),
+            Some(PackUniformType::Mat4)
+        );
+        assert_eq!(
+            lookup_pack_uniform_type_in(&list, "modNear"),
+            Some(PackUniformType::Float)
+        );
+        assert_eq!(lookup_pack_uniform_type_in(&list, "unknown"), None);
     }
 }

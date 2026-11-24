@@ -46,9 +46,9 @@ that need it. It verifies the signed sums and unpacks the slices into the tool's
 The Rust is the one `sdk.json` names: `rustup`'s, installed with `--profile minimal` when missing, or the `rustc` on
 `PATH` when it is exactly that version; otherwise `build` stops and says the version and both ways to get it.
 A mod with crates.io dependencies and no `Cargo.lock` gets one; `build --update-lock` resolves again, and is refused for
-a content mod. The compile
-is [`native-build`'s](08-native-build.md), in process, with registry crates approved (the mod's own `Cargo.toml`),
-for the `client` side. It prints `Built <library>` and the build log's path, and exits non-zero with the error on failure.
+a content mod. `build` uses the same compiler as [`native-build`](08-native-build.md), with registry crates approved
+(the mod's own `Cargo.toml`), for the `client` side. It prints `Built <library>` and the build log's path, and exits
+non-zero with the error on failure.
 
 In `build`, `run` and project `check`, repeat `--with <path>` for local mod projects or `.smod` files.
 Optional libraries must be supplied with `--with`. For required dependencies not supplied locally, the tool

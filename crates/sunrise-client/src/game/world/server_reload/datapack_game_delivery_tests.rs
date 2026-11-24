@@ -71,7 +71,9 @@ fn datapack_game_reload_delivers_only_successful_generations_and_disconnects_ref
         || {
             with_game(|game| {
                 game.load_world(request(root)).unwrap();
-                let offer = datapack_net::offer().unwrap();
+                let offer = datapack_net::offer()
+                    .unwrap()
+                    .expect("synchronized registry offer required");
                 let mut datapacks = datapack_net::Receiver::default();
                 let datapack_net::Step::Send(bytes) = datapack_net::server_step(true, Some(&offer))
                 else {

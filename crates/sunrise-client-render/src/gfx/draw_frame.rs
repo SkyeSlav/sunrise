@@ -60,7 +60,7 @@ impl Renderer {
         // through a pack dropped (Shader Options) or not loaded yet (`Renderer::new`),
         // so the next world's sections, which the level loading screen uploads, stay.
         if !frame.title {
-            self.follow_arena_storage();
+            self.follow_arena_layout();
             self.follow_translucent_layout();
             self.follow_packed_layout();
         }
@@ -143,8 +143,8 @@ impl Renderer {
         }
         self.update_lightmap(&mut encoder, frame);
         let views = self.views(frame);
-        let pose = frame.bob * frame.spin;
-        let transforms = views.frame_transforms(pose);
+        let pose = frame.posed_bob() * frame.spin;
+        let transforms = views.frame_transforms(pose, frame.view_transform);
         let view_proj = transforms.draw_view_proj;
         laps.lap("r_acquire");
         // TAA runs where the world post pass does, not under a shader pack's own.
@@ -191,7 +191,7 @@ impl Renderer {
         }
         let view = views.primary().view;
         // The hand's bob and view (`hand_globals`).
-        let hand_view = frame.bob * view;
+        let hand_view = frame.posed_bob() * view;
         let sun_angle = frame.sky.sun_angle.to_radians();
         // Celestial bodies rotate around the X axis; angle 0 = noon.
         let sun = Vec3::new(0.0, sun_angle.cos(), -sun_angle.sin());
@@ -358,7 +358,7 @@ impl Renderer {
             self.config.height.max(1) as f32,
             frame.depth_far,
         ));
-        let hand_view_proj = hand_projection * frame.bob * view;
+        let hand_view_proj = hand_projection * frame.posed_bob() * view;
         let hand_globals = Globals {
             view_proj: hand_view_proj.to_cols_array_2d(),
             ..globals
@@ -1588,7 +1588,8 @@ impl Renderer {
             let batch = hooks
                 .as_deref()
                 .map_or(frame.world_primitives, |hooks| hooks.prepared_primitives());
-            self.world_primitives
+            let prepared = self
+                .world_primitives
                 .as_mut()
                 .expect("world primitives")
                 .prepare(
@@ -1598,8 +1599,17 @@ impl Renderer {
                     jittered,
                     [self.config.width, self.config.height],
                     &self.entity_atlas,
-                )
-                || live_hooks
+                );
+            let bound = self
+                .pack_post
+                .as_ref()
+                .and_then(|(_, post)| post.as_ref())
+                .map_or(&[][..], |post| post.bound_mod_slots());
+            self.world_primitives
+                .as_mut()
+                .expect("world primitives")
+                .set_bound_mod_slots(bound);
+            prepared || live_hooks
         };
         // Polytone GPU particles with their own shader: the vanilla blocks as the block outline's
         // (a particle's ModelViewMat is the camera's rotation, its positions camera relative).
@@ -1677,6 +1687,33 @@ impl Renderer {
         // GameRenderer.useImprovedTransparency. A shader pack keeps its own
         // path.
         let oit_on = !frame.title && self.oit_active_for(self.improved_transparency);
+        // The posed models' vertices come first: the ordinary entities' draw takes them in.
+        let posed = if pack_skin {
+            0
+        } else {
+            skin.map_or(0, |s| s.vertices)
+        };
+        let outlined = skin.map_or(0, |s| s.outline_vertices);
+        let entity_quad_capacity = self.entity_quad_capacity();
+        let reserved_skin_quads = (posed / 4) as usize + (outlined / 4) as usize;
+        let combined_quad_budget = entity_quad_capacity
+            .max_quads()
+            .saturating_sub(reserved_skin_quads);
+        let reserved_halfway_hand_quads = if fg {
+            (frame.hand.len() / 4).min(combined_quad_budget)
+        } else {
+            0
+        };
+        let batch_quad_budget = combined_quad_budget.saturating_sub(reserved_halfway_hand_quads);
+        let batch_counts = self.entity_batch.update_within(
+            entities,
+            frame.additive,
+            frame.hand,
+            merged_see_through,
+            frame.shadow_only,
+            oit_on,
+            batch_quad_budget,
+        );
         let [
             entity_quads,
             text_quads,
@@ -1699,16 +1736,13 @@ impl Renderer {
             glint_only_quads,
             text_offset_solid_quads,
             text_normal_solid_quads,
-        ] = self.entity_batch.update(
-            entities,
-            frame.additive,
-            frame.hand,
-            merged_see_through,
-            oit_on,
-        );
-        self.entity_batch.append_shadow_only(frame.shadow_only);
+        ] = batch_counts.materials;
+        let entities = &entities[..batch_counts.admitted_entity_vertices];
+        let additive_quads = batch_counts.additive;
+        let hand_quads = batch_counts.hand;
+        let see_through_quads = batch_counts.see_through;
+        let shadow_only_quads = batch_counts.shadow_only;
         let ordinary_skin = skin.filter(|_| !pack_skin);
-        let posed = ordinary_skin.map_or(0, |s| s.vertices);
         self.entity_order.prepare(entities, ordinary_skin, oit_on);
         let entity_quads = entity_quads + posed / 4;
         let weather_quads = frame.weather.len() as u32 / 4;
@@ -1839,8 +1873,9 @@ impl Renderer {
         // Frame generation's made frame draws its own hand, halfway, after the others.
         let made_hand_vertex = (posed as usize + self.entity_batch.combined.len()) as i32;
         if fg {
+            let halfway_hand = &frame.hand[..hand_quads as usize * 4];
             self.frame_gen
-                .halfway_hand(frame.hand, hand_view, &mut self.entity_batch.combined);
+                .halfway_hand(halfway_hand, hand_view, &mut self.entity_batch.combined);
             self.frame_gen.track_entities(
                 &self.device,
                 &self.entity_atlas,
@@ -1850,18 +1885,13 @@ impl Renderer {
             );
         }
         let all_entities = &self.entity_batch.combined;
-        let hand_quads = (frame.hand.len() / 4) as u32;
-        let additive_quads = (frame.additive.len() / 4) as u32 - self.entity_batch.moved_additive;
-        let see_through_quads = (merged_see_through.len() / 4) as u32;
-        let shadow_only_quads = (frame.shadow_only.len() / 4) as u32;
         // Glowing entities' silhouettes posed on the GPU go last, past every
         // material (the outline pass draws them from there).
         let outline_base = posed + all_entities.len() as u32;
-        let outlined = skin.map_or(0, |s| s.outline_vertices);
         let entity_vertices = u64::from(outline_base) + u64::from(outlined);
         if entity_vertices > self.entity_capacity {
             self.entity_capacity =
-                entity_buffer_vertices(entity_vertices, self.device.limits().max_buffer_size);
+                entity_buffer_vertices(entity_vertices, entity_quad_capacity.vertex_bytes);
             self.entity_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Entity vertices"),
                 size: self.entity_capacity * std::mem::size_of::<Vertex>() as u64,
@@ -2123,8 +2153,9 @@ impl Renderer {
                 .max(outlined / 4)
                 .max(opaque_draw)
                 .max(translucent_draw);
-        if max_quads > self.index_quads {
-            self.index_quads = max_quads.next_power_of_two();
+        let needed_index_quads = max_quads.min(entity_quad_capacity.max_index_quads());
+        if needed_index_quads > self.index_quads {
+            self.index_quads = entity_quad_capacity.index_buffer_quads(needed_index_quads);
             self.indices = Self::quad_indices(&self.device, self.index_quads);
         }
         if let Some(b) = &frame.border {
@@ -3368,20 +3399,13 @@ impl Renderer {
                 pass.stage(self.own_timing.as_mut(), "additive entities");
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                let mut first = 0;
-                for run in frame.additive.as_chunks::<4>().0.chunk_by(|a, b| {
-                    (a[0].layer & 0xffff == DRAGON_RAYS_OVERLAY)
-                        == (b[0].layer & 0xffff == DRAGON_RAYS_OVERLAY)
-                }) {
-                    let rays = run[0][0].layer & 0xffff == DRAGON_RAYS_OVERLAY;
+                for (rays, indices) in classic_additive_runs(frame.additive, additive_quads) {
                     pass.set_pipeline(if rays {
                         &self.dragon_rays_pipeline
                     } else {
                         &self.additive_pipeline
                     });
-                    let end = first + run.len() as u32;
-                    pass.draw_indexed(first * 6..end * 6, (world_quads * 4) as i32, 0..1);
-                    first = end;
+                    pass.draw_indexed(indices, (world_quads * 4) as i32, 0..1);
                 }
                 if light_marks(self.output.frame.format, self.hdr.is_some()) {
                     // The dragon's eyes and death rays, marked as entities are.
@@ -4171,6 +4195,25 @@ pub(super) fn mark_layers(active: &mut [u64], layers: &[u16]) {
         let layer = usize::from(layer);
         active[layer / u64::BITS as usize] |= 1 << (layer % u64::BITS as usize);
     }
+}
+
+/// With OIT off, the additive vertices uploaded by `EntityBatch` are exactly this prefix.
+pub(super) fn classic_additive_runs(
+    additive: &[Vertex],
+    admitted_quads: u32,
+) -> impl Iterator<Item = (bool, std::ops::Range<u32>)> {
+    let rays = |quad: &[Vertex; 4]| quad[0].layer & 0xffff == DRAGON_RAYS_OVERLAY;
+    let mut first = 0;
+    additive[..admitted_quads as usize * 4]
+        .as_chunks::<4>()
+        .0
+        .chunk_by(move |a, b| rays(a) == rays(b))
+        .map(move |run| {
+            let end = first + run.len() as u32 * 6;
+            let indices = first..end;
+            first = end;
+            (rays(&run[0]), indices)
+        })
 }
 
 /// The vertices the entity buffer grows to for a frame of `vertices`: the next power of two,

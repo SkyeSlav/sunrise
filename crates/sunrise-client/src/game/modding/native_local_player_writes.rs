@@ -696,6 +696,10 @@ mod tests {
                     && player.entity() == event.entity
                 {
                     assert_eq!(
+                        event.entity.residency(host),
+                        mod_api::EntityResidency::InPlace
+                    );
+                    assert_eq!(
                         player.reset_fall_distance(host),
                         Err(mod_api::LevelWriteError::Unavailable),
                     );
@@ -874,6 +878,71 @@ mod tests {
             game.screen = crate::game::Screen::Dead;
             assert_eq!(game.move_local_player_by([1.0, 0.0, 0.0]), Ok(None));
             assert_eq!(game.player.as_ref().unwrap().position, before);
+        });
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn creative_give_adds_to_local_player_and_reports_remainder() {
+        use crate::game::native_entity_refs::tests::with_client_game;
+        use mod_api::{ClientHost, CreativeGiveError};
+        use sunrise_client::items::ItemStack;
+
+        with_client_game(|game| {
+            loaded_client(game);
+            let local = game.local_player().unwrap();
+            let diamond = mod_api::__private::item_key("minecraft:diamond").unwrap();
+            let diamonds = |count| mod_api::ItemStack::new(diamond, count).unwrap();
+            let stale = mod_api::__private::game::player_ref(
+                mod_api::EntityRef::new(
+                    mod_api::WorldEpoch::new(local.entity().epoch().get().wrapping_add(1)),
+                    local.entity().id(),
+                ),
+                local.uuid(),
+            );
+
+            game.creative = false;
+            {
+                let host: &mut dyn ClientHost = game;
+                assert_eq!(
+                    local.give_creative(host, &diamonds(3)),
+                    Err(CreativeGiveError::NotCreative)
+                );
+                assert_eq!(
+                    stale.give_creative(host, &diamonds(3)),
+                    Err(CreativeGiveError::Stale)
+                );
+            }
+
+            game.creative = true;
+            game.inventory.fill(None);
+            game.offhand = None;
+            {
+                let host: &mut dyn ClientHost = game;
+                assert_eq!(local.give_creative(host, &diamonds(3)), Ok(None));
+            }
+            assert_eq!(
+                game.inventory[game.selected]
+                    .as_ref()
+                    .map(|s| (s.item.as_ref(), s.count)),
+                Some(("minecraft:diamond", 3))
+            );
+
+            // Fill every slot with full stone stacks so nothing fits.
+            game.inventory
+                .fill(Some(ItemStack::new("minecraft:stone", 64)));
+            game.offhand = Some(ItemStack::new("minecraft:stone", 64));
+            let selected = game.selected;
+            assert_eq!(
+                local.give_creative(game, &diamonds(1)),
+                Ok(Some(diamonds(1)))
+            );
+            game.inventory[selected] = Some(ItemStack::new("minecraft:diamond", 63));
+            assert_eq!(
+                local.give_creative(game, &diamonds(2)),
+                Ok(Some(diamonds(1)))
+            );
+            assert_eq!(game.inventory[selected].as_ref().unwrap().count, 64);
         });
     }
 }

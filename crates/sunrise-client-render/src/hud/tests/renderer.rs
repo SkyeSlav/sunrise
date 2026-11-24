@@ -262,7 +262,6 @@ fn blur_boundary_splits_blend_runs_without_losing_or_repeating_vertices() {
         let before = batch.runs_in(0..split);
         let after = batch.runs_in(split..30);
         let actual: Vec<_> = before
-            .into_iter()
             .chain(after)
             .flat_map(|(range, blend)| range.map(move |v| (v, blend)))
             .collect();

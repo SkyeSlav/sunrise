@@ -66,7 +66,7 @@ pub use sunrise_core::prepared_profile::SCHEMA;
 pub const OUTPUT_VERSION: u32 = 9;
 
 /// Independent output pin for the dedicated server profile.
-pub const SERVER_OUTPUT_VERSION: u32 = 1;
+pub const SERVER_OUTPUT_VERSION: u32 = 2;
 
 // The checked literals above remain readable by older launchers and output-history tooling.
 const _: () = {

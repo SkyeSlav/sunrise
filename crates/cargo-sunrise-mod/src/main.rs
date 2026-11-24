@@ -1607,44 +1607,13 @@ served_by = \"horizon_java\"
         std::fs::write(root.join(MANIFEST), manifest_text).unwrap();
         // Item references a host-declared crafting remainder in a served namespace, and a recipe
         // references a host-declared item in the same namespace.
+        let recipe = root.join("data/runes/recipe/host_bowl.json");
         std::fs::write(
-            root.join("data/runes/sunrise/item/stew.json"),
-            r#"{"template":"minecraft:mushroom_stew","crafting_remainder":"runes_extra:host_bowl"}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("data/runes/recipe/host_bowl.json"),
+            &recipe,
             r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:oak_planks"],"result":{"id":"runes_extra:host_bowl"}}"#,
         )
         .unwrap();
-        let manifest = Package::read(&root).unwrap().manifest;
-        let smod = pack_into(
-            &root,
-            &PackageOutput::in_project(&root).unwrap(),
-            &manifest,
-            None,
-            None,
-        )
-        .unwrap();
-        let report = check::inspect(&smod, check::kind_of(&smod).unwrap()).unwrap();
-        assert_eq!(report.facts.id.as_deref(), Some("runes"));
-
-        // Invalid syntax, minecraft:air, foreign namespace, or unserved undeclared remainder still fail.
-        for (label, manifest_override, remainder) in [
-            ("air", None, "minecraft:air"),
-            ("bad-id", None, "runes:Bad"),
-            ("foreign", None, "other:bowl"),
-            (
-                "unserved",
-                Some(manifest_text.replace("served_by = \"horizon_java\"\n", "")),
-                "runes_extra:host_bowl",
-            ),
-        ] {
-            if let Some(text) = &manifest_override {
-                std::fs::write(root.join(MANIFEST), text).unwrap();
-            } else {
-                std::fs::write(root.join(MANIFEST), manifest_text).unwrap();
-            }
+        let stew = |remainder: &str| {
             std::fs::write(
                 root.join("data/runes/sunrise/item/stew.json"),
                 format!(
@@ -1652,19 +1621,60 @@ served_by = \"horizon_java\"
                 ),
             )
             .unwrap();
+        };
+        let pack = || {
             let manifest = Package::read(&root).unwrap().manifest;
+            pack_into(
+                &root,
+                &PackageOutput::in_project(&root).unwrap(),
+                &manifest,
+                None,
+                None,
+            )
+        };
+        let check_remainder = |remainder: &str| {
+            stew(remainder);
+            let smod = pack().unwrap();
+            let report = check::inspect(&smod, check::kind_of(&smod).unwrap()).unwrap();
+            assert_eq!(report.facts.id.as_deref(), Some("runes"));
+            let package = Package::read(&smod).unwrap();
+            let content = Content::read(&smod, &package.manifest).unwrap();
+            assert_eq!(
+                content.items[0].crafting_remainder.as_deref(),
+                Some(remainder)
+            );
+        };
+        check_remainder("runes_extra:host_bowl");
+        check_remainder("other:bowl");
+
+        // Syntax and the sentinel value still fail at the package boundary.
+        for (remainder, reason) in [
+            ("minecraft:air", "is no remainder"),
+            ("runes:Bad", "must be a namespaced item id"),
+        ] {
+            stew(remainder);
+            let error = pack().unwrap_err();
             assert!(
-                pack_into(
-                    &root,
-                    &PackageOutput::in_project(&root).unwrap(),
-                    &manifest,
-                    None,
-                    None,
-                )
-                .is_err(),
-                "{label} ({remainder}) should fail pack_into"
+                error.contains("crafting_remainder") && error.contains(reason),
+                "{error}"
             );
         }
+
+        // Without a host, the recipe checker can still flag an undeclared result in the
+        // package's own namespace. A crafting remainder instead resolves at game load.
+        std::fs::write(
+            root.join(MANIFEST),
+            manifest_text.replace("served_by = \"horizon_java\"\n", ""),
+        )
+        .unwrap();
+        stew("runes_extra:host_bowl");
+        let error = pack().unwrap_err();
+        assert!(
+            error.contains("host_bowl.json") && error.contains("runes_extra:host_bowl"),
+            "{error}"
+        );
+        std::fs::remove_file(recipe).unwrap();
+        check_remainder("runes_extra:host_bowl");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

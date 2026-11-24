@@ -27,7 +27,7 @@ Each call replaces the last set, and an empty slice clears it. A change of level
 on each side; a mod that still wants boxes after a respawn sets them again (the client's `client_player_clone` hook is
 the moment). Nothing is saved. Only players keep a set.
 
-A call is refused with a `CollisionExclusionsError`, and the set there was stays: `TooMany` for more than 64 boxes,
+A call is refused with a `CollisionExclusionsError`, and the set there was stays:
 `NotFinite` for a value that is NaN or infinite, `Inverted` for a box whose minimum is above its maximum on an axis,
 `NotAPlayer` for another entity, and `Stale` for a stale handle or a client with no player of its own.
 

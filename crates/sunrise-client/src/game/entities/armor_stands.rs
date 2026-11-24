@@ -13,7 +13,13 @@ use sunrise_client::{
     items::ItemStack,
     join_seq::JoinSeq,
     mesher::Vertex,
-    mobs::{Mob, Part, Species, Who, anim::Poses},
+    mobs::{
+        Mob, Part, Species, Who,
+        anim::Poses,
+        finalize::{self, EquipmentRead},
+        render::{WornLayer, WornModel},
+        skin::Paint,
+    },
     trims::{TrimOverride, TrimRegistry, TrimTexture},
 };
 use sunrise_core::{
@@ -166,7 +172,7 @@ pub(super) struct ArmorStandAssets {
     /// (slot model suffix, small) -> model.
     pub layers: HashMap<(&'static str, bool), Arc<Part>>,
     /// The player's armour models by slot (helmet, chestplate, leggings, boots).
-    pub player: HashMap<&'static str, Part>,
+    pub player: HashMap<&'static str, Arc<Part>>,
     /// Asset id -> layer kind -> ordered textures with dyeability and optional undyed colour.
     pub equipment: super::equipment_piece::EquipmentAssets,
     pub extensions: super::client_item_extensions::ArmorExtensions,
@@ -186,7 +192,7 @@ impl ArmorStandAssets {
         let mut player = HashMap::new();
         for slot in ["helmet", "chestplate", "leggings", "boots"] {
             if let Some(part) = load(&format!("minecraft:player#{slot}")) {
-                player.insert(slot, part);
+                player.insert(slot, Arc::new(part));
             }
             for (small, model) in [(false, "armor_stand"), (true, "armor_stand_small")] {
                 if let Some(part) = load(&format!("minecraft:{model}#{slot}")) {
@@ -199,7 +205,7 @@ impl ArmorStandAssets {
             ("minecraft:elytra_baby#main", "elytra_baby"),
         ] {
             if let Some(part) = load(key) {
-                player.insert(name, part);
+                player.insert(name, Arc::new(part));
             }
         }
         let mut equipment = HashMap::new();
@@ -281,16 +287,14 @@ impl ArmorStandAssets {
         self.trims = fresh.trims;
         self.root = fresh.root;
     }
-    /// `TrimTextureKey`: the trim texture of `stack` on its humanoid
-    /// layer (`humanoid` or `humanoid_leggings`), if it has a trim.
+    /// `TrimTextureKey`: the trim texture on the given humanoid layer.
     pub(super) fn trim_texture(
         &self,
         asset: &str,
         kind: &str,
-        stack: &ItemStack,
+        trim: &sunrise_client::item_data::Trim,
     ) -> Option<TrimTexture> {
-        let (material, pattern) =
-            sunrise_client::item_data::trim::named(stack.extra.as_ref()?.trim.as_ref()?)?;
+        let (material, pattern) = sunrise_client::item_data::trim::named(trim)?;
         let overrides = self
             .trim_overrides
             .get(asset)
@@ -309,35 +313,25 @@ impl Game<'_> {
     }
     /// `HumanoidArmorLayer` for the player: (model, texture rect, colour,
     /// overlay) of each worn piece, head to feet.
-    pub(super) fn player_armor_layers(&self) -> Vec<(&Part, [f32; 4], u32, u32, bool)> {
+    pub(super) fn player_armor_layers(&self) -> Vec<WornLayer<'_>> {
         self.stack_armor_layers(&self.armor)
     }
     /// `HumanoidArmorLayer` for worn stacks (head to feet), trims included.
-    pub(super) fn stack_armor_layers(
-        &self,
-        armor: &[Option<ItemStack>; 4],
-    ) -> Vec<(&Part, [f32; 4], u32, u32, bool)> {
+    pub(super) fn stack_armor_layers(&self, armor: &[Option<ItemStack>; 4]) -> Vec<WornLayer<'_>> {
         self.armor_layers(
             armor
                 .each_ref()
-                .map(|s| s.as_ref().map(|s| (&*s.item, Some(s)))),
+                .map(|s| s.as_ref().map(EquipmentRead::resident)),
         )
     }
     /// `HumanoidArmorLayer` for another player's model: the armour it wears
     /// (`extra.equipment`, head to feet).
-    pub(super) fn worn_armor_layers(&self, m: &Mob) -> Vec<(&Part, [f32; 4], u32, u32, bool)> {
-        let e = &m.extra;
-        self.armor_layers(
-            sunrise_items::equipment::ARMOR
-                .map(|slot| e.slot_stack(slot).map(|stack| (&*stack.item, Some(stack)))),
-        )
+    pub(super) fn worn_armor_layers(&self, m: &Mob) -> Vec<WornLayer<'_>> {
+        use sunrise_core::equipment_slot::EquipmentSlot::{Chest, Feet, Head, Legs};
+        self.armor_layers([Head, Chest, Legs, Feet].map(|slot| finalize::equipment_slot(m, slot)))
     }
-    /// The layers of the armour items `worn` (with their stacks when known,
-    /// for trims and CIT armour rules), head to feet.
-    fn armor_layers(
-        &self,
-        worn: [Option<(&str, Option<&ItemStack>)>; 4],
-    ) -> Vec<(&Part, [f32; 4], u32, u32, bool)> {
+    /// The layers of the armour items `worn`, head to feet.
+    fn armor_layers(&self, worn: [Option<EquipmentRead<'_>>; 4]) -> Vec<WornLayer<'_>> {
         let assets = &self.armor_stand_assets;
         let mut out = Vec::new();
         for (item, (layer, slot)) in worn.into_iter().zip([
@@ -346,21 +340,24 @@ impl Game<'_> {
             ("leggings", "legs"),
             ("boots", "feet"),
         ]) {
-            let Some((item, stack)) = item else {
+            let Some(stack) = item else {
                 continue;
             };
-            let Some(piece) = self.equipment_piece(item, stack, slot, layer == "leggings", false)
-            else {
+            let Some(piece) = self.equipment_piece(&stack, slot, layer == "leggings", false) else {
                 continue;
             };
             let Some(part) = assets.player.get(layer) else {
                 continue;
             };
-            for material in
-                self.equipment_materials(&piece, stack, super::equipment_piece::EquipmentPass::Draw)
-            {
+            for material in self.equipment_materials(
+                &piece,
+                &stack,
+                super::equipment_piece::EquipmentPass::Draw,
+            ) {
                 out.push((
-                    material.model.map_or(part, |model| &**model),
+                    material.model.map_or(WornModel::Vanilla(part), |model| {
+                        WornModel::Override(model, piece.slot)
+                    }),
                     material.binding.uv,
                     material.color,
                     material.overlay,
@@ -379,24 +376,26 @@ impl Game<'_> {
         let items = self.items();
         let mut wanted: Vec<TrimTexture> = Vec::new();
         let guests = self.lan.iter().flat_map(|host| host.hub.guests.iter());
-        let stacks =
-            self.armor
-                .iter()
-                .chain(guests.flat_map(|g| g.armor.iter()))
-                .chain(self.mobs.iter().flat_map(|m| {
-                    sunrise_items::equipment::ARMOR.map(|slot| &m.extra.equipment[slot])
-                }))
-                .zip(
-                    ["helmet", "chestplate", "leggings", "boots"]
-                        .into_iter()
-                        .cycle(),
-                )
-                .chain(self.armor_stands.iter().flat_map(|a| {
-                    [5usize, 4, 3, 2]
-                        .map(|slot| &a.equipment[slot])
-                        .into_iter()
-                        .zip(["helmet", "chestplate", "leggings", "boots"])
-                }));
+        use sunrise_core::equipment_slot::EquipmentSlot::{Chest, Feet, Head, Legs};
+        let layers = ["helmet", "chestplate", "leggings", "boots"];
+        let stacks = self
+            .armor
+            .iter()
+            .chain(guests.flat_map(|g| g.armor.iter()))
+            .map(|s| s.as_ref().map(EquipmentRead::resident))
+            .zip(layers.into_iter().cycle())
+            .chain(self.mobs.iter().flat_map(|m| {
+                [Head, Chest, Legs, Feet]
+                    .map(|slot| finalize::equipment_slot(m, slot))
+                    .into_iter()
+                    .zip(layers)
+            }))
+            .chain(self.armor_stands.iter().flat_map(|a| {
+                [5usize, 4, 3, 2]
+                    .map(|slot| a.equipment[slot].as_ref().map(EquipmentRead::resident))
+                    .into_iter()
+                    .zip(layers)
+            }));
         // The smithing screen's preview stand wears the result slot's item.
         let preview = self
             .station
@@ -412,15 +411,17 @@ impl Game<'_> {
                     5 => "helmet",
                     _ => "",
                 };
-                (Some(stack), layer)
+                (Some(EquipmentRead::resident(stack)), layer)
             });
-        let stacks = stacks.map(|(s, l)| (s.as_ref(), l)).chain(preview);
-        for (stack, layer) in stacks {
-            let Some(stack) = stack.filter(|s| s.extra.is_some()) else {
+        for (stack, layer) in stacks.chain(preview) {
+            let Some(stack) = stack else {
+                continue;
+            };
+            let Some(trim) = stack.trim() else {
                 continue;
             };
             let Some(asset) =
-                sunrise_client::item_sync::equippable(stack, items).and_then(|e| e.asset_id)
+                sunrise_client::item_sync::equippable(stack.base(), items).and_then(|e| e.asset_id)
             else {
                 continue;
             };
@@ -429,7 +430,7 @@ impl Game<'_> {
             } else {
                 "humanoid"
             };
-            if let Some(t) = assets.trim_texture(&asset, kind, stack)
+            if let Some(t) = assets.trim_texture(&asset, kind, trim)
                 && !wanted.contains(&t)
             {
                 wanted.push(t);
@@ -450,7 +451,7 @@ impl Game<'_> {
         &self,
         hit: &super::Hit,
         stack: &ItemStack,
-    ) -> Option<([i32; 3], ArmorStand)> {
+    ) -> Option<([i32; 3], ArmorStand, [i32; 4])> {
         if hit.face == [0, -1, 0] {
             return None;
         }
@@ -471,7 +472,7 @@ impl Game<'_> {
         );
         let yaw =
             (((self.yaw - 180.0 + 180.0).rem_euclid(360.0) - 180.0 + 22.5) / 45.0).floor() * 45.0;
-        let mut stand = ArmorStand::new(self.next_entity + 1, foot, yaw);
+        let (mut stand, uuid) = ArmorStand::new_with_uuid(self.next_entity + 1, foot, yaw);
         // Entity.applyImplicitComponents: a name from an anvil names the stand.
         if let Some(name) = stack.custom_name() {
             stand.custom_name = Some(sunrise_client::text::Text::literal(name));
@@ -497,13 +498,13 @@ impl Game<'_> {
         {
             return None;
         }
-        Some((pos, stand))
+        Some((pos, stand, uuid))
     }
     pub(super) fn place_armor_stand(&mut self, hit: &super::Hit, stack: &ItemStack) -> bool {
         if &*stack.item != "minecraft:armor_stand" {
             return false;
         }
-        let Some((pos, mut stand)) = self.armor_stand_spawn(hit, stack) else {
+        let Some((pos, mut stand, uuid)) = self.armor_stand_spawn(hit, stack) else {
             return false;
         };
         // EntityType.create(.., tryMoveDown, movedUp): the new stand falls onto what is under it,
@@ -523,6 +524,7 @@ impl Game<'_> {
         );
         if let Some(mut loaded) = sunrise_client::entity_nbt::armor_stand_from_nbt(&raw, stand.id) {
             loaded.first_tick = stand.first_tick;
+            loaded.random = stand.random;
             loaded.yaw = stand.yaw;
             loaded.body_yaw = stand.body_yaw;
             loaded.previous_yaw = stand.previous_yaw;
@@ -540,9 +542,8 @@ impl Game<'_> {
         // ArmorStandItem.useOn turns the stand to face the player.
         self.world.random.next_float();
         self.next_entity += 1;
-        let (_, uuid) = sunrise_client::mobs::living_random();
         self.persist.uuids.insert(stand.id, uuid);
-        self.audio.play(
+        self.play_audio(
             "minecraft:entity.armor_stand.place",
             Some([foot.x, foot.y, foot.z]),
             0.75,
@@ -787,7 +788,8 @@ impl Game<'_> {
         let sweep = self.sweep_before_hit("minecraft:armor_stand", crit);
         let hurt = self.hit_armor_stand(i, |g, area, id| {
             let knockback = if admitted {
-                g.extra_knockback("minecraft:armor_stand", scale).0
+                g.extra_knockback("minecraft:armor_stand", id, scale, None)
+                    .0
             } else {
                 0.0
             };
@@ -866,7 +868,7 @@ impl Game<'_> {
         let centre = [at[0], at[1] + height * (2.0 / 3.0), at[2]];
         let spread = [width / 4.0, height / 4.0, width / 4.0];
         self.particles
-            .send_particles(&options, centre, spread, 0.05, 10);
+            .send_particles(&options, centre, spread, 0.05, 10, None);
         self.lan_level_particles(&options, centre, spread, 0.05, 10, Some(state));
     }
     /// `ArmorStand.hurtServer` for a player's attack (also a sweep's): a
@@ -921,8 +923,7 @@ impl Game<'_> {
             let id = self.armor_stands[i].id;
             let (width, height) = stand_box(&self.armor_stands[i]);
             if !self.remove_armor_stand_after(id, |game| {
-                game.audio
-                    .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
+                game.play_audio("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
                 game.show_breaking_particles(at, f64::from(width), f64::from(height));
             }) {
                 return false;
@@ -933,8 +934,7 @@ impl Game<'_> {
         }
         if time - self.armor_stands[i].last_hit > 5 && !always_kills {
             // First hit: entity event 32, the wobble and the hit sound, then entity_damage.
-            self.audio
-                .play("minecraft:entity.armor_stand.hit", Some(at), 0.3, 1.0);
+            self.play_audio("minecraft:entity.armor_stand.hit", Some(at), 0.3, 1.0);
             self.stand_game_event("minecraft:entity_damage", at, by);
             self.armor_stands[i].last_hit = time;
             return true;
@@ -951,8 +951,7 @@ impl Game<'_> {
                     .set_loot_name("minecraft:custom_name", &name.component());
             }
             game.spawn_item(stand, center, [0.0; 3], 10);
-            game.audio
-                .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
+            game.play_audio("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
             game.armor_stand_death_drops(&a, damage_type, causing_id);
             for stack in a.equipment.into_iter().flatten() {
                 let r = &mut game.world.random;
@@ -1055,6 +1054,15 @@ impl Game<'_> {
                 self.armor_stands[i].previous_body_yaw = self.armor_stands[i].previous_yaw;
                 continue;
             }
+            let id = self.armor_stands[i].id;
+            self.armor_stands[i].enchantment_tick =
+                self.armor_stands[i].enchantment_tick.wrapping_add(1);
+            if !self.armor_stands[i].equipment.is_empty() {
+                self.tick_equipment_enchantments(super::commands::Target::Stand(id), id);
+            }
+            let Some(i) = self.armor_stands.locate(join) else {
+                continue;
+            };
             let target_dead = self.armor_stands[i]
                 .last_hurt_mob
                 .is_some_and(|(id, _)| !self.last_hurt_target_alive(id));
@@ -1600,8 +1608,7 @@ impl Game<'_> {
         let id = a.id;
         let at = a.position.components();
         let removed = self.remove_armor_stand_after(id, |game| {
-            game.audio
-                .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
+            game.play_audio("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
             game.armor_stand_death_drops(&a, damage_type, causing);
             let (pos, drops) = broken_armor_stand_equipment(a);
             for stack in drops {
@@ -1764,7 +1771,6 @@ impl Game<'_> {
         damage_type: &str,
         causing: Option<super::commands::Target>,
     ) -> bool {
-        use super::commands::Target;
         let mut checks = Vec::new();
         let equipment = &self.armor_stands[i].equipment;
         for (stack, slot) in equipment.iter().zip(ArmorStand::SLOTS) {
@@ -1789,30 +1795,12 @@ impl Game<'_> {
         if checks.is_empty() {
             return false;
         }
-        let attacker = match causing {
-            Some(Target::Player | Target::Guest(_)) => Some("minecraft:player".to_owned()),
-            Some(Target::Mob(m_id)) => self
-                .mobs
-                .iter()
-                .find(|m| m.id == m_id)
-                .map(|m| m.kind.id.clone()),
-            Some(Target::Stand(_)) => Some("minecraft:armor_stand".to_owned()),
-            _ => None,
-        };
-        let canonical = if damage_type.contains(':') {
-            damage_type.to_owned()
-        } else {
-            format!("minecraft:{damage_type}")
-        };
-        let ctx = sunrise_client::enchant::EffectContext {
-            items: Some(self.res.items()),
-            damage_type: Some(&canonical),
-            is_direct: attacker.is_some(),
-            this: Some("minecraft:armor_stand"),
-            attacker: attacker.as_deref(),
-            direct_attacker: attacker.as_deref(),
-            ..Default::default()
-        };
+        let attack = self.current_attack();
+        let causing = causing
+            .and_then(|target| self.network_entity_id(target))
+            .unwrap_or(0);
+        let source = attack.player_source(damage_type, causing);
+        let ctx = attack.enchantment_context(source, "minecraft:armor_stand");
         let ench = &self.res.stations().enchantments;
         let rng = &mut self.world.random;
         for (req, level) in checks {
@@ -2083,9 +2071,8 @@ impl Game<'_> {
             let Some(stack) = &a.equipment[slot] else {
                 continue;
             };
-            let Some(piece) =
-                self.equipment_piece(&stack.item, Some(stack), worn, layer == "leggings", false)
-            else {
+            let stack = EquipmentRead::resident(stack);
+            let Some(piece) = self.equipment_piece(&stack, worn, layer == "leggings", false) else {
                 continue;
             };
             let Some(part) = assets.layers.get(&(layer, a.small)) else {
@@ -2096,23 +2083,27 @@ impl Game<'_> {
             self.setup_armor_stand_pose(a, partial, &mut layer_poses);
             for material in self.equipment_materials(
                 &piece,
-                Some(stack),
+                &stack,
                 super::equipment_piece::EquipmentPass::Draw,
             ) {
-                put(
+                let model = material.model.map_or(WornModel::Vanilla(part), |model| {
+                    WornModel::Override(model, piece.slot)
+                });
+                model.submit(
                     &mut skin,
-                    material.model.unwrap_or(part),
                     base,
                     &layer_poses,
-                    material.binding.uv,
-                    0.0,
-                    material.color,
-                    if material.glows {
-                        sunrise_client::mobs::render::FULL_BRIGHT
-                    } else {
-                        packed
+                    Paint {
+                        uv: material.binding.uv,
+                        scroll: 0.0,
+                        color: material.color,
+                        light: if material.glows {
+                            sunrise_client::mobs::render::FULL_BRIGHT
+                        } else {
+                            packed
+                        },
+                        overlay: material.overlay,
                     },
-                    material.overlay,
                     out,
                 );
             }

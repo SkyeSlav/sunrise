@@ -436,7 +436,9 @@ impl GuiCanvas for GameGuiCanvas<'_, '_> {
             dst,
             color: argb,
         };
-        self.paint(|batch, _| quad.paint_blit(batch, uv, src, tex, blend))
+        self.paint(|batch, atlas| {
+            quad.paint_blit(batch, atlas.blit_atlas_page(texture), uv, src, tex, blend)
+        })
     }
 
     fn texture(

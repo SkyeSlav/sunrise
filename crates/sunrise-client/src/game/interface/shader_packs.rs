@@ -436,14 +436,10 @@ impl Game<'_> {
                                 .collect(),
                         );
                         let folder = dimension_folder_named(&pack, self.dim.id(), dimension);
-                        // Its terrain programs read the section arena's pages where they still
-                        // fit the vertex stage with them.
+                        // Its terrain programs read the section arena's pages, or else the
+                        // normal stream, where they still fit the vertex stage with them.
                         renderer.set_pack_terrain_bindings(
-                            sunrise_client::gfx::pack_atlas::TerrainBindings::of(
-                                &pack,
-                                &properties,
-                                &folder,
-                            ),
+                            sunrise_client::gfx::pack_atlas::TerrainBindings::of(&properties),
                         );
                         let inputs = renderer.pack_inputs();
                         let mut post = load_post(&pack, &folder, &properties, &macros, &inputs);
@@ -1697,6 +1693,7 @@ mod player_status_tests {
                 .push(crate::game::creatures::NativeSound {
                     dimension: "minecraft:overworld",
                     sound: "minecraft:entity.pig.ambient".into(),
+                    inline_range: None,
                     at,
                     source: 0,
                     volume: 1.0,

@@ -42,6 +42,9 @@ and can keep that record from being saved.
 `#[listener(priority = 100)]` runs before default-priority listeners. Higher `i32` priorities run
 first; the default is zero and ties keep dependency order. This order is fixed at installation.
 
+Generated declaration order only orders the generated `Hooks` items and local `HookId` discriminants; it does not
+control which mod runs first.
+
 A listener normally skips an already-cancelled event. Add `receive_cancelled` to inspect it; on
 hooks whose contract permits clearing cancellation, setting `event.cancelled = false` and returning
 `Flow::Continue` lets later listeners and the vanilla action proceed. Some hooks keep an accepted
@@ -60,6 +63,7 @@ what you may read or edit; the struct is `#[non_exhaustive]`, so use `..` when d
 scalar fields are written back after dispatch, even after cancellation; mutable lists and other
 compound fields are borrowed. Later listeners see accepted edits. When an edited stack-list output
 is refused, that field keeps its preceding accepted value; valid scalar edits and cancellation still apply.
+ A refused replacement does not win a first-answer hook.
 
 Some events lend the live subject instead of handing out a snapshot. Borrow the view only while
 using it; a later borrow can fail if the subject is no longer resident. For journaled writes through
@@ -71,6 +75,26 @@ Hook and Part methods use `&self` and require `Send + Sync`. The same mod instan
 logical sides in single player. A host write may also call another hook of the same mod before it
 returns. Release your locks before calling the host: otherwise a re-entrant listener can deadlock.
 Use an [attachment](attachments.md) for data that belongs to one game object.
+
+## Weather parameters and strengths
+
+`LevelRef::set_weather(host, clear_ticks, weather_ticks, raining, thundering)` takes signed
+timers. Any resident server level can name the origin, even when parked, but the write applies
+to the whole server. `Hooks::weather_change` hears it once, just as it hears an explicit
+`/weather` write or a GameTest weather parameter write. GameTest saves the batch level's
+actual weather type before setup and proposes that type again on teardown. Version 2 of
+`WeatherChangeEvent` includes the origin dimension, both requested tick values and both
+flags. Each mod gets its own copy of those inputs.
+
+Return `Flow::Cancel` or set `event.cancelled` to veto the whole proposal. The setter returns
+`false` on a veto or an invalid handle; `/weather` reports failure on a veto. Other Host writes
+from the listener still stand. A nested weather write can proceed without calling listeners
+already handling `weather_change` on that thread.
+
+For an immediate change in strength instead, use `LevelRef::set_weather_levels(host, rain, thunder)`
+on the addressed resident level, including a parked one. Both interpolants clamp to the 0–1
+interval, including infinities; NaN is refused. Strengths belong to each level. Neither strength
+changes nor the natural weather cycle fires `weather_change`.
 
 ## Which thread runs a hook
 
@@ -115,8 +139,8 @@ Reads such as collision, light, signals and block entities use the owning side's
 They do not load chunks. Light or a vanilla air result is not proof of residency; check `is_loaded`
 when you need a resident position. Treat `None` as unavailable where the reference says a view
 cannot answer. A client's placement or shape query must not treat unavailable server-only data
-as a server answer. Read-only slot snapshots don't open pending loot; an engine comparator read
-through a `LevelRandomHost` can. For concrete examples see
+as a server answer. Read-only slot reads (`LevelHost::with_container_stack`, which lends an
+`ItemStackView`) don't open pending loot; an engine comparator read through a `LevelRandomHost` can. For concrete examples see
 [Camera and collision reads](../how-to/client/camera-and-collision-reads.md),
 [Block-state facts](../how-to/world/block-state-facts.md) and [Capabilities](capabilities.md).
 
@@ -125,6 +149,17 @@ from the same closure. To save from a hook, request a save at the next settled t
 rather than saving synchronously while a subject can be borrowed. Use the supplied draw context
 for drawing: it is scoped to the render call, not a way to reach the live renderer. See
 [Model drawing](../how-to/client/model-drawing.md).
+
+## Reading resident collections
+
+A `visit_*` read lends resident entries to a callback instead of building a list.
+Return `ControlFlow::Continue(())` to keep reading or `ControlFlow::Break(())` to stop.
+A completed visit may have had no entries; a typed refusal means the read could not
+run at all. Copy a borrowed name or row field only if it needs to outlive the callback.
+You can make other shared reads inside the visitor. To write through the same host,
+retain only the handles or values you need, then write after the visit returns.
+Single-value reads such as `level.block_property(host, pos, key)` lend the result
+directly: the property value borrows the host, not the lookup key.
 
 ## After a hook that can change the world
 

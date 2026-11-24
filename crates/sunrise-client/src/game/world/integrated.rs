@@ -350,6 +350,9 @@ pub(super) struct Serving {
     /// Open to LAN or closed from inside a player's command, while the hub
     /// is out of its place: applied after the tick.
     pending: Option<Publish>,
+    /// `IntegratedServer.previousSimulationDistance`: the last owner option applied,
+    /// independent of the live distance a mod can write to the player list.
+    previous_simulation_distance: i32,
     /// Where the load focus is and how far the player's chunks are.
     load: LoadPhase,
 }
@@ -382,9 +385,15 @@ impl Serving {
             tasks,
             owner: 1,
             pending: None,
+            previous_simulation_distance: 0,
             load: LoadPhase::default(),
         }
     }
+    /// `IntegratedServer.getScaledTrackingDistance` reads the owner's current option.
+    pub(super) fn entity_distance(&self) -> f64 {
+        f64::from_bits(self.flags.entity_distance.load(Ordering::Relaxed))
+    }
+
     /// Send reports only to this server's owner, not to LAN clients.
     pub(super) fn reports(&self) -> &Reports {
         &self.flags.reports
@@ -402,7 +411,7 @@ enum Publish {
 
 /// What the server thread hands the window once the world is open: its end
 /// of the connection and the world's name, or why it failed.
-type Ready = std::result::Result<(Pipe, String), String>;
+type Ready = std::result::Result<(Pipe, String, Arc<sunrise_client::biome::Biomes>), String>;
 
 /// An integrated server loading its world: the window keeps drawing its
 /// loading screen and joins once the server is ready, as vanilla's client
@@ -536,21 +545,6 @@ impl Game<'_> {
         options.server = None;
         options.world = None;
         self.join_world_rest()?;
-        // The window plays against the world's own biome table (its chunks
-        // carry the packs' ids past the built-in list, `set_registries`
-        // names them through it), as the server thread's copy does.
-        let world = std::env::current_dir()?.join("saves").join(folder);
-        let enabled_features = sunrise_client::save::Level::read(&world)
-            .map(|l| l.enabled_features)
-            .unwrap_or_default();
-        self.world_biomes = Some(super::world_loading::packed_biomes(
-            &world,
-            &self.options.resources,
-            self.res.biomes(),
-            &enabled_features,
-            &self.pack.additional_data,
-        ));
-        self.world_biomes_base = self.world_biomes.clone();
         let (res, pack, settings) = (self.res.clone(), self.pack.clone(), self.settings.clone());
         sunrise_client::parallel::set_setting(settings.sunrise.parallel_tick);
         let flags = Arc::new(Flags {
@@ -573,16 +567,24 @@ impl Game<'_> {
             let _finished = Finished(server_flags.clone());
             // MinecraftServer.spin's Thread.setPriority(8).
             sunrise_threads::favour_current();
-            let result = serve(
-                &res,
-                pack,
-                options,
-                settings,
-                launch,
-                server_flags.clone(),
-                server_tasks,
-                &ready_tx,
-            );
+            // `MinecraftServer.runServer` catches the throwable and then reports it: the panic
+            // hook only records, and the report is built here after the unwind.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                serve(
+                    &res,
+                    pack,
+                    options,
+                    settings,
+                    launch,
+                    server_flags.clone(),
+                    server_tasks,
+                    &ready_tx,
+                )
+            }))
+            .unwrap_or_else(|payload| {
+                sunrise_client::crash::report_server_panic(&*payload);
+                Err("the integrated server panicked".into())
+            });
             if let Err(e) = result {
                 log::error!("Sunrise: integrated server: {e}");
                 *server_flags.failure.lock().unwrap() = Some(e.to_string());
@@ -639,7 +641,7 @@ impl Game<'_> {
         let Some(starting) = &self.integrated_starting else {
             return Ok(());
         };
-        let (pipe, world_name) = match starting.ready.try_recv() {
+        let (pipe, world_name, biomes) = match starting.ready.try_recv() {
             Ok(Ok(ready)) => ready,
             Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(()),
             // FileFixerProgressScreen's Cancel: the upgrade stopped, back to the title.
@@ -669,6 +671,9 @@ impl Game<'_> {
         };
         handle.world_name = world_name;
         self.server_packs_world_pack(&folder);
+        // Use the logical server's admitted table, including its saved-name IDs.
+        self.world_biomes_base = Some(biomes.clone());
+        self.world_biomes = Some(biomes);
         self.connect_local(pipe, &player)?;
         if let Some(r) = self.remote.as_mut() {
             // `new LevelLoadTracker(newWorld ? 500L : 0L)`.
@@ -802,7 +807,14 @@ impl Game<'_> {
         self.native_lifecycle_world_ready();
         // Hand the local connection pipe to the client only after `server_started`,
         // so a failed or panicking startup never hands out a live pipe.
-        let _ = ready.send(Ok((pipe, world_name)));
+        let _ = ready.send(Ok((
+            pipe,
+            world_name,
+            self.world_biomes_base
+                .as_ref()
+                .expect("world is open")
+                .clone(),
+        )));
         if let (Some(script), Some(output)) = (
             std::env::var_os("SUNRISE_COMMAND_SCRIPT"),
             std::env::var_os("SUNRISE_COMMAND_OUTPUT"),
@@ -861,28 +873,7 @@ impl Game<'_> {
                         // Only the connections run.
                         self.tick_server_measured(true)?;
                     } else {
-                        self.follow_distances(flags);
-                        let cpu = sunrise_client::spans::thread_cpu();
-                        let started = Instant::now();
-                        self.tick_server_measured(false)?;
-                        // MinecraftServer.tickServer's tick times, for /tick query.
-                        self.clock.record(started.elapsed());
-                        // Parallel Tick's Auto decides here, between ticks, how the next one runs.
-                        let on_cpu = sunrise_client::spans::thread_cpu().zip(cpu);
-                        sunrise_client::parallel::after_tick(
-                            started.elapsed().as_secs_f32() * 1000.0,
-                            on_cpu.map(|(end, start)| (end - start).as_secs_f32() * 1000.0),
-                        );
-                        self.debug_charts.log_tick(started, started.elapsed());
-                        flags.smoothed_tick_ms.store(
-                            self.debug_charts.smoothed_tick_ms.to_bits(),
-                            Ordering::Relaxed,
-                        );
-                        if let (Some(terrain), Ok(mut terrains)) =
-                            (self.end.locator(), flags.terrain.lock())
-                        {
-                            terrains.insert(self.dim.id(), terrain);
-                        }
+                        self.tick_integrated_unpaused(flags)?;
                     }
                     Ok(())
                 }));
@@ -916,6 +907,32 @@ impl Game<'_> {
                 TickFailure::Panic(payload) => std::panic::resume_unwind(payload),
             };
         }
+        Ok(())
+    }
+
+    /// `IntegratedServer.tickServer`: finish the server tick successfully before
+    /// following the owner's options.
+    fn tick_integrated_unpaused(&mut self, flags: &Flags) -> Result<()> {
+        let cpu = sunrise_client::spans::thread_cpu();
+        let started = Instant::now();
+        self.tick_server_measured(false)?;
+        // MinecraftServer.tickServer's tick times, for /tick query.
+        self.clock.record(started.elapsed());
+        // Parallel Tick's Auto decides here, between ticks, how the next one runs.
+        let on_cpu = sunrise_client::spans::thread_cpu().zip(cpu);
+        sunrise_client::parallel::after_tick(
+            started.elapsed().as_secs_f32() * 1000.0,
+            on_cpu.map(|(end, start)| (end - start).as_secs_f32() * 1000.0),
+        );
+        self.debug_charts.log_tick(started, started.elapsed());
+        flags.smoothed_tick_ms.store(
+            self.debug_charts.smoothed_tick_ms.to_bits(),
+            Ordering::Relaxed,
+        );
+        if let (Some(terrain), Ok(mut terrains)) = (self.end.locator(), flags.terrain.lock()) {
+            terrains.insert(self.dim.id(), terrain);
+        }
+        self.follow_distances(flags);
         Ok(())
     }
 
@@ -978,7 +995,7 @@ impl Game<'_> {
             view_distance,
             simulation_distance: self.settings.simulation_distance.max(2),
             dimension: self.dim.id().to_owned(),
-            levels: self.level_shapes,
+            levels: self.level_shapes.clone(),
             level_seeds: self.levels.runtime.seeds(),
             seed: self.level.seed,
             max_players: MAX_PLAYERS,
@@ -1000,7 +1017,7 @@ impl Game<'_> {
                 )
                 .then(|| translatable("multiplayer.disconnect.not_whitelisted", &[]))
             })),
-            levels: self.level_shapes,
+            levels: self.level_shapes.clone(),
             owner_profile: launch.owner_profile.clone(),
             // `IntegratedServer.getSingleplayerProfile`: the window's own player logs in
             // through memory as the account's profile, whatever the hello says.
@@ -1021,6 +1038,9 @@ impl Game<'_> {
             force_game_mode: false,
         };
         startup::time("server.lan_host", || self.lan_host(settings, net, config))?;
+        self.settings.render_distance =
+            sunrise_client::lan::hub::effective_view_distance(view_distance);
+        self.streaming.radius = self.settings.render_distance;
         let commands = self.allow_commands();
         let pipe = {
             let host = self
@@ -1042,6 +1062,7 @@ impl Game<'_> {
             tasks,
             owner,
             pending: None,
+            previous_simulation_distance: 0,
             load: LoadPhase::default(),
         });
         // MinecraftServer.prepareLevels: the saved tickets' chunks load; the
@@ -1249,28 +1270,26 @@ impl Game<'_> {
         self.apply_publish();
         true
     }
-    /// IntegratedServer.tickServer: the server follows the window's render
-    /// and simulation distances when they change.
+    /// `IntegratedServer.tickServer` after the server tick: view follows the window
+    /// whenever the live distance differs; simulation follows only a change to the owner's option.
     fn follow_distances(&mut self, flags: &Flags) {
-        // IntegratedServer.getScaledTrackingDistance reads the option each time.
-        self.settings.entity_distance =
-            f64::from_bits(flags.entity_distance.load(Ordering::Relaxed));
-        let Some(host) = self.lan.as_mut() else {
+        let Some(old_view) = self.server_view_distance() else {
             return;
         };
         let view = flags.render_distance.load(Ordering::Relaxed).max(2);
-        let old = host.hub.config.view_distance;
-        if view != old {
-            log::info!("Changing view distance to {view}, from {old}");
-            host.hub.set_view_distance(view);
-            self.settings.render_distance = view;
+        if view != old_view {
+            log::info!("Changing view distance to {view}, from {old_view}");
+            self.set_view_distance(view);
         }
+        let Some(serving) = self.serving.as_mut() else {
+            return;
+        };
         let simulation = flags.simulation_distance.load(Ordering::Relaxed).max(2);
-        let old = host.hub.config.simulation_distance;
-        if simulation != old {
-            log::info!("Changing simulation distance to {simulation}, from {old}");
-            host.hub.set_simulation_distance(simulation);
-            self.settings.simulation_distance = simulation;
+        let old_simulation = serving.previous_simulation_distance;
+        if simulation != old_simulation {
+            log::info!("Changing simulation distance to {simulation}, from {old_simulation}");
+            serving.previous_simulation_distance = simulation;
+            self.set_simulation_distance(simulation);
         }
     }
 
@@ -1297,7 +1316,7 @@ impl Game<'_> {
                 host.hub.config.force_game_mode = settings.force_game_mode;
                 // IntegratedServer.setGuestCommandAccess, then updatePermissions.
                 host.hub.config.guest_commands = settings.guest_commands && allow_commands;
-                host.hub.resend_commands();
+                self.resend_commands_filtered();
             }
             Publish::Close => {
                 host.hub.lan.stop_listening();
@@ -1371,7 +1390,7 @@ impl Game<'_> {
             if published {
                 host.hub.config.guest_commands = allow && host.settings.guest_commands;
             }
-            host.hub.resend_commands();
+            self.resend_commands_filtered();
         }
     }
 }
@@ -1408,13 +1427,12 @@ fn serve(
             res.clone(),
             pack.clone(),
             options.clone(),
-            settings.clone(),
             flags.upgrade.clone(),
         )
     });
     let opening = Opening {
         world,
-        sync: preload_sync_data(&res.core.item_data, res.shared_items()),
+        sync: preload_sync_data(&res.core.item_data, res.shared_items(), res.biomes()),
     };
     let mut server = match startup::time("server.game_new", || {
         server_game(res, pack, options, settings)
@@ -1630,16 +1648,18 @@ pub(super) mod tests {
                 .name(sunrise_client::crash::INTEGRATED_SERVER_THREAD.into())
                 .stack_size(server_thread_stack())
                 .spawn(move || {
-                    crate::game::native_entity_refs::tests::with_game(|game| {
-                        game.serve_owner_request(receiver.recv().unwrap());
-                    });
+                    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        crate::game::native_entity_refs::tests::with_game(|game| {
+                            game.serve_owner_request(receiver.recv().unwrap());
+                        });
+                    }))
+                    .unwrap_err();
+                    sunrise_client::crash::report_server_panic(&*payload);
                 })
                 .unwrap(),
         );
-        assert_eq!(
-            server.halt().unwrap_err().to_string(),
-            "the integrated server panicked"
-        );
+        server.halt().unwrap();
+        assert!(sunrise_client::crash::server_crashed());
         std::panic::set_hook(previous);
         let reports: Vec<_> = std::fs::read_dir(home.join("crash-reports"))
             .unwrap()
@@ -1764,6 +1784,7 @@ pub(super) mod tests {
             tasks: receiver,
             owner: 0,
             pending: None,
+            previous_simulation_distance: 0,
             load: LoadPhase::default(),
         });
         move || {
@@ -1771,6 +1792,67 @@ pub(super) mod tests {
             flags.published.load(Ordering::Relaxed) == 0
                 && tasks.send(OwnerRequest::SetPregen(false)).is_err()
         }
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn owner_distances_follow_the_server_tick() {
+        use mod_api::{Hooks, ModEntry, ServerHost, ServerTickEvent, ServerTickPhase};
+
+        type Read = (i32, i32);
+        struct Retune(Arc<Mutex<Vec<Read>>>);
+        #[mod_api::__subscriptions]
+        impl Hooks for Retune {
+            fn server_tick(&self, host: &mut dyn ServerHost, event: &mut ServerTickEvent<'_>) {
+                if !matches!(event.phase, ServerTickPhase::ServerTickStart { .. }) {
+                    return;
+                }
+                self.0.lock().unwrap().push((
+                    host.server_view_distance().unwrap(),
+                    host.server_simulation_distance().unwrap(),
+                ));
+                assert!(host.server_set_view_distance(6));
+                assert!(host.server_set_simulation_distance(5));
+            }
+        }
+
+        crate::game::in_own_process(
+            "game::integrated::tests::owner_distances_follow_the_server_tick",
+            || {
+                let seen = Arc::new(Mutex::new(Vec::new()));
+                let mods = vec![ModEntry::new("retune", Box::new(Retune(seen.clone())))];
+                mod_platform::testing::with_mods(mods.into(), || {
+                    crate::game::native_guest_turn_tests::with_guests(|game| {
+                        let serving = Serving::fixture(0);
+                        let window = Integrated::fixture_for(&serving);
+                        game.serving = Some(serving);
+                        game.native_lifecycle_world_ready();
+                        let live = |game: &Game<'_>| {
+                            let config = &game.lan.as_ref().unwrap().hub.config;
+                            (config.view_distance, config.simulation_distance)
+                        };
+
+                        window.set_distances(48, 7, 1.0);
+                        game.tick_integrated_unpaused(&window.flags).unwrap();
+                        assert_eq!(live(game), (48, 7));
+                        game.tick_integrated_unpaused(&window.flags).unwrap();
+                        assert_eq!(live(game), (48, 5));
+
+                        window.set_distances(50, 9, 1.0);
+                        game.tick_integrated_unpaused(&window.flags).unwrap();
+                        assert_eq!(*seen.lock().unwrap(), [(2, 2), (48, 7), (48, 5)]);
+                        assert_eq!(live(game), (50, 9));
+                        assert_eq!(
+                            (
+                                game.settings.render_distance,
+                                game.settings.simulation_distance
+                            ),
+                            (32, 9)
+                        );
+                    });
+                });
+            },
+        );
     }
 
     #[test]
@@ -2188,6 +2270,7 @@ pub(super) mod tests {
                 tasks,
                 owner: 1,
                 pending: None,
+                previous_simulation_distance: 0,
                 load: LoadPhase::default(),
             });
             events.lock().unwrap().clear();

@@ -1,5 +1,4 @@
 //! The `item_bar` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0071
 
 pub trait Hooks {
     /// The small bar `GuiGraphicsExtractor.itemDecorations` draws under an

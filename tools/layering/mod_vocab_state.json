@@ -179,6 +179,11 @@
     "category": "immutable cache",
     "reason": "Empty or set-once resolved registry lookup returned when no installed Parts inventory supplies one."
   },
+  "runtime.rs::ACTIVE_LISTENERS": {
+    "type": "std::cell::RefCell<Vec<(usize,&'staticstr)>>",
+    "category": "reentrancy guard",
+    "reason": "Per-thread stack of active non-reentrant hook callbacks so reentering the same listener for the same hook is refused."
+  },
   "runtime.rs::HOOK_DISPATCH_DEPTH": {
     "type": "std::cell::Cell<u32>",
     "category": "dispatch table",
@@ -229,9 +234,24 @@
     "category": "dispatch table",
     "reason": "Thread-local startup screen override lent to registration fixtures and restored on scope exit."
   },
+  "world/ticket_controller.rs::NEXT_TOKEN": {
+    "type": "AtomicU64",
+    "category": "monotonic counter",
+    "reason": "Monotonic sequence counter mixed into opaque TicketController registration tokens so no handle identity is reused."
+  },
   "world/ticket_controller.rs::TEST_CONTROLLERS": {
     "type": "std::cell::Cell<Option<&'static[ControllerInfo]>>",
     "category": "Parts lookup table",
     "reason": "Thread-local test lookup of installed Parts metadata by engine-issued slot."
+  },
+  "world/ticket_controller.rs::issue_token::SALT": {
+    "type": "OnceLock<u64>",
+    "category": "immutable cache",
+    "reason": "Per-process random salt mixed into opaque TicketController registration tokens; initialized once and immutable."
+  },
+  "world/ticket_controller.rs::take_for_startup::CLAIMED": {
+    "type": "OnceLock<()>",
+    "category": "set-once socket",
+    "reason": "One-shot latch ensuring installed TicketActivation startup authority can only be claimed once before native mods load."
   }
 }

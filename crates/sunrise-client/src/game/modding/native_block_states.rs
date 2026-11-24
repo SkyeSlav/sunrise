@@ -129,7 +129,11 @@ impl Game<'_> {
         if !self.options.execution_role.is_client()
             && mod_api::__private::item_listens(mod_api::HookId::CraftingRemainder, &stack.item)
         {
-            self.native_crafting_remainder(stack, &mut remainder);
+            super::api_values::with_stack_view(Some(stack), |view| {
+                if let Some(view) = view {
+                    self.native_crafting_remainder(view, &mut remainder);
+                }
+            });
         }
         remainder.filter(|value| value.count > 0)
     }
@@ -248,7 +252,7 @@ impl crate::crafting::CraftingRemainder for Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mod_api::{FluidDefinition, FluidStateError, FluidTypeProperties};
+    use mod_api::{FluidDefinition, FluidStateError, FluidTypeProperties, HostBlockStates};
 
     /// Air, a stair with two properties (its default `facing=north,half=bottom`)
     /// and wheat with an integer `age`, as `parse` reads them.
@@ -661,7 +665,9 @@ mod tests {
                 // `Fluid.getBucket`: the named bucket and the default one, each holding its
                 // fluid back; none for an unregistered fluid, a missing item or the game's
                 // bucket of another fluid.
-                let bucket = |fluid: &str| host.fluid_bucket(fluid);
+                let states = host.block_states();
+                let bucket =
+                    |fluid: &str| host.fluid_key(fluid).and_then(|key| key.bucket(&states));
                 let item = |id: &str| mod_api::__private::item_key(id);
                 assert_eq!(
                     bucket("measured:flowing_brine"),
@@ -675,11 +681,14 @@ mod tests {
                     ("minecraft:water_bucket", "minecraft:water"),
                 ] {
                     assert_eq!(
-                        host.bucket_fluid(item(bucket).unwrap()),
+                        item(bucket).unwrap().bucket_fluid(&states),
                         host.fluid_key(fluid)
                     );
                 }
-                assert_eq!(host.bucket_fluid(item("minecraft:bucket").unwrap()), None);
+                assert_eq!(
+                    item("minecraft:bucket").unwrap().bucket_fluid(&states),
+                    None
+                );
                 for fluid in [
                     "measured:essence",
                     "measured:salt",
@@ -690,8 +699,9 @@ mod tests {
                 ] {
                     assert_eq!(bucket(fluid), None, "{fluid}");
                 }
-                assert_eq!(host.fluid_pickup_sound("measured:essence"), None);
-                assert_eq!(host.fluid_empty_sound("measured:essence"), None);
+                let essence = host.fluid_key("measured:essence");
+                assert_eq!(essence.and_then(|key| key.pickup_sound(&states)), None);
+                assert_eq!(essence.and_then(|key| key.empty_sound(&states)), None);
             },
         );
     }
@@ -1131,7 +1141,7 @@ mod facts_tests {
             );
             // SoundType.STONE: its break event, at volume and pitch 1.
             let sound = facts.sound(stone).unwrap();
-            assert_eq!(&*sound.break_sound, "minecraft:block.stone.break");
+            assert_eq!(sound.break_sound.as_str(), "minecraft:block.stone.break");
             assert_eq!((sound.volume, sound.pitch), (1.0, 1.0));
             let properties = game.block_states().definition(stairs.block()).unwrap();
             let expected: [(&str, &[&str]); 4] = [
@@ -1203,13 +1213,13 @@ mod crafting_remainder_tests {
         ) {
             CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             *event.remainder = if event.stack.damage() == 0 {
-                let mut stack = event.stack.clone();
+                let mut stack = event.stack.project().expect("the input stack projects");
                 stack.set_count(65).unwrap();
                 Some(stack)
             } else if event.stack.damage() >= 4 {
                 None
             } else {
-                let mut stack = event.stack.clone();
+                let mut stack = event.stack.project().expect("the input stack projects");
                 stack.set_count(1).unwrap();
                 stack.set_damage(event.stack.damage() + 1);
                 Some(stack)

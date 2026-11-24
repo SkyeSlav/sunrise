@@ -523,6 +523,59 @@ pub enum PackUniformType {
     Mat4,
 }
 
+/// How an active shader pack binds a registered [`RenderPipeline`], reported by
+/// [`crate::WorldDrawContext::pack_override_state`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client query value describing active shader-pack override state.
+pub enum PackOverrideState {
+    /// No translated shader pack is active.
+    NoPack,
+    /// A shader pack is active, but the pipeline was not bound to a translated pack program
+    /// (either it has no [`PackBinding`] or no candidate program compiled); the mod's own shader
+    /// runs instead.
+    UnboundPack,
+    /// The active shader pack translated and bound a pack program for this pipeline.
+    Bound,
+}
+
+/// Per-frame value for a mod-declared shader-pack uniform ([`PackUniformDecl`]),
+/// supplied through [`crate::WorldDrawContext::set_pack_uniform`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+// no wire: local client shader-pack per-frame uniform value.
+pub enum PackUniformValue {
+    /// GLSL `float`
+    Float(f32),
+    /// GLSL `int`
+    Int(i32),
+    /// GLSL `vec2`
+    Vec2([f32; 2]),
+    /// GLSL `vec3`
+    Vec3([f32; 3]),
+    /// GLSL `vec4`
+    Vec4([f32; 4]),
+    /// GLSL `mat3` (column-major)
+    Mat3([[f32; 3]; 3]),
+    /// GLSL `mat4` (column-major)
+    Mat4([[f32; 4]; 4]),
+}
+
+impl PackUniformValue {
+    /// The [`PackUniformType`] matching this value's variant.
+    pub const fn ty(&self) -> PackUniformType {
+        match self {
+            Self::Float(_) => PackUniformType::Float,
+            Self::Int(_) => PackUniformType::Int,
+            Self::Vec2(_) => PackUniformType::Vec2,
+            Self::Vec3(_) => PackUniformType::Vec3,
+            Self::Vec4(_) => PackUniformType::Vec4,
+            Self::Mat3(_) => PackUniformType::Mat3,
+            Self::Mat4(_) => PackUniformType::Mat4,
+        }
+    }
+}
+
 /// Mapping from a pipeline vertex attribute or per-draw value to a pack-side GLSL input name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -717,17 +770,15 @@ pub enum PipelineDrawError {
     Pipeline(RenderPipelineError),
 }
 
-/// Attribute every pipeline `owner` added in `register_render_pipelines` to `owner`.
-/// Duplicate mod IDs and collisions with the matching vanilla table are rejected
-/// with a startup error when the collected registrations are frozen.
-pub(crate) fn validate_render_pipelines(
-    owner: &str,
-    previous: &[RenderPipeline],
-    pipelines: &mut [RenderPipeline],
-) {
-    let start = previous.len().min(pipelines.len());
-    for pipeline in &mut pipelines[start..] {
-        pipeline.owner = owner.to_owned();
+impl crate::RegisterRenderPipelinesEvent<'_> {
+    /// Register one render pipeline without exposing earlier registrations.
+    ///
+    /// The entry is attributed to this listener immediately. Any valid identifier is accepted
+    /// here; duplicate IDs and vanilla collisions are refused when the engine freezes the
+    /// registrations at startup.
+    pub fn register(&mut self, mut entry: RenderPipeline) {
+        entry.owner = self.mod_id.to_owned();
+        self.pipelines.push(entry);
     }
 }
 
@@ -749,66 +800,55 @@ mod tests {
     }
 
     #[test]
-    fn a_mod_can_register_pipelines_in_any_valid_namespace() {
-        let previous = vec![pipeline("other:glow")];
-        let mut pipelines = previous.clone();
-        pipelines.extend([
-            pipeline("minecraft:glow"),
-            pipeline("other:beam"),
-            pipeline("minecraft:custom_beam"),
-        ]);
-        validate_render_pipelines("owning_mod", &previous, &mut pipelines);
+    fn stamps_owner_on_new_pipelines_across_namespaces_and_preserves_duplicates_for_freeze() {
+        let mut pipelines = Vec::new();
+        let mut event = crate::RegisterRenderPipelinesEvent {
+            mod_id: "first_mod",
+            pipelines: &mut pipelines,
+        };
+        event.register(pipeline("other:glow"));
+        event.mod_id = "owning_mod";
+        for id in ["minecraft:glow", "other:beam", "other:glow", "mine:beam"] {
+            event.register(pipeline(id));
+        }
         assert_eq!(
             ids(&pipelines),
             [
                 "other:glow".to_owned(),
                 "minecraft:glow".to_owned(),
                 "other:beam".to_owned(),
-                "minecraft:custom_beam".to_owned(),
+                "other:glow".to_owned(),
+                "mine:beam".to_owned(),
             ]
         );
+        assert_eq!(pipelines[0].owner(), "first_mod");
         assert_eq!(pipelines[1].owner(), "owning_mod");
         assert_eq!(pipelines[2].owner(), "owning_mod");
         assert_eq!(pipelines[3].owner(), "owning_mod");
-    }
-
-    #[test]
-    fn validator_attributes_owners_and_preserves_entries_for_startup_collision_checks() {
-        let mut pipelines = vec![
-            pipeline("shared:glow"),
-            pipeline("shared:glow"),
-            pipeline("shared:glow").optional(),
-        ];
-        validate_render_pipelines("first", &[], &mut pipelines);
-        assert_eq!(
-            ids(&pipelines),
-            [
-                "shared:glow".to_owned(),
-                "shared:glow".to_owned(),
-                "shared:glow".to_owned(),
-            ]
-        );
-        assert!(pipelines.iter().all(|p| p.owner() == "first"));
-
-        let previous = pipelines.clone();
-        pipelines.push(pipeline("shared:glow").optional());
-        validate_render_pipelines("second", &previous, &mut pipelines);
-        assert_eq!(pipelines.len(), 4);
-        assert_eq!(pipelines[3].owner(), "second");
-        assert!(pipelines[3].optional);
+        assert_eq!(pipelines[4].owner(), "owning_mod");
     }
 
     #[test]
     fn a_mod_can_register_more_than_vanillas_pipeline_count() {
-        let mut pipelines: Vec<_> = (0..195).map(|i| pipeline(&format!("mine:p{i}"))).collect();
-        validate_render_pipelines("mine", &[], &mut pipelines);
-        assert_eq!(pipelines.len(), 195);
-        assert_eq!(pipelines.last().unwrap().id.to_string(), "mine:p194");
+        let mut pipelines = Vec::new();
+        {
+            let mut event = crate::RegisterRenderPipelinesEvent {
+                mod_id: "mine",
+                pipelines: &mut pipelines,
+            };
+            for i in 0..131 {
+                event.register(pipeline(&format!("mine:p{i}")));
+            }
+        }
+        assert_eq!(pipelines.len(), 131);
+        assert_eq!(pipelines.last().unwrap().id.to_string(), "mine:p130");
 
-        let previous = pipelines.clone();
-        pipelines.push(pipeline("next:glow"));
-        validate_render_pipelines("next", &previous, &mut pipelines);
-        assert_eq!(pipelines.len(), 196);
+        crate::RegisterRenderPipelinesEvent {
+            mod_id: "next",
+            pipelines: &mut pipelines,
+        }
+        .register(pipeline("next:glow"));
+        assert_eq!(pipelines.len(), 132);
     }
 
     #[test]

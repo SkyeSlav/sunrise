@@ -79,7 +79,8 @@ pub trait PlayerWorldBackendMut {
     /// Side: server.
     /// `Player.setLastDeathLocation`: stores where the player died, or
     /// forgets it for None. The client hears of it with the player's next
-    /// respawn, as in vanilla. False in the cases a read gives None.
+    /// respawn, as in vanilla. A resident dead player can still be edited.
+    /// False if the server player's state is unavailable.
     fn player_set_last_death_location(
         &mut self,
         player: PlayerRef,

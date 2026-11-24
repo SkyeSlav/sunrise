@@ -157,4 +157,12 @@ pub trait ScreensClientHost {
     /// `key.mouse.left`, `key.mouse.4`, for example).
     /// Unknown names are not down. Modifier combinations use `ClientHost::modifiers`.
     fn is_key_down(&self, key: &str) -> bool;
+    /// Side: client.
+    /// Bounding rectangle `[x, y, width, height]` in GUI pixels of a HUD layer's
+    /// geometry after viewport and scissor clipping, before other layers can cover it.
+    /// Use a vanilla id such as `"minecraft:effects"` or a registered mod layer id.
+    /// Returns `Ok(None)` if the layer has not painted visible geometry, including
+    /// before it draws, if it is canceled, or outside the HUD pass (including screen render hooks).
+    /// Returns `Err(LevelReadError::Unavailable)` outside a client window.
+    fn hud_layer_bounds(&self, layer: &str) -> Result<Option<[f32; 4]>, LevelReadError>;
 }

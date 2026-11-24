@@ -48,7 +48,7 @@ impl Game<'_> {
             if mod_api::__private::item_listens(mod_api::HookId::ItemDestroyed, &item.stack.item) {
                 self.item_destroyed_damage = Some((item.id, damage_type.to_owned()));
             } else {
-                let contents = item.hurt(0).unwrap_or_default();
+                let contents = item.hurt(self.res.items(), 0).unwrap_or_default();
                 self.spawn_destroyed_contents(
                     contents.into_iter().map(|stack| (stack, at)).collect(),
                 );

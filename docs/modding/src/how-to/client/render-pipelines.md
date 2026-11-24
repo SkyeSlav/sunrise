@@ -198,8 +198,8 @@ cause and resolves to `Invalid`:
 A pipeline without `.textured(…)` has no `pipeline_texture`: its file is refused with a note
 naming `RenderPipeline::textured`.
 
-A pipeline cannot take values of its own from the mod, sample more than one texture, or replace the
-vertex stage.
+A pipeline cannot sample more than one texture or replace the vertex stage; custom per-frame values
+are available for translated shader-pack uniforms via `WorldDrawContext::set_pack_uniform` (below).
 
 ## Participating in translated shader packs
 
@@ -221,5 +221,12 @@ per-frame pack uniforms attach an optional `.pack_binding(PackBinding::new()...)
 invalid GLSL identifiers, reserved Iris/OptiFine sampler/image/uniform names, and cross-mod or
 namespace collisions across samplers, uniforms, defines, and depth-target IDs.
 
-To check whether a shader pack is currently loaded and rendering the world (always `false` on the
-title screen, matching `IrisApi.isShaderPackInUse()`), call `host.shader_pack_active()`.
+During a world draw hook, feed declared per-frame pack uniforms with
+`ctx.set_pack_uniform(name, PackUniformValue::...)` (returns `false` without panicking when `name`
+or its `PackUniformType` is not registered; any `previous_name` declared on the uniform is tracked
+automatically across frames). To inspect whether an active shader pack bound a specific pipeline to
+one of its translated programs (`PackOverrideState::Bound`), left it on the mod's own fallback
+shader (`PackOverrideState::UnboundPack`), or no pack is active (`PackOverrideState::NoPack`), call
+`ctx.pack_override_state(pipeline)`. To check generally whether a shader pack is currently loaded
+and rendering the world (always `false` on the title screen, matching `IrisApi.isShaderPackInUse()`),
+call `host.shader_pack_active()`.

@@ -1,5 +1,4 @@
 //! The `server_stopping` hook: declarations the mod API generator reads (see `hooks/mod.rs`).
-// catalog-order: 0007
 
 pub trait Hooks {
     /// Fired once at the start of an orderly server shutdown (NeoForge's

@@ -681,6 +681,7 @@ fn an_invalid_winning_registered_model_does_not_load_a_lower_pack() {
     let pack = ResourceSource::indexed_with_layers(
         files,
         BTreeMap::from([(item_path, vec![lower, winner])]),
+        None,
     );
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path();

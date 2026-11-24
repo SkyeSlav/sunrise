@@ -276,7 +276,7 @@ impl Game<'_> {
                     let earlier = self.adv.announced.len();
                     self.cmds.broadcast_announced = earlier;
                     self.harness_owner(|g| {
-                        let previous = g.command_source;
+                        let previous = g.command_source.clone();
                         if op["source"].as_str() == Some("console") {
                             // Actual server source; permission-only `as_console`
                             // otherwise keeps the connected owner's entity.

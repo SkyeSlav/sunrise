@@ -1507,8 +1507,7 @@ impl Game<'_> {
             "minecraft:honey_block" => {
                 let at = [feet.x, feet.y, feet.z];
                 if !self.entity_silent(id) {
-                    self.audio
-                        .play("minecraft:block.honey_block.slide", Some(at), 1.0, 1.0);
+                    self.play_audio("minecraft:block.honey_block.slide", Some(at), 1.0, 1.0);
                 }
                 self.lan_entity_event(id as i32, 54, at);
             }
@@ -1535,7 +1534,7 @@ impl Game<'_> {
             && self.motion.landing.has_shelf_bounce(bounce.state)
         {
             let pos = bounce.position;
-            self.audio.play(
+            self.play_audio(
                 "minecraft:block.shelf_mushroom.bounce",
                 Some([
                     f64::from(pos.x) + 0.5,

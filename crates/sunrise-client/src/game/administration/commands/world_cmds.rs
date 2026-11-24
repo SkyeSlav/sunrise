@@ -116,6 +116,9 @@ impl Game<'_> {
     pub(in crate::game) fn change_recipes(&mut self, give: bool, recipes: &[String]) -> i32 {
         let (recipes, custom_count) = self.change_mod_crafting_recipes(give, recipes);
         if give {
+            if custom_count != 0 {
+                self.invalidate_mod_book_placement_knowledge();
+            }
             return custom_count + self.award_recipes(&recipes) as i32;
         }
         let index = &world_stations!(self).recipe_index;
@@ -237,10 +240,17 @@ impl Game<'_> {
                 .unwrap_or(0),
         );
         attack.direct_type = direct.map(|target| self.target_type(target));
+        attack.enchantment_direct = direct.zip(attack.direct).map(|(target, id)| {
+            sunrise_client::health::EnchantmentActor {
+                id,
+                kind: self.target_type(target).into(),
+                motion: None,
+            }
+        });
         match direct {
             Some(Target::Projectile(id)) => {
                 if let Some(shot) = self.creatures.projectiles.iter().find(|shot| shot.id == id) {
-                    Self::set_projectile_attack(&mut attack, shot);
+                    self.set_projectile_attack(&mut attack, shot);
                 }
             }
             Some(Target::Trident(id)) => {
@@ -248,7 +258,7 @@ impl Game<'_> {
                     attack.projectile = Some(id as i32);
                     attack.projectile_kind = DirectEntity::Arrow;
                     attack.projectile_type = Some("minecraft:trident");
-                    Self::set_projectile_weapon(&mut attack, Some(&shot.stack));
+                    self.set_projectile_weapon(&mut attack, Some(&shot.stack));
                 }
             }
             _ => {}
@@ -507,6 +517,7 @@ impl Game<'_> {
             Vec::new()
         };
         if hurt {
+            self.flush_mob_death_protection(id);
             if damage.attacker == Some(Who::Player) {
                 self.remember_mob_player_credit(id);
                 if let Some(host) = self.lan.as_mut() {
@@ -571,7 +582,7 @@ impl Game<'_> {
             };
             // LookAt.perform: Entity.lookAt from the source's anchor (the
             // feet, unless `anchored eyes`).
-            let anchored_eyes = self.command_source.is_some_and(|s| s.eyes);
+            let anchored_eyes = self.command_source.as_ref().is_some_and(|s| s.eyes);
             let eye = if anchored_eyes {
                 self.target_eye_height(t)
             } else {
@@ -599,6 +610,7 @@ impl Game<'_> {
         } else {
             vec![
                 self.command_source
+                    .as_ref()
                     .and_then(|s| s.entity)
                     .unwrap_or(Target::Player),
             ]
@@ -763,7 +775,9 @@ impl Game<'_> {
                     host.hub.send_to(conn, &packet);
                 }
             }
-            None => self.audio.play_on(source, sound, Some(at), volume, pitch),
+            None => self
+                .audio
+                .play_on_seeded(source, sound, Some(at), volume, pitch, seed),
         }
     }
     /// `StopSoundCommand`: each target's connection gets the packet; the
@@ -848,7 +862,7 @@ impl Game<'_> {
     // ---- /particle ----------------------------------------------------------------------
 
     pub(super) fn cmd_particle(&mut self, ctx: &Context) -> R<i32> {
-        use sunrise_client::particles::{ParticleOptions, ParticleType};
+        use sunrise_client::particles::{ParticleLevel, ParticleOptions, ParticleType};
         let (name, options, block_state) = match ctx.get("name") {
             Some(Arg::Particle(opts)) => {
                 use crate::game::api_values::TryIntoEngine;
@@ -1069,11 +1083,12 @@ impl Game<'_> {
         if sent == 0 {
             return Err(err("commands.particle.failed", &[]));
         }
+        let level = ParticleLevel::new(&self.world, self.res.facts(), self.collision);
         if local && count <= 0 {
             // handleParticleEvent, count 0: one particle, the speed times
             // the delta as velocity (both sent as floats, multiplied as floats).
-            self.particles.create_with_world(
-                Some(&self.world),
+            self.particles.create_with_level(
+                Some(&level),
                 &options,
                 pos,
                 delta.map(|d| f64::from(speed * d as f32)),
@@ -1093,7 +1108,7 @@ impl Game<'_> {
                 ];
                 if !self
                     .particles
-                    .create_with_world(Some(&self.world), &options, p, v)
+                    .create_with_level(Some(&level), &options, p, v)
                 {
                     break;
                 }
@@ -3185,7 +3200,7 @@ mod attribute_modifier_command_tests {
             game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
             game.reset_entity_residency();
             game.native_lifecycle
-                .begin_open(mod_api::Authority::IntegratedServer);
+                .begin_open(Some(mod_api::Authority::IntegratedServer));
             crate::game::native_entity_refs::tests::bind_local_player(game, 1, 1);
             assert!(game.run_command(
                 "attribute @s minecraft:step_height modifier add test:a 0.4 add_value"

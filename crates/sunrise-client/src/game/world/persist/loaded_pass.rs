@@ -1,18 +1,65 @@
 //! Save visibility while authoritative rows are lent out.
 use super::*;
 
+/// A load tree after feature-disabled branches have been removed.
+pub(in crate::game) struct StagedEntityTree(Tag);
+
+impl StagedEntityTree {
+    pub(in crate::game) fn tag(&self) -> &Tag {
+        &self.0
+    }
+}
+
 impl Game<'_> {
+    pub(in crate::game) fn stage_entity_tree(&self, mut tag: Tag) -> Option<StagedEntityTree> {
+        self.retain_feature_eligible_entity_tree(&mut tag)
+            .then_some(StagedEntityTree(tag))
+    }
+
+    /// Publish just this command or structure placement, not any completed chunk loads
+    /// still waiting for `PersistentEntitySectionManager.processPendingLoads`.
+    pub(in crate::game) fn spawn_staged_entity_tree(
+        &mut self,
+        key: ChunkKey,
+        mut tree: StagedEntityTree,
+    ) {
+        let _save_lease = sunrise_client::join_seq::visibility::PassLease::enter();
+        let mut waiting = std::mem::take(&mut self.world.loaded_entities);
+        mark_fresh(&mut tree.0);
+        self.publish_entity_tree(
+            key,
+            tree,
+            None,
+            sunrise_client::world::EntityLoadReason::Ordinary,
+        );
+        self.native_entities_load(self.dim.id(), [key.0, key.1], 1);
+        waiting.append(&mut self.world.loaded_entities);
+        self.world.loaded_entities = waiting;
+    }
+
     /// Spawn the entities of chunks that finished loading.
     pub(in crate::game) fn spawn_loaded_entities(&mut self) {
         let _save_lease = sunrise_client::join_seq::visibility::PassLease::enter();
         let loaded = std::mem::take(&mut self.world.loaded_entities);
         for (key, tags) in loaded {
+            let owns_disk_section = self.persist.hidden_entity_sections.contains(&key);
             let count = tags.len();
+            let mut skipped = 0;
             for pending in tags {
                 let (tag, reason) = pending.into_parts();
+                // The worker's snapshot of this record can predate a move or
+                // removal. A save that took ownership already admitted it.
+                if reason == sunrise_client::world::EntityLoadReason::DiskSection
+                    && owns_disk_section
+                {
+                    skipped += 1;
+                    continue;
+                }
                 self.spawn_loaded_entity_reason(key, tag, None, reason);
             }
-            self.native_entities_load(self.dim.id(), [key.0, key.1], count);
+            if skipped == 0 || skipped < count {
+                self.native_entities_load(self.dim.id(), [key.0, key.1], count - skipped);
+            }
         }
     }
 
@@ -36,7 +83,19 @@ impl Game<'_> {
     pub(in crate::game) fn spawn_loaded_entity_reason(
         &mut self,
         key: ChunkKey,
-        mut tag: Tag,
+        tag: Tag,
+        transferred: Option<crate::game::entity_initialization::TransferredEntityState>,
+        reason: sunrise_client::world::EntityLoadReason,
+    ) {
+        if let Some(tree) = self.stage_entity_tree(tag) {
+            self.publish_entity_tree(key, tree, transferred, reason);
+        }
+    }
+
+    fn publish_entity_tree(
+        &mut self,
+        key: ChunkKey,
+        StagedEntityTree(mut tag): StagedEntityTree,
         transferred: Option<crate::game::entity_initialization::TransferredEntityState>,
         reason: sunrise_client::world::EntityLoadReason,
     ) {

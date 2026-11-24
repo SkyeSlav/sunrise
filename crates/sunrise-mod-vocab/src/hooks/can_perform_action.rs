@@ -8,7 +8,14 @@ pub trait Hooks {
     /// `can_perform` arrives with vanilla's answer for that ability: the item kind's
     /// (shears shear), its tag's (`#minecraft:swords` sweep) or the stack's component
     /// (`blocks_attacks`, a shield's, blocks); set it either way and the stack grants or
-    /// loses the ability. Loot conditions use the shared item defaults. Asked where
+    /// loses the ability. `stack` is a borrowed [`ItemStackView`] (call
+    /// [`ItemStackView::project`] only when you need components or an owned copy). The
+    /// answer depends only on the stack and the ability: the hook is asked from gameplay
+    /// and from loot predicates (`neoforge:can_item_perform_ability`) and must give the
+    /// same answer in both. So it has no host or level, by design, as NeoForge's has
+    /// none; the [`ItemAbilityContext`] lends only the merged tags (`context.tags()`).
+    /// Behaviour that depends on the world belongs in the hook for that moment (block
+    /// breaking, item use). Loot conditions use the shared item defaults. Asked where
     /// vanilla checks the item for an action: a raised item blocking attacks
     /// (`shield_block`: a granted stack blocks as a bare
     /// `blocks_attacks` component does, a denied one never blocks nor is raised);
@@ -25,22 +32,24 @@ pub trait Hooks {
     /// shows in (`fishing_rod_cast`); a trident's throw
     /// (`trident_throw`, a trident's own use, so only a denial counts); a charged
     /// grounded hit sweeping (`sword_sweep`); and the spyglass's zoom, overlay, view
-    /// and held-to-the-eye pose (`spyglass_scope`, of the item in use). It decides whether the stack may do the action,
-    /// not what the action does to the world or the tool (`block_tool_modification`
-    /// is the block's side of a tool action; item wear is its own). Only the
-    /// `ItemPart`s attached to `stack`'s item are asked, on both sides, so the
-    /// client's prediction agrees with the server: answer from the stack and
-    /// `ability` alone, and fast. An item with no such part costs one table lookup.
+    /// and held-to-the-eye pose (`spyglass_scope`, of the item in use). It decides
+    /// whether the stack may do the action, not what the action does to the world or the
+    /// tool (`block_tool_modification` is the block's side of a tool action; item wear
+    /// is its own). Only the `ItemPart`s attached to `stack`'s item are asked, on both
+    /// sides, so the client's prediction agrees with the server: answer from the stack
+    /// and `ability` alone, and fast. An item with no such part costs one table lookup
+    /// and does not project the stack.
     /// A client without this mod predicts vanilla here; the server corrects it.
     #[hook(
-        receiver = "read",
-        dispatch = "flat",
+        receiver = "associated",
+        dispatch = "api_carrier",
         side = "both",
         contract = "listen",
+        context = "item_ability",
         scope = "item",
         key = "stack",
-        host = "read",
+        version = 2,
         neoforge = "IItemExtension.canPerformAction"
     )]
-    fn can_perform_action(stack: &ItemStack, ability: &str, can_perform: &mut bool);
+    fn can_perform_action(stack: ItemStackView<'_>, ability: &str, can_perform: &mut bool);
 }

@@ -207,42 +207,43 @@ impl std::error::Error for MappingError {
     }
 }
 
-/// The metadata of a server play packet observed by `Hooks::client_packet`.
+/// A read-only view of a play packet in `Hooks::client_packet` or `Hooks::client_packet_send`.
 ///
-/// Fields beyond the type id are exposed only for custom payloads. This is
-/// plain mod API data, not the game's decoded protocol enum.
-// no wire: this is a local envelope for already-encoded vanilla packet bytes.
-#[derive(Clone, Debug, PartialEq)]
+/// The view is valid only during the hook. Only custom payloads expose more
+/// than the packet type. Copy any data you need to keep after the hook returns.
+// no wire: borrows the decoded packet for synchronous observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct ClientPacket {
+pub struct ClientPacket<'a> {
     /// The protocol type, such as `minecraft:ping` or `minecraft:custom_payload`.
     /// An id outside the protocol's packet table is reported as `sunrise:unknown`.
-    pub id: Identifier,
+    pub id: &'a Identifier,
     /// The channel and bytes of a custom payload; `None` for other packet types.
-    pub custom_payload: Option<ClientPayload>,
+    pub custom_payload: Option<ClientPayload<'a>>,
 }
 
-impl ClientPacket {
-    /// Construct packet metadata with an optional custom payload.
-    pub fn new(id: Identifier, custom_payload: Option<ClientPayload>) -> Self {
+impl<'a> ClientPacket<'a> {
+    /// Construct a view from a borrowed type identifier and an optional payload view.
+    pub fn new(id: &'a Identifier, custom_payload: Option<ClientPayload<'a>>) -> Self {
         Self { id, custom_payload }
     }
 }
 
-/// The channel and uninterpreted bytes of a server custom payload.
-#[derive(Clone, Debug, PartialEq)]
+/// A borrowed channel and uninterpreted byte slice from a play custom payload.
+// no wire: borrows the decoded packet for synchronous observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 // no wire: local envelope for already-encoded server custom payload bytes.
-pub struct ClientPayload {
-    /// The namespaced plugin channel, exactly as received.
-    pub channel: String,
+pub struct ClientPayload<'a> {
+    /// The namespaced plugin channel, exactly as carried by the packet.
+    pub channel: &'a str,
     /// The payload bytes, without the packet id or channel prefix.
-    pub data: Vec<u8>,
+    pub data: &'a [u8],
 }
 
-impl ClientPayload {
-    /// Construct a custom payload without interpreting its bytes.
-    pub fn new(channel: String, data: Vec<u8>) -> Self {
+impl<'a> ClientPayload<'a> {
+    /// Borrow a custom payload's channel and bytes without interpreting them.
+    pub fn new(channel: &'a str, data: &'a [u8]) -> Self {
         Self { channel, data }
     }
 }
@@ -262,6 +263,8 @@ pub struct Camera {
     pub yaw: f32,
     /// The vertical rotation in degrees; negative looks up.
     pub pitch: f32,
+    /// The roll rotation around the view axis in degrees (`ViewportEvent.ComputeCameraAngles`).
+    pub roll: f32,
     /// The vertical field of view in degrees.
     pub fov_degrees: f32,
     /// The near clip distance in blocks.
@@ -356,6 +359,8 @@ pub struct ClientGuiOptions {
     pub text_background_opacity: f32,
     /// Menu background blur radius.
     pub menu_blur: i32,
+    /// Distortion / screen effect intensity scale (`Options.screenEffectScale`, 0 to 1).
+    pub screen_effect_scale: f32,
     /// How far the camera tilts when the player is hurt, 0 (off) to 1 (`damageTiltStrength`,
     /// the Damage Tilt accessibility option): the factor of vanilla's own hurt tilt, so a mod's
     /// camera shake can scale with it as that tilt does.
@@ -676,20 +681,22 @@ pub struct SoundPlay {
     pub identifier: String,
     /// The mixer group it plays on.
     pub source: SoundSource,
-    /// Its own volume, before the source's and the master's.
+    /// Finite base volume, before sound-file scaling and `SoundEngine.calculateVolume`.
+    /// A volume above 1 can increase attenuation distance before the final volume is clamped.
     pub volume: f32,
-    /// Its pitch, 1.0 unchanged.
+    /// Finite base pitch; 1.0 is unchanged before sound-file scaling. The engine clamps the
+    /// scaled pitch (`SoundEngine.calculatePitch`).
     pub pitch: f32,
-    /// Where it plays, in blocks; meaningless when `relative`.
+    /// Where it plays, in world blocks or as an offset from the listener when `relative`.
     pub position: [f64; 3],
     /// It restarts when it ends.
     pub looping: bool,
-    /// Ticks between a looping sound's repeats (`SoundInstance.getDelay`): 0 loops it
-    /// seamlessly, more plays it again that many ticks after it ends.
+    /// A positive value schedules a repeat that many ticks after a looping sound ends.
+    /// Zero or a negative value loops automatically (`SoundEngine.requiresManualLooping`).
     pub delay: i32,
     /// How it fades with distance.
     pub attenuation: SoundAttenuation,
-    /// It plays at the listener, wherever they move.
+    /// Its position is an offset from the listener, wherever they move.
     pub relative: bool,
     /// How the mixer shapes it: its own gain, filters and reverb sends ([`SoundEffects`], with
     /// every field's range). [`SoundEffects::NONE`] by default, which changes nothing.
@@ -722,8 +729,8 @@ pub struct SoundPlay {
 /// The cutoffs are in hertz whatever the output's sample rate, so the same value is valid on
 /// every device. NaN, infinities and anything outside a range are refused, never clamped
 /// ([`SoundEffects::valid`]): the `play_sound` edit at the start, the live refresh of a ticking
-/// sound and `play_local_sound` all run that one check, and a refused value plays nothing, as a
-/// bad volume does. Inside the mixer, a direct-sound cutoff above the output's Nyquist frequency
+/// sound and `play_local_sound` all run that one check, and a refused value plays nothing (or
+/// stops a live sound). Inside the mixer, a direct-sound cutoff above the output's Nyquist frequency
 /// (half its sample rate; the mixer stops at 0.49 of the rate) works as that limit: on a 32 kHz
 /// output, `lowpass` 18000 filters as 15680 would. That limit depends on the device, not on the
 /// value, and is not a refusal.
@@ -843,7 +850,7 @@ impl SoundPlay {
     pub fn with_effects(self, effects: SoundEffects) -> Self {
         Self { effects, ..self }
     }
-    /// The same sound looping, `delay` ticks between its repeats.
+    /// The same sound looping, with a pause of `delay` ticks between repeats if positive.
     pub fn looping(self, delay: i32) -> Self {
         Self {
             looping: true,
@@ -853,8 +860,8 @@ impl SoundPlay {
     }
 }
 
-/// A sound a client mod started with `play_local_sound`, to follow and control: `state`, `stop`
-/// and `fade`. Each handle names one play and is never reused. Once the sound has ended, been
+/// A sound a client mod started with `play_local_sound`, to follow and control: `state`, `stop`,
+/// `fade`, `move_to` and `set_pitch`. Each handle names one play and is never reused. Once the sound has ended, been
 /// stopped or been cleared (leaving or changing levels stops every sound), the handle is stale: it
 /// reads [`SoundState::Stopped`] and its writes do nothing. It stays valid across a change of
 /// output device, which keeps the sounds playing.
@@ -879,7 +886,7 @@ pub enum SoundState {
     Waiting,
     /// Playing (`SoundEngine.isActive`).
     Playing,
-    /// Over: it ended, was stopped, faded to 0 or was cleared. It never plays again.
+    /// Over: it ended, was stopped, faded out or was cleared. It never plays again.
     Stopped,
 }
 
@@ -1316,20 +1323,6 @@ pub enum PanelEvent {
         /// As `x`, down from the top.
         y: f32,
     },
-}
-
-/// The zoom a native mod asks for (`zoom`): the factor (1 is none), eased through the
-/// field of view like the spyglass when `smooth`, and the scale of mouse turning.
-#[derive(Clone, Copy, Debug, PartialEq)]
-// exhaustive: the game builds it with a literal; mods only read it
-// no wire: local client camera zoom request.
-pub struct Zoom {
-    /// The zoom as a multiple of the normal view; 1 is no zoom.
-    pub factor: f32,
-    /// Whether the camera eases into the zoom.
-    pub smooth: bool,
-    /// Scale applied to mouse turning while zoomed.
-    pub turn: f32,
 }
 
 /// `ParticleStatus`: how many particles a client shows.

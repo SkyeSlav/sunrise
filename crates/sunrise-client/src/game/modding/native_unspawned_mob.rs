@@ -879,8 +879,12 @@ mod tests {
     struct KeptGoal;
     #[mod_api::sunrise_part]
     impl mod_api::EntityPart for KeptGoal {
-        fn register_goals(&self, goals: &mut mod_api::GoalRegistrar<'_>) {
-            goals.add_goal(7, Kept);
+        fn register_goals(
+            &self,
+            _host: &mut dyn mod_api::ServerHost,
+            event: &mut mod_api::RegisterGoalsEvent<'_, '_>,
+        ) {
+            event.goals.add_goal(7, Kept);
         }
     }
     struct KeptGoalMod;
@@ -908,6 +912,7 @@ mod tests {
                     .unwrap()
                     .clone();
                 let mut zombie = Mob::new(70, kind, sunrise_core::geometry::Vec3::ZERO, 0.0);
+                game.flush_unjoined_mob_parts(&mut zombie);
                 zombie.custom_name = Some("Lent".to_owned());
                 let goals = |m: &Mob| -> Vec<&'static str> {
                     m.ai.goals.entries().map(|(_, name, _)| name).collect()

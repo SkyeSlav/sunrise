@@ -1660,7 +1660,7 @@ impl ParticleEngine {
         drop(ctx);
         drop(frame);
         for (options, position, velocity) in out {
-            self.add(&options, position, velocity);
+            self.add_with(Some(level), &options, position, velocity, false, false);
         }
     }
 
@@ -1711,7 +1711,7 @@ impl ParticleEngine {
         drop(ctx);
         drop(frame);
         for (options, position, velocity) in out {
-            self.add(&options, position, velocity);
+            self.add_with(Some(level), &options, position, velocity, false, false);
         }
         self.sounds.extend(sounds);
     }
