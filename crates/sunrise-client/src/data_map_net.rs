@@ -236,7 +236,7 @@ pub fn decode_known(bytes: &[u8]) -> Result<Vec<KnownEntry>, String> {
             mandatory,
         });
     }
-    if !r.unread().is_empty() {
+    if r.remaining() != 0 {
         return Err("Trailing bytes in sunrise:data_map_known payload.".into());
     }
     Ok(entries)
@@ -280,7 +280,7 @@ pub fn decode_known_reply(bytes: &[u8]) -> Result<KnownDataMaps, String> {
         }
         known.insert(registry, set);
     }
-    if !r.unread().is_empty() {
+    if r.remaining() != 0 {
         return Err("Trailing bytes in sunrise:data_map_known_reply payload.".into());
     }
     Ok(known)
@@ -394,7 +394,7 @@ pub fn decode_sync_payload(
         entries.sort_by(|a, b| a.0.cmp(&b.0));
         maps.insert(map_id, entries);
     }
-    if !r.unread().is_empty() {
+    if r.remaining() != 0 {
         return Err("Trailing bytes in sunrise:data_map_sync payload.".into());
     }
     Ok((registry, maps))
@@ -402,7 +402,7 @@ pub fn decode_sync_payload(
 
 /// Send the latest synced data-map payloads to one live Sunrise connection, filtered to the
 /// maps that connection advertised in `sunrise:data_map_known_reply`.
-pub fn sync_connection(sender: &crate::lan::Out) {
+pub fn sync_connection(sender: &crate::lan::PlayerSender) {
     let Some(known) = sender.known_data_maps.as_ref() else {
         return;
     };
@@ -441,7 +441,7 @@ pub fn sync_connection(sender: &crate::lan::Out) {
                     channel: SYNC_CHANNEL.into(),
                     data,
                 });
-                sender.send(&packet.encode());
+                sender.send(packet.encode());
             }
             Err(error) => {
                 log::error!("Sunrise: failed to encode data map sync for {registry}: {error}");
