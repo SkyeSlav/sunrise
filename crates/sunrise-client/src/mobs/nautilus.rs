@@ -627,18 +627,6 @@ pub fn model(m: &Mob) -> &'static str {
         _ => "nautilus#main",
     }
 }
-/// The `NAUTILUS_BODY` equipment texture of a nautilus armour item.
-pub fn armor_texture(item: &str) -> Option<String> {
-    let material = item
-        .strip_prefix("minecraft:")?
-        .strip_suffix("_nautilus_armor")?;
-    let material = if material == "golden" {
-        "gold"
-    } else {
-        material
-    };
-    Some(format!("entity/equipment/nautilus_body/{material}"))
-}
 /// `NautilusModel.setupAnim` (and `ZombieNautilusCoralModel`'s corals,
 /// hidden under armour).
 pub fn anim(m: &Mob, s: &State, p: &mut Poses, animations: &HashMap<String, Animation>) {

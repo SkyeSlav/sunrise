@@ -362,7 +362,7 @@ impl Game<'_> {
         };
         match slot {
             SADDLE => (&*stack.item == "minecraft:saddle", 1),
-            ARMOR => (body_armor_fits(open.species, &stack.item), 1),
+            ARMOR => (body_armor_fits(self.items(), open.species, stack), 1),
             _ => (true, 64),
         }
     }
@@ -594,33 +594,67 @@ mod reach_tests;
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_horses_wear_horse_armour() {
-        assert!(body_armor_fits(
-            Species::Horse,
-            "minecraft:iron_horse_armor"
-        ));
-        assert!(body_armor_fits(
-            Species::ZombieHorse,
-            "minecraft:diamond_horse_armor"
-        ));
-        assert!(!body_armor_fits(
-            Species::Donkey,
-            "minecraft:iron_horse_armor"
-        ));
-        assert!(!body_armor_fits(
-            Species::Horse,
-            "minecraft:iron_chestplate"
-        ));
+    /// A stack of `item` whose `equippable` component has `slot` and, when given,
+    /// `allowed` entity types.
+    fn worn(item: &str, slot: &str, allowed: Option<&[&str]>) -> ItemStack {
+        use sunrise_core::nbt::Tag;
+        let mut fields = vec![("slot", Tag::String(slot.into()))];
+        if let Some(allowed) = allowed {
+            fields.push((
+                "allowed_entities",
+                Tag::List(allowed.iter().map(|id| Tag::String((*id).into())).collect()),
+            ));
+        }
+        let mut stack = ItemStack::new(item, 1);
+        stack
+            .data_mut()
+            .set_other("minecraft:equippable", Some(Tag::compound(fields)));
+        stack
     }
 
     #[test]
-    fn llamas_wear_carpets_and_no_saddle() {
-        assert!(body_armor_fits(Species::Llama, "minecraft:red_carpet"));
-        assert!(!body_armor_fits(
-            Species::Llama,
-            "minecraft:iron_horse_armor"
-        ));
+    fn the_equippable_component_decides_what_a_horse_wears() {
+        let items = sunrise_client::items::Items::empty();
+        let horses = ["minecraft:horse", "minecraft:zombie_horse"];
+        let mod_armor = worn("example:obsidian_plate", "body", Some(&horses));
+        assert!(body_armor_fits(&items, Species::Horse, &mod_armor));
+        assert!(body_armor_fits(&items, Species::ZombieHorse, &mod_armor));
+        assert!(!body_armor_fits(&items, Species::Donkey, &mod_armor));
+        // A `_horse_armor` id without the component fits nothing.
+        let bare = ItemStack::new("minecraft:iron_horse_armor", 1);
+        assert!(!body_armor_fits(&items, Species::Horse, &bare));
+        // Another slot does not fit the body slot.
+        let helmet = worn("example:hat", "head", None);
+        assert!(!body_armor_fits(&items, Species::Horse, &helmet));
+    }
+
+    #[test]
+    fn vanilla_body_armour_still_fits_its_mobs() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/sunrise-client")
+            .join(sunrise_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let defaults = sunrise_world::item_defaults::read(&root).unwrap();
+        let items = sunrise_client::items::Items::catalog(
+            &root,
+            &sunrise_world::loot::PackOverlay::NONE,
+            &defaults,
+        )
+        .unwrap();
+        let fits = |species, item| body_armor_fits(&items, species, &ItemStack::new(item, 1));
+        assert!(fits(Species::Horse, "minecraft:iron_horse_armor"));
+        assert!(fits(Species::ZombieHorse, "minecraft:diamond_horse_armor"));
+        assert!(!fits(Species::Donkey, "minecraft:iron_horse_armor"));
+        assert!(!fits(Species::Horse, "minecraft:iron_chestplate"));
+        assert!(fits(Species::Nautilus, "minecraft:iron_nautilus_armor"));
+        assert!(fits(Species::Llama, "minecraft:red_carpet"));
+        assert!(!fits(Species::Llama, "minecraft:iron_horse_armor"));
+    }
+
+    #[test]
+    fn llamas_wear_no_saddle() {
         assert!(shows_body(Species::TraderLlama));
         assert!(!shows_saddle(Species::Llama));
         assert!(shows_saddle(Species::Donkey) && !shows_body(Species::Donkey));

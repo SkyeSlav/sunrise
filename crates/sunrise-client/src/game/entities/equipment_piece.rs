@@ -130,12 +130,7 @@ impl Game<'_> {
     ) -> Vec<sunrise_client::mobs::render::Layer> {
         use sunrise_client::mobs::render;
         use sunrise_items::equipment::{CHEST, FEET, HEAD, LEGS};
-        if sunrise_items::equipment::ARMOR
-            .iter()
-            .all(|&slot| mob.extra.slot_stack(slot).is_none())
-            || render::avatar(mob)
-            || sunrise_client::mobs::equine::is_equine(mob.species())
-        {
+        if render::avatar(mob) {
             return Vec::new();
         }
         let mut out = Vec::new();
@@ -177,6 +172,55 @@ impl Game<'_> {
                 layer.equipment_texture_final = material.final_texture;
                 out.push(layer);
             }
+        }
+        out.extend(self.body_equipment_layers(mob));
+        out
+    }
+
+    /// `SimpleEquipmentLayer` for the body armour of a horse, an undead horse or a nautilus: the
+    /// `horse_body` or `nautilus_body` layers of the equipment asset the stack's `equippable`
+    /// names (`EquipmentLayerRenderer`), in any namespace.
+    fn body_equipment_layers(&self, mob: &Mob) -> Vec<sunrise_client::mobs::render::Layer> {
+        use sunrise_client::mobs::{Species as S, render};
+        let (model, kind) = match mob.species() {
+            S::Horse => ("horse_armor#main", "horse_body"),
+            S::ZombieHorse | S::SkeletonHorse => ("undead_horse_armor#main", "horse_body"),
+            S::Nautilus | S::ZombieNautilus if !mob.is_baby() => {
+                ("nautilus_armor#main", "nautilus_body")
+            }
+            _ => return Vec::new(),
+        };
+        let Some(stack) = mob.extra.body_stack() else {
+            return Vec::new();
+        };
+        let Some(equippable) = sunrise_client::item_sync::equippable(stack, self.res.items())
+        else {
+            return Vec::new();
+        };
+        let Some(layers) = equippable
+            .asset_id
+            .as_ref()
+            .filter(|_| equippable.slot == "body")
+            .and_then(|asset| self.armor_stand_assets.equipment.get(asset))
+            .and_then(|kinds| kinds.get(kind))
+        else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for layer in layers {
+            let color = super::armor_stands::layer_color(
+                layer.dyeable,
+                layer.color_when_undyed,
+                Some(stack),
+            );
+            if color == 0 {
+                continue;
+            }
+            let Some((name, _)) = self.gui.atlas.sprites.get_key_value(layer.texture.as_str())
+            else {
+                continue;
+            };
+            out.push(render::Layer::equipment(model, name, color, 0));
         }
         out
     }
@@ -514,6 +558,47 @@ mod tests {
 mod material_tests {
     use super::tests::asset_layer;
     use super::*;
+    /// `EquipmentLayerRenderer` for a horse: a mod's body armour draws the `horse_body` layer of
+    /// the equipment asset its `equippable` names, in the asset's own namespace.
+    #[test]
+    #[ignore = "daily"]
+    fn a_horse_in_mod_body_armour_draws_its_namespaced_horse_body_layer() {
+        use sunrise_core::nbt::Tag;
+        let mut resources = None;
+        let mut game = crate::game::game_tests::tests::server_game(&mut resources);
+        let texture = "example:entity/equipment/horse_body/obsidian";
+        game.armor_stand_assets.equipment.insert(
+            "example:obsidian".into(),
+            HashMap::from([("horse_body".into(), vec![asset_layer(texture, false, None)])]),
+        );
+        game.gui.atlas.sprites.insert(
+            texture.into(),
+            sunrise_client::hud::Rect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 1.0,
+                v1: 1.0,
+                w: 64,
+                h: 64,
+            },
+        );
+        let kind = game.res.mob_types().get("minecraft:horse").unwrap().clone();
+        let mut horse = Mob::new(1, kind, sunrise_core::geometry::Vec3::ZERO, 0.0);
+        let mut armor = ItemStack::new("example:obsidian_horse_armor", 1);
+        armor.data_mut().set_other(
+            "minecraft:equippable",
+            Some(Tag::compound([
+                ("slot", Tag::String("body".into())),
+                ("asset_id", Tag::String("example:obsidian".into())),
+            ])),
+        );
+        horse.extra.set_body_stack(Some(armor));
+        let layers = game.mob_equipment_layers(&horse, EquipmentPass::Draw);
+        assert_eq!(layers.len(), 1);
+        assert_eq!(&*layers[0].model, "horse_armor#main");
+        assert_eq!(&*layers[0].texture, texture);
+    }
+
     #[test]
     fn dyeable_without_default_uses_dye_or_skips_before_foil() {
         let layers = vec![

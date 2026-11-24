@@ -733,7 +733,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                 push(&mut v, model, texture, white, false);
             }
         }
-        // HorseMarkingLayer, the saddle and the horse armour.
+        // HorseMarkingLayer and the saddle; the body armour is an equipment layer.
         s if super::equine::is_equine(s) => {
             let name = super::equine::model_name(s);
             let body = if m.is_baby() {
@@ -752,25 +752,6 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                     white,
                     false,
                 );
-            }
-            if let Some(armor) = m.extra.body_id()
-                && let Some(material) = armor
-                    .strip_prefix("minecraft:")
-                    .and_then(super::equine::horse_armor_asset)
-            {
-                let tex = interned(format_args!("entity/equipment/horse_body/{material}"));
-                let color = if material == "leather" {
-                    abgr(0xA06540)
-                } else {
-                    white
-                };
-                // UndeadHorseRenderer bakes its own armour layer.
-                let layer = if matches!(s, S::ZombieHorse | S::SkeletonHorse) {
-                    "undead_horse_armor#main"
-                } else {
-                    "horse_armor#main"
-                };
-                push(&mut v, layer, tex, color, false);
             }
         }
         // SimpleEquipmentLayer: pig and strider saddles.
@@ -809,11 +790,8 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                 push(&mut v, "iron_golem#main", texture, white, false);
             }
         }
-        // NautilusRenderer: the armour and saddle SimpleEquipmentLayers.
+        // NautilusRenderer: the saddle SimpleEquipmentLayer; the armour is an equipment layer.
         S::Nautilus | S::ZombieNautilus if !m.is_baby() => {
-            if let Some(texture) = m.extra.body_id().and_then(super::nautilus::armor_texture) {
-                push(&mut v, "nautilus_armor#main", texture, white, false);
-            }
             if m.extra.saddled() {
                 push(
                     &mut v,

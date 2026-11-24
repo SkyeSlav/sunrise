@@ -9,7 +9,7 @@ use sunrise_client::{
     first_person::Hand,
     hud::HudBatch,
     items::{EntityTypeTags, ItemStack},
-    mobs::{Mob, MobEvent, Species, Who, equine},
+    mobs::{Mob, MobEvent, Species, Who, equine, equip::equippable_in_slot},
     motion::{MotionWorld, PlayerMotion},
     pose::{Dimensions, Pose},
     sprint::Keys,
@@ -166,10 +166,14 @@ impl Game<'_> {
         }
         // attemptToShearEquipment takes the body slot before the saddle: horse
         // and nautilus armor come off first (not modelled here).
-        if m.extra
-            .body_id()
-            .is_some_and(|b| b.ends_with("_horse_armor") || b.ends_with("_nautilus_armor"))
-        {
+        if m.extra.body_stack().is_some_and(|body| {
+            equippable_in_slot(
+                self.items(),
+                body,
+                "body",
+                sunrise_client::mobs::species::vanilla_id(m.species()),
+            )
+        }) {
             return None;
         }
         let saddle = m.saddle_item()?;
@@ -354,6 +358,15 @@ impl Game<'_> {
         if self.feed_mount(index, item) {
             return true;
         }
+        // Mob.isEquippableInSlot(stack, BODY): the held stack's component, for this type.
+        let wears_body = held.as_ref().is_some_and(|stack| {
+            equippable_in_slot(
+                self.items(),
+                stack,
+                "body",
+                sunrise_client::mobs::species::vanilla_id(species),
+            )
+        });
         let m = &mut self.mobs[index];
         if m.is_baby() {
             return false;
@@ -368,11 +381,7 @@ impl Game<'_> {
                 Species::CamelHusk => "minecraft:entity.camel_husk.saddle",
                 _ => "minecraft:entity.horse.saddle",
             })
-        } else if item.ends_with("_horse_armor")
-            && species == Species::Horse
-            && tamed
-            && m.extra.body_id().is_none()
-        {
+        } else if wears_body && tamed && m.extra.body_id().is_none() {
             m.extra
                 .set_body_stack(held.map(|s| ItemStack { count: 1, ..s }));
             Some("minecraft:entity.horse.armor")

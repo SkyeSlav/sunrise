@@ -2625,3 +2625,4 @@ sunrise-client game::xp_repair_ratio_tests::bad_ratios_never_break_the_repair li
 sunrise-client game::xp_repair_ratio_tests::give_experience_points_repairs_through_the_part lib daily resources
 sunrise-client game::xp_repair_ratio_tests::the_ratio_a_part_answers_scales_the_repair lib daily resources
 sunrise-client game::zombie_villagers::tests::conversions_preserve_body_equipment lib daily resources
+sunrise-client game::equipment_piece::material_tests::a_horse_in_mod_body_armour_draws_its_namespaced_horse_body_layer lib daily resources
