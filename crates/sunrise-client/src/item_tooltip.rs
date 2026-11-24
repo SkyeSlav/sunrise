@@ -1760,7 +1760,7 @@ mod tests {
         let mut removed = ItemStack::new("example:print", 1);
         removed
             .data_mut()
-            .set_other("!minecraft:lore", Some(Tag::compound([])));
+            .set_other("!minecraft:lore", Some(Tag::Compound(Default::default())));
         assert!(lore_texts(&removed, Some(&prototype)).is_empty());
     }
 
