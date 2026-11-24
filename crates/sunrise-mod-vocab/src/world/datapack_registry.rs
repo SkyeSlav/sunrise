@@ -3121,9 +3121,9 @@ pub(crate) mod tests {
         assert_eq!(check_schema(&schema.fields), Ok(()));
         let mut decoder = StubDecoder::new(7);
         // UBM cactus.json shape (uniform IntProvider, weighted BlockStateProvider, defaulted BlockPredicate).
-        let cactus = schema
-            .decode_entry_with_decoder(
-                r#"{
+        let cactus = decode_datapack_entry_with_decoder(
+            &schema,
+            r#"{
                     "behavior": {
                         "type": "universalbonemeal:growing_plant",
                         "blocks_to_grow": {"type": "minecraft:uniform", "min_inclusive": 1, "max_inclusive": 2},
@@ -3137,10 +3137,9 @@ pub(crate) mod tests {
                     },
                     "predicate": {"type": "minecraft:matching_block_tag", "offset": [0, 1, 0], "tag": "minecraft:air"}
                 }"#,
-                &[],
-                &mut decoder,
-            )
-            .unwrap();
+            &mut decoder,
+        )
+        .unwrap();
         let behavior = cactus.get("behavior").unwrap();
         let blocks_to_grow = behavior
             .get("blocks_to_grow")
@@ -3169,18 +3168,17 @@ pub(crate) mod tests {
         assert_ne!(can_grow_into.index(), predicate.index());
 
         // UBM dirt.json shape (block HolderSet list).
-        let dirt = schema
-            .decode_entry_with_decoder(
-                r#"{
+        let dirt = decode_datapack_entry_with_decoder(
+            &schema,
+            r#"{
                     "behavior": {
                         "type": "universalbonemeal:neighbor_conversion",
                         "spread_sources": ["minecraft:grass_block", "minecraft:mycelium"]
                     }
                 }"#,
-                &[],
-                &mut decoder,
-            )
-            .unwrap();
+            &mut decoder,
+        )
+        .unwrap();
         let spread_sources = dirt
             .get("behavior")
             .unwrap()
@@ -3192,52 +3190,48 @@ pub(crate) mod tests {
 
         // Bad value for each kind reports its full nested path.
         assert_eq!(
-            schema
-                .decode_entry_with_decoder(
-                    r#"{"behavior":{"type":"universalbonemeal:growing_plant","blocks_to_grow":999,"vegetation":{"id":"minecraft:cactus"}}}"#,
-                    &[],
-                    &mut StubDecoder::new(1),
-                )
-                .unwrap_err(),
+            decode_datapack_entry_with_decoder(
+                &schema,
+                r#"{"behavior":{"type":"universalbonemeal:growing_plant","blocks_to_grow":999,"vegetation":{"id":"minecraft:cactus"}}}"#,
+                &mut StubDecoder::new(1),
+            )
+            .unwrap_err(),
             DatapackDecodeError::InvalidVanillaValue {
                 field: "behavior.blocks_to_grow".into(),
                 reason: "out of bounds".into(),
             }
         );
         assert_eq!(
-            schema
-                .decode_entry_with_decoder(
-                    r#"{"behavior":{"type":"universalbonemeal:growing_plant","blocks_to_grow":1,"vegetation":{"id":"bad"}}}"#,
-                    &[],
-                    &mut StubDecoder::rejecting("bad"),
-                )
-                .unwrap_err(),
+            decode_datapack_entry_with_decoder(
+                &schema,
+                r#"{"behavior":{"type":"universalbonemeal:growing_plant","blocks_to_grow":1,"vegetation":{"id":"bad"}}}"#,
+                &mut StubDecoder::rejecting("bad"),
+            )
+            .unwrap_err(),
             DatapackDecodeError::InvalidVanillaValue {
                 field: "behavior.vegetation".into(),
                 reason: "refused bad".into(),
             }
         );
         assert_eq!(
-            schema
-                .decode_entry_with_decoder(
-                    r#"{"behavior":{"type":"universalbonemeal:neighbor_conversion","spread_sources":"minecraft:dirt"},"predicate":{"type":"bad"}}"#,
-                    &[],
-                    &mut StubDecoder::rejecting("bad"),
-                )
-                .unwrap_err(),
+            decode_datapack_entry_with_decoder(
+                &schema,
+                r#"{"behavior":{"type":"universalbonemeal:neighbor_conversion","spread_sources":"minecraft:dirt"},"predicate":{"type":"bad"}}"#,
+                &mut StubDecoder::rejecting("bad"),
+            )
+            .unwrap_err(),
             DatapackDecodeError::InvalidVanillaValue {
                 field: "predicate".into(),
                 reason: "refused bad".into(),
             }
         );
         assert_eq!(
-            schema
-                .decode_entry_with_decoder(
-                    r##"{"behavior":{"type":"universalbonemeal:neighbor_conversion","spread_sources":"#bad:tag"}}"##,
-                    &[],
-                    &mut StubDecoder::rejecting("#bad:tag"),
-                )
-                .unwrap_err(),
+            decode_datapack_entry_with_decoder(
+                &schema,
+                r##"{"behavior":{"type":"universalbonemeal:neighbor_conversion","spread_sources":"#bad:tag"}}"##,
+                &mut StubDecoder::rejecting("#bad:tag"),
+            )
+            .unwrap_err(),
             DatapackDecodeError::InvalidVanillaValue {
                 field: "behavior.spread_sources".into(),
                 reason: "refused #bad:tag".into(),
