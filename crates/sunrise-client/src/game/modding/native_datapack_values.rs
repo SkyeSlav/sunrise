@@ -1608,7 +1608,7 @@ mod tests {
                     // 7. /reload with native mods defers datapack snapshots until after UpdateTags
                     //    (run_native_advancement_grants), so a connected client rebinds a newly
                     //    added block tag referenced by a synced HolderSet cleanly.
-                    let offer = datapack_net::offer().unwrap();
+                    let offer = datapack_net::offer().unwrap().unwrap();
                     let rx = crate::game::lan::world_spawn_sync_tests::host_for(game);
                     {
                         let host = game.lan.as_mut().unwrap();
@@ -2036,6 +2036,7 @@ mod tests {
                     game.dispatch_test_remote_event(sunrise_client::net::Event::Joined {
                         registries: joined_registries,
                         datapacks: bad_receiver,
+                        custom_registries: Default::default(),
                         name: "tester".into(),
                         uuid: 1,
                     })
