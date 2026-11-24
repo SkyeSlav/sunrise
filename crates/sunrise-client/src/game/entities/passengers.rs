@@ -782,11 +782,15 @@ impl Game<'_> {
             );
         }
         let special = self.local_difficulty(at).special();
-        // `SkeletonTrapGoal.enchant`: the weapon and the helmet, always.
+        // `SkeletonTrapGoal.enchant`: clear existing enchantments on the weapon
+        // and the helmet, then apply `mob_spawn_equipment`, always.
         for slot in [
             sunrise_client::mobs::finalize::MAINHAND,
             sunrise_client::mobs::finalize::HEAD,
         ] {
+            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                sunrise_client::mobs::finalize::set_slot_enchantments(m, slot, Vec::new());
+            }
             self.enchant_item(id, slot, special);
         }
         Some(id)
