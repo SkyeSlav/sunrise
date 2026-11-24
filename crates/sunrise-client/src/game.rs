@@ -1736,6 +1736,9 @@ mod native_sound_refs;
 #[path = "game/modding/native_entity_random_tests.rs"]
 mod native_entity_random_tests;
 #[cfg(test)]
+#[path = "game/modding/native_enchantment_seed_tests.rs"]
+mod native_enchantment_seed_tests;
+#[cfg(test)]
 #[path = "game/modding/native_sound_seed_tests.rs"]
 mod native_sound_seed_tests;
 #[path = "game/modding/native_special_renderers.rs"]
