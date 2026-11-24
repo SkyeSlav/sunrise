@@ -44,6 +44,19 @@ pub trait ClientInputClientHost {
     /// `native_clipboard_text` reads it. False, with nothing copied, at any other moment or
     /// on a server; empty text copies nothing, as vanilla's.
     fn set_clipboard_text(&self, text: &str) -> bool;
+    /// Side: client.
+    /// Whether the window holds the pointer (`MouseHandler.isMouseGrabbed`): true while the
+    /// player looks around in a world, false with a screen open or the window released.
+    fn is_mouse_grabbed(&self) -> bool;
+    /// Side: client.
+    /// Grabs or releases the pointer as `MouseHandler.grabMouse` and `releaseMouse` do.
+    /// Grabbing does nothing when the window is inactive or already holds the pointer;
+    /// otherwise it closes the open screen (`setScreen(null)`) and takes the pointer, with the
+    /// checks the game's own grab has: a screen a mod kept open, a prompt, a dialog and a
+    /// LAN guest's action leave it released. Releasing does nothing when the pointer is not
+    /// grabbed. A release in a world is undone by the player's next click in it, as vanilla's
+    /// is (`MouseHandler.onPress`). Does nothing on a host without a client window.
+    fn set_mouse_grabbed(&mut self, grabbed: bool);
 }
 
 /// The live client reads behind [`VanillaKeyMappingRef`] and [`ModKeyMappingRef`].
