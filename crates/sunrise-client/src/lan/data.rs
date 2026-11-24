@@ -306,7 +306,12 @@ fn synchronized_entries(
         .into_iter()
         .map(|(id, value)| (("minecraft".to_owned(), id), value, false))
         .collect();
-    if enchantments || matches!(path, "instrument" | "jukebox_song") {
+    if enchantments
+        || matches!(
+            path,
+            "instrument" | "jukebox_song" | "wolf_variant" | "wolf_sound_variant"
+        )
+    {
         mod_entries(resources, path, &mut entries);
     }
     if key == "minecraft:world_clock" {
