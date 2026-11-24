@@ -1353,9 +1353,42 @@ impl Game<'_> {
             &additional,
         );
         self.fns.packs = packs.into_iter().map(Arc::new).collect();
-        let known = |g: &Self, n: &str| n == "vanilla" || g.fns.packs.iter().any(|p| p.id == n);
         self.fns.enabled =
             datapack::selected_ids(self.fns.packs.iter().map(Arc::as_ref), &self.fns.enabled);
+    }
+    /// `DataPackCommand.getPack`: the pack must exist, be selected or not as
+    /// the command needs, not be a feature pack with flags when disabling,
+    /// and have its flags enabled in the world.
+    fn get_pack(&self, name: &str, enabling: bool, selected: &[String]) -> R<()> {
+        if name != "vanilla" && !self.fns.packs.iter().any(|p| p.id == name) {
+            return Err(err("commands.datapack.unknown", &[&name]));
+        }
+        let on = selected.iter().any(|p| p == name);
+        if enabling && on {
+            return Err(err("commands.datapack.enable.failed", &[&name]));
+        }
+        if !enabling && !on {
+            return Err(err("commands.datapack.disable.failed", &[&name]));
+        }
+        if !enabling
+            && self
+                .fns
+                .packs
+                .iter()
+                .any(|pack| pack.id == name && pack.is_feature() && !pack.features().is_empty())
+        {
+            // `ERROR_CANNOT_DISABLE_FEATURE`: the flag stays on for the
+            // world's life.
+            return Err(err("commands.datapack.disable.failed.feature", &[&name]));
+        }
+        let missing = self.missing_pack_features(name);
+        if !missing.is_empty() {
+            return Err(err(
+                "commands.datapack.enable.failed.no_flags",
+                &[&name, &missing.join(", ")],
+            ));
+        }
+        Ok(())
     }
     pub(super) fn cmd_datapack(&mut self, id: &str, ctx: &Context) -> R<i32> {
         let name = match ctx.get("name") {
@@ -1420,27 +1453,16 @@ impl Game<'_> {
             }
             "datapack.enable" => {
                 let name = name.unwrap_or_default();
-                if !known(self, &name) {
-                    return Err(err("commands.datapack.unknown", &[&name]));
-                }
-                if selected.contains(&name) {
-                    return Err(err("commands.datapack.enable.failed", &[&name]));
-                }
-                let missing = self.missing_pack_features(&name);
-                if !missing.is_empty() {
-                    // `DataPackCommand`: the pack's requested features must
-                    // be a subset of the world's enabled ones.
-                    return Err(err(
-                        "commands.datapack.enable.failed.no_flags",
-                        &[&name, &missing.join(", ")],
-                    ));
-                }
+                self.get_pack(&name, true, &selected)?;
                 let vanilla_disabled = name != "vanilla" && self.cmds.vanilla_disabled;
                 if name != "vanilla" {
                     let existing = match ctx.get("existing") {
                         Some(Arg::Str(e)) => Some(e.clone()),
                         _ => None,
                     };
+                    if let Some(e) = &existing {
+                        self.get_pack(e, false, &selected)?;
+                    }
                     let position = if ctx.has("first") {
                         0
                     } else if let Some(e) = &existing {
@@ -1469,34 +1491,12 @@ impl Game<'_> {
                     "commands.datapack.modify.enable",
                     &[self.pack_link(&name, true)],
                 ));
-                if self
-                    .fns
-                    .packs
-                    .iter()
-                    .any(|pack| pack.id == name && pack.is_feature() && !pack.features().is_empty())
-                {
-                    // `DataPackCommand`'s ERROR_CANNOT_DISABLE_FEATURE: the
-                    // flag stays on for the world's life.
-                    return Err(err("commands.datapack.disable.failed.feature", &[&name]));
-                }
-                let missing = self.missing_pack_features(&name);
-                if !missing.is_empty() {
-                    return Err(err(
-                        "commands.datapack.enable.failed.no_flags",
-                        &[&name, &missing.join(", ")],
-                    ));
-                }
                 self.apply_pack_change(&enabled, vanilla_disabled)?;
                 Ok(self.selected_packs().len() as i32)
             }
             _ => {
                 let name = name.unwrap_or_default();
-                if !known(self, &name) {
-                    return Err(err("commands.datapack.unknown", &[&name]));
-                }
-                if !selected.contains(&name) {
-                    return Err(err("commands.datapack.disable.failed", &[&name]));
-                }
+                self.get_pack(&name, false, &selected)?;
                 if self
                     .fns
                     .packs
@@ -2754,6 +2754,35 @@ mod tests {
             open_datapack_world(game, &root);
             assert!(game.cmds.vanilla_disabled);
             assert!(!game.selected_packs().contains(&"vanilla".to_owned()));
+        });
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn datapack_enable_next_to_a_flagged_feature_pack_is_refused() {
+        use crate::game::native_entity_refs::tests::with_game;
+        let root = datapack_world("datapack-feature-neighbour", &["a", "b"]);
+        std::fs::write(
+            root.join("datapacks.json"),
+            r#"{"enabled":["file/a"],"disabled":["file/b"]}"#,
+        )
+        .unwrap();
+        with_game(|game| {
+            open_datapack_world(game, &root);
+            game.level.enabled_features = vec![
+                "minecraft:vanilla".into(),
+                "minecraft:trade_rebalance".into(),
+            ]
+            .into();
+            game.reload_datapacks(true, &game.level.enabled_features.clone())
+                .unwrap();
+            assert!(game.fns.enabled.contains(&"trade_rebalance".to_owned()));
+            assert!(!game.run_command("datapack enable \"file/b\" after \"trade_rebalance\""));
+            assert!(!game.run_command("datapack enable \"file/b\" before \"trade_rebalance\""));
+            assert!(!game.fns.enabled.contains(&"file/b".to_owned()));
+            assert!(game.run_command("datapack enable \"file/b\" after \"file/a\""));
+            assert!(game.fns.enabled.contains(&"file/b".to_owned()));
         });
         let _ = std::fs::remove_dir_all(root);
     }
