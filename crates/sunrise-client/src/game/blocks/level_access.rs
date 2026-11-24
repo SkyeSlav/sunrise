@@ -102,6 +102,20 @@ impl LevelAccess for GameLevel<'_> {
             self.native_neighbor_changed(ticks, self.dimension, pos, state, changed.block(), moved);
         }
     }
+    fn observe_on_place(
+        &mut self,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        state: BlockStateId,
+        old: BlockStateId,
+        moved: bool,
+    ) {
+        if self.native_authoritative
+            && api_values::block_state::block_listens(mod_api::HookId::OnPlace, state)
+        {
+            self.native_on_place(ticks, self.dimension, pos, state, old, moved);
+        }
+    }
     fn affect_neighbors_after_removal(
         &self,
         pos: BlockPos,

@@ -160,6 +160,7 @@ mod block_entity_type_add_blocks;
 mod block_entity_view_distance;
 mod block_grow_feature;
 mod block_landing;
+mod block_on_place;
 mod block_particle_effects;
 #[cfg(test)]
 mod block_particle_effects_tests;

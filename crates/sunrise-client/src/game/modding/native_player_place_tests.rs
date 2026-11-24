@@ -154,3 +154,67 @@ fn a_client_cannot_place_a_block_as_a_player() {
         );
     });
 }
+
+/// `BlockBehaviour.onPlace` runs for every write, so a part on glass that finds a signal beside
+/// it lights itself within the write (`GemLampBlock.onPlace`): by a level write and by a
+/// player's placement, with the lit state in the level before any tick. Glass that is not
+/// powered stays, and a block with no part is unchanged.
+#[test]
+#[ignore = "daily"]
+fn a_part_lights_itself_in_on_place_for_a_level_write_and_a_player_placement() {
+    use mod_platform::__private::part_tests::{block_on_place_game_thread, block_on_places};
+
+    // The fixture installs its mod for the process: run it in a child of its own.
+    if super::native_entity_refs::tests::run_fresh_cases(
+        "game::native_player_place_tests::a_part_lights_itself_in_on_place_for_a_level_write_and_a_player_placement",
+        "SUNRISE_BLOCK_ON_PLACE_CHILD",
+        &["place"],
+    ) {
+        return;
+    }
+    block_on_place_game_thread();
+    with_guests(|game| {
+        loaded(game);
+        let registry = game.pack.assets.registry;
+        let state = |name: &str| registry.default_state(name).unwrap();
+        let (glass, lit, plain) = (
+            state("minecraft:glass"),
+            state("minecraft:white_stained_glass"),
+            state("minecraft:black_stained_glass"),
+        );
+        let air = api_state(game, "minecraft:air").block();
+        let dimension = game.dim.id().to_owned();
+        for z in [2, 6, 10, 14] {
+            game.world
+                .set(4, 70, z, state("minecraft:redstone_block"))
+                .unwrap();
+        }
+        assert!(block_on_places().is_empty());
+
+        // A level write beside the redstone block: lit at once, with no tick run.
+        assert!(game.native_set_block(&dimension, [5, 70, 2], glass, 3));
+        assert_eq!(game.world.block(5, 70, 2), lit);
+        assert_eq!(block_on_places(), [([5, 70, 2], air, false)]);
+
+        // A player's placement beside the redstone block.
+        let b = game.player(13).unwrap();
+        let level = game.level(game.dim.id()).unwrap();
+        let api_glass = api_state(game, "minecraft:glass");
+        assert_eq!(
+            b.place_block(game, level, [5, 70, 6], api_glass, true),
+            Ok(())
+        );
+        assert_eq!(game.world.block(5, 70, 6), lit);
+        assert_eq!(block_on_places(), [([5, 70, 6], air, false)]);
+
+        // A block with no part is unchanged beside the same redstone block.
+        assert!(game.native_set_block(&dimension, [5, 70, 10], plain, 3));
+        assert_eq!(game.world.block(5, 70, 10), plain);
+        assert!(block_on_places().is_empty());
+
+        // The part hears a write with no signal and leaves the glass as it is.
+        assert!(game.native_set_block(&dimension, [8, 70, 14], glass, 3));
+        assert_eq!(game.world.block(8, 70, 14), glass);
+        assert_eq!(block_on_places(), [([8, 70, 14], air, false)]);
+    });
+}

@@ -142,6 +142,15 @@ state whose parts are asked. The host is a read-only `LevelSide`.
 | `block_changed` | The global server hook hears a change earlier, right after the state is written, and also for replaced writes. |
 | Panics | A panicking part is contained with a warning. |
 
+## Placement writes
+
+`BlockPart::on_place` is vanilla's `BlockBehaviour.onPlace`, heard on the server for every write of a
+new state: a player's placement, `/setblock`, `/fill`, a structure, a piston. Only the parts on the new
+state hear it, and `event.old_state` and `event.moved_by_piston` say what it replaced and whether a
+piston wrote it. It gets the level writer `neighbor_changed` gets, so a part can read its signals and set
+blocks in the call, as a lamp switches to its lit block the moment it is placed beside power; the write's
+neighbour updates run as vanilla's do. It runs before the block's own `onPlace` handling.
+
 ## Rotation
 
 `BlockPart::rotate` answers how a structure template turns your block as it places it: world

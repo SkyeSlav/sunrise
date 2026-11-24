@@ -737,6 +737,19 @@ pub trait LevelAccess: BlockEntityNeighbors {
         _moved: bool,
     ) {
     }
+    /// Observe `BlockBehaviour.onPlace` (from `LevelChunk.setBlockState`) before the
+    /// block's own `onPlace` handling, with the level's `ticks`: a write goes through
+    /// `Behaviours::set_block` with them, so its neighbour updates run as vanilla's do.
+    /// `state` is the new state and `old` the one it replaced. The default does nothing.
+    fn observe_on_place(
+        &mut self,
+        _ticks: &mut Ticks,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _old: BlockStateId,
+        _moved: bool,
+    ) {
+    }
     /// `BlockState.randomTick` from `ServerLevel.tickChunk`, before the block
     /// handles it. The level may change the block (`Behaviours::set_block`
     /// with `ticks`); setting `handled` skips the block's own random tick. A
