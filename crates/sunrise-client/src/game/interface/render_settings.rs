@@ -263,8 +263,10 @@ impl Game<'_> {
             // A new renderer starts with the vanilla column.
             renderer.clear_sections(self.world.layout());
         }
-        // And has no wall for the world border.
+        // And has no wall for the world border. Its sections' sources are kept as the meshes
+        // on their way carry them.
         self.border_renderer.invalidate();
+        renderer.keep_pack_sources(self.streaming.shader_pack);
         self.renderer = Some(renderer);
         self.forget_atlas_slots();
         if !world_kept {

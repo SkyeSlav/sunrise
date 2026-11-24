@@ -5,11 +5,38 @@
 
 /// `Property.hasSignature` and the services key check, as authlib's
 /// `SignatureState`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Signature {
+    #[default]
     Unsigned,
     Signed,
     Invalid,
+}
+
+/// `MinecraftServicesSessionService.getPropertySignatureState`: verify the raw
+/// property value, not its decoded JSON, using only `PROFILE_PROPERTY` keys.
+pub fn property_signature(
+    value: &str,
+    signature: Option<&str>,
+    profile_property_keys: &[sunrise_protocol::rsa::RsaPublicKey],
+) -> Signature {
+    let Some(signature) = signature else {
+        return Signature::Unsigned;
+    };
+    let Some(signature) = base64_decode(signature) else {
+        return Signature::Invalid;
+    };
+    if profile_property_keys.iter().any(|key| {
+        key.verify(
+            sunrise_protocol::rsa::SignatureHash::Sha1,
+            value.as_bytes(),
+            &signature,
+        )
+    }) {
+        Signature::Signed
+    } else {
+        Signature::Invalid
+    }
 }
 
 /// `MinecraftProfileTextures`: the texture URLs a profile names. Empty when
@@ -21,7 +48,7 @@ pub struct Textures {
     pub slim: bool,
     pub cape: Option<String>,
     pub elytra: Option<String>,
-    pub signed: bool,
+    pub signature: Signature,
 }
 
 /// The `getTexture` endpoint's valid URIs in production's services discovery
@@ -105,7 +132,7 @@ pub fn unpack(value: &str, signature: Signature, valid_uris: &[impl AsRef<str>])
         return empty;
     }
     let mut out = Textures {
-        signed: signature == Signature::Signed,
+        signature,
         ..empty.clone()
     };
     // Authlib's MinecraftServicesSessionService validates every URL in
@@ -138,12 +165,15 @@ pub fn unpack(value: &str, signature: Signature, valid_uris: &[impl AsRef<str>])
     out
 }
 
-/// The skin URL of a `minecraft:profile` component's property list. Player
-/// heads and mannequins read their profile this way, and `SkinManager` lets
-/// those textures be unsigned (`getInsecureSkinInformation`).
+/// Unpack a profile for an insecure-only consumer (heads, mannequins and
+/// previews). The caller is not making a trust decision about the property.
+pub fn unpack_insecure(value: &str) -> Textures {
+    unpack(value, Signature::Unsigned, texture_uris())
+}
+
+/// The skin URL of a `minecraft:profile` component's property list.
 pub fn profile_skin_url(profile: &serde_json::Value) -> Option<String> {
-    let (value, signature) = parse_profile(profile).textures?;
-    unpack(&value, signature, texture_uris()).skin
+    unpack_insecure(&parse_profile(profile).textures?).skin
 }
 
 /// The textures of a Minecraft services `/minecraft/profile` answer: the
@@ -185,7 +215,7 @@ pub fn services_profile_textures(profile: &serde_json::Value) -> Textures {
         slim,
         cape,
         elytra: None,
-        signed: false,
+        signature: Signature::Unsigned,
     }
 }
 
@@ -203,7 +233,7 @@ pub fn profile_skin_url_nbt(profile: &sunrise_core::nbt::Tag) -> Option<String> 
             .then(|| nbt_text(p.get("value")))
             .flatten()
     })?;
-    unpack(&value, Signature::Unsigned, texture_uris()).skin
+    unpack_insecure(&value).skin
 }
 
 /// `ResolvableProfile.skinPatch().body()` of a skull's `profile` NBT: the
@@ -248,21 +278,12 @@ pub struct ResolvedProfile {
     pub properties: Vec<(String, String, Option<String>)>,
 }
 impl ResolvedProfile {
-    /// `SessionService.getPackedTextures`: the `textures` property.
-    pub fn textures(&self) -> Option<(String, Signature)> {
+    /// The `textures` property's value, for consumers that don't require a signed profile.
+    pub fn textures(&self) -> Option<&str> {
         self.properties
             .iter()
             .find(|(n, _, _)| n == "textures")
-            .map(|(_, v, s)| {
-                (
-                    v.clone(),
-                    if s.is_some() {
-                        Signature::Signed
-                    } else {
-                        Signature::Unsigned
-                    },
-                )
-            })
+            .map(|(_, value, _)| value.as_str())
     }
 }
 
@@ -440,8 +461,8 @@ impl Resolver {
 pub struct ProfileInfo {
     /// `GameProfile.id` (`DefaultPlayerSkin.get`).
     pub id: u128,
-    /// The `textures` property's value and signature state, when present.
-    pub textures: Option<(String, Signature)>,
+    /// The `textures` property's value, for the insecure head lookup.
+    pub textures: Option<String>,
     /// `Dynamic` profiles resolve by name or id.
     pub dynamic: Option<NameOrId>,
 }
@@ -483,16 +504,7 @@ pub fn parse_profile(v: &serde_json::Value) -> ProfileInfo {
         .into_iter()
         .flatten()
         .find(|p| p.get("name").and_then(|n| n.as_str()) == Some("textures"))
-        .and_then(|p| {
-            Some((
-                p.get("value")?.as_str()?.to_owned(),
-                if p.get("signature").is_some() {
-                    Signature::Signed
-                } else {
-                    Signature::Unsigned
-                },
-            ))
-        });
+        .and_then(|p| p.get("value")?.as_str().map(str::to_owned));
     // `ResolvableProfile.create`: a Partial is Dynamic with no properties
     // and exactly one of a name or an id.
     let dynamic =
@@ -540,8 +552,8 @@ struct HeadProfile {
 
 fn prepare_head(profile: &serde_json::Value) -> HeadProfile {
     let info = parse_profile(profile);
-    let skin = info.textures.as_ref().and_then(|(value, signature)| {
-        let url = unpack(value, *signature, texture_uris()).skin?;
+    let skin = info.textures.as_deref().and_then(|value| {
+        let url = unpack_insecure(value).skin?;
         let location = skin_location(&texture_hash(&url)?);
         Some((url, location))
     });
@@ -552,7 +564,7 @@ fn prepare_head(profile: &serde_json::Value) -> HeadProfile {
 struct HeadProfiles {
     entries: std::collections::HashMap<serde_json::Value, std::sync::Arc<HeadProfile>>,
     nbt: std::collections::HashMap<sunrise_core::nbt::Tag, std::sync::Arc<serde_json::Value>>,
-    resolved: [std::collections::HashMap<String, std::sync::Arc<HeadProfile>>; 2],
+    resolved: std::collections::HashMap<String, std::sync::Arc<HeadProfile>>,
 }
 
 impl HeadProfiles {
@@ -621,24 +633,17 @@ fn resolved_head(key: &NameOrId, resolver: &mut Resolver) -> Option<std::sync::A
     let Resolve::Done(Some(profile)) = resolver.state(key) else {
         return None;
     };
-    let (_, value, signature) = profile
-        .properties
-        .iter()
-        .find(|(n, _, _)| n == "textures")?;
-    let cache = &mut resolver.heads.resolved[usize::from(signature.is_some())];
+    let value = profile.textures()?;
+    let cache = &mut resolver.heads.resolved;
     if let Some(parsed) = cache.get(value) {
         return Some(parsed.clone());
     }
     if cache.len() >= MAX_HEAD_PROFILES {
         cache.clear();
     }
-    let property = if signature.is_some() {
-        serde_json::json!({"name": "textures", "value": value, "signature": ""})
-    } else {
-        serde_json::json!({"name": "textures", "value": value})
-    };
+    let property = serde_json::json!({"name": "textures", "value": value});
     let parsed = std::sync::Arc::new(prepare_head(&serde_json::json!({"properties": [property]})));
-    cache.insert(value.clone(), parsed.clone());
+    cache.insert(value.to_owned(), parsed.clone());
     Some(parsed)
 }
 
@@ -784,16 +789,6 @@ fn location(prefix: &str, hash: &str) -> String {
     out
 }
 
-/// `PlayerSkin.cape`: the cape texture of textures whose lookup gave a skin
-/// (every download ready), if they name one.
-pub fn cape(textures: &Textures) -> Option<String> {
-    textures
-        .cape
-        .as_deref()
-        .and_then(texture_hash)
-        .map(|hash| cape_location(&hash))
-}
-
 /// A cape in a 64x64 skin slot: the 64x32 picture (or the older 22x17,
 /// which has the same layout) in its top half. Vanilla draws a cape of any
 /// size; a larger one is scaled down to 64x32 here.
@@ -880,42 +875,101 @@ pub enum Kind {
     Elytra,
 }
 
-/// `SkinManager.createLookup(profile, requireSecure).get()`: the skin
-/// texture a player shows, or `None` for their default skin. `download`
-/// tells how the skin, cape and elytra texture downloads stand.
+/// A resolved `PlayerSkin`. No custom body means the UUID's default body and
+/// model, not that the cape and elytra failed to resolve.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ResolvedSkin {
+    /// Custom body texture and whether its model is slim.
+    pub custom_body: Option<(String, bool)>,
+    pub cape: Option<String>,
+    pub elytra: Option<String>,
+}
+
+impl ResolvedSkin {
+    pub fn body(&self, uuid: u128) -> (&str, bool) {
+        match &self.custom_body {
+            Some((location, slim)) => (location.as_str(), *slim),
+            None => default_body(uuid),
+        }
+    }
+}
+
+/// `DefaultPlayerSkin.get(UUID)`'s body texture and whether its model is slim.
+fn default_body(uuid: u128) -> (&'static str, bool) {
+    let body = crate::tab_list::default_skin(uuid);
+    (body, body.contains("/slim/"))
+}
+
+/// `PlayerInfo.getSkin` as drawn from the atlas: the complete accepted
+/// profile, or the UUID default without accessories while an upload is missing.
+pub fn drawable_skin(
+    uuid: u128,
+    skin: Option<&ResolvedSkin>,
+    show_cape: bool,
+    mut in_atlas: impl FnMut(&str) -> bool,
+) -> (&str, bool, Option<&str>) {
+    if let Some(skin) = skin {
+        let (body, slim) = skin.body(uuid);
+        let body_ready = skin.custom_body.is_none() || in_atlas(body);
+        let cape = skin.cape.as_deref().filter(|_| show_cape);
+        // Ask for both: the atlas can queue a missing upload on either call.
+        let cape_ready = cape.is_none_or(&mut in_atlas);
+        if body_ready && cape_ready {
+            return (body, slim, cape);
+        }
+    }
+    let (body, slim) = default_body(uuid);
+    (body, slim, None)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SkinLookup {
+    Ready(ResolvedSkin),
+    Pending,
+    Failed,
+    Disallowed,
+}
+
+/// `SkinManager.registerTextures` joins all named textures before
+/// `createLookup` may show them. Until the lookup is accepted, the player
+/// shows its default body and model without profile accessories.
 pub fn lookup(
     textures: &Textures,
     require_secure: bool,
     mut download: impl FnMut(Kind, &str) -> Download,
-) -> Option<String> {
-    let mut skin = None;
-    let mut state = Download::Ready;
-    let urls = [
+) -> SkinLookup {
+    let mut resolved = ResolvedSkin::default();
+    let mut pending = false;
+    let mut failed = false;
+    for (kind, url) in [
         (Kind::Skin, &textures.skin),
         (Kind::Cape, &textures.cape),
         (Kind::Elytra, &textures.elytra),
-    ];
-    for (kind, url) in urls {
+    ] {
         let Some(url) = url else { continue };
-        // registerTexture computes the hash first: a bad URL, even a cape's,
-        // fails the whole lookup.
-        let hash = texture_hash(url)?;
-        if kind == Kind::Skin {
-            skin = Some(skin_location(&hash));
-        }
+        let Some(hash) = texture_hash(url) else {
+            failed = true;
+            continue;
+        };
         match download(kind, url) {
-            // `SkinManager.registerTextures` joins the skin, cape and elytra
-            // futures with `allOf`: any one failing fails the profile's
-            // `PlayerSkin`, and `createLookup` then shows the default skin.
-            Download::Failed => return None,
-            Download::Pending => state = Download::Pending,
-            Download::Ready => {}
+            Download::Failed => failed = true,
+            Download::Pending => pending = true,
+            Download::Ready => match kind {
+                Kind::Skin => resolved.custom_body = Some((skin_location(&hash), textures.slim)),
+                Kind::Cape => resolved.cape = Some(cape_location(&hash)),
+                Kind::Elytra => resolved.elytra = Some(location("elytra/", &hash)),
+            },
         }
     }
-    if state != Download::Ready || require_secure && !textures.signed {
-        return None;
+    if pending {
+        SkinLookup::Pending
+    } else if failed {
+        SkinLookup::Failed
+    } else if require_secure && textures.signature != Signature::Signed {
+        SkinLookup::Disallowed
+    } else {
+        SkinLookup::Ready(resolved)
     }
-    skin
 }
 
 /// `SkinTextureDownloader.processLegacySkin` on RGBA pixels: 64x32 skins
@@ -1629,7 +1683,7 @@ mod tests {
     }
     #[test]
     fn profiles_parse_like_resolvable_profiles() {
-        use super::{NameOrId, Signature, parse_profile};
+        use super::{NameOrId, parse_profile};
         // A bare name is `createUnresolved`: dynamic by name, and its partial
         // id is the name's offline UUID.
         let p = parse_profile(&serde_json::json!("Notch"));
@@ -1665,11 +1719,11 @@ mod tests {
             "properties": [{"name": "textures", "value": "v"}]
         }));
         assert!(p.dynamic.is_none());
-        assert_eq!(p.textures, Some(("v".into(), Signature::Unsigned)));
+        assert_eq!(p.textures.as_deref(), Some("v"));
         let p = parse_profile(&serde_json::json!({
             "properties": [{"name": "textures", "value": "v", "signature": "s"}]
         }));
-        assert_eq!(p.textures, Some(("v".into(), Signature::Signed)));
+        assert_eq!(p.textures.as_deref(), Some("v"));
         // Empty properties leave it dynamic.
         let p = parse_profile(&serde_json::json!({"name": "Notch", "properties": []}));
         assert_eq!(p.dynamic, Some(NameOrId::Name("Notch".into())));
@@ -1693,7 +1747,7 @@ mod tests {
             t.cape.as_deref(),
             Some("http://textures.minecraft.net/texture/cape1")
         );
-        assert!(!t.signed);
+        assert_eq!(t.signature, super::Signature::Unsigned);
         let elsewhere = serde_json::json!({"skins": [{"state": "ACTIVE", "url": "https://evil.example/texture/x"}]});
         assert_eq!(
             super::services_profile_textures(&elsewhere),
@@ -1857,11 +1911,7 @@ mod tests {
         assert_eq!(hd[at(63, 31)], 9);
         assert_eq!(hd[at(0, 32)], 0);
         assert!(super::process_cape(64, 32, &[0; 4]).is_none());
-        let textures = super::Textures {
-            cape: Some("http://textures.minecraft.net/texture/abc".into()),
-            ..Default::default()
-        };
-        let cape = super::cape(&textures).unwrap();
+        let cape = super::cape_location("abc");
         assert_eq!(
             cape["capes/".len()..],
             super::skin_location("abc")["skins/".len()..]
@@ -1989,11 +2039,18 @@ mod tests {
             skin: Some("https://textures.minecraft.net/texture/skin1".into()),
             cape: Some("https://textures.minecraft.net/texture/cape1".into()),
             elytra: Some("https://textures.minecraft.net/texture/elytra1".into()),
-            signed: true,
+            signature: super::Signature::Signed,
             slim: false,
         };
         let all_ready = super::lookup(&textures, true, |_, _| super::Download::Ready);
-        assert_eq!(all_ready, Some(super::skin_location("skin1")));
+        let super::SkinLookup::Ready(resolved) = all_ready else {
+            panic!("all textures are ready");
+        };
+        assert_eq!(
+            resolved.custom_body,
+            Some((super::skin_location("skin1"), false))
+        );
+        assert_eq!(resolved.cape, Some(super::cape_location("cape1")));
         for failing in [super::Kind::Skin, super::Kind::Cape, super::Kind::Elytra] {
             let skin = super::lookup(&textures, true, |kind, _| {
                 if kind == failing {
@@ -2002,7 +2059,7 @@ mod tests {
                     super::Download::Ready
                 }
             });
-            assert_eq!(skin, None, "{failing:?} failed");
+            assert_eq!(skin, super::SkinLookup::Failed, "{failing:?} failed");
         }
         let bad_cape_url = super::Textures {
             cape: Some("no-scheme".into()),
@@ -2010,8 +2067,88 @@ mod tests {
         };
         assert_eq!(
             super::lookup(&bad_cape_url, true, |_, _| super::Download::Ready),
-            None
+            super::SkinLookup::Failed
         );
+    }
+
+    #[test]
+    fn cape_only_profiles_draw_the_uuid_default_body_and_model() {
+        use super::{Download, Kind, SkinLookup, Textures, drawable_skin, lookup};
+        let mut textures = Textures {
+            cape: Some("https://textures.minecraft.net/texture/cape1".into()),
+            signature: super::Signature::Signed,
+            ..Textures::default()
+        };
+        let SkinLookup::Ready(resolved) = lookup(&textures, true, |kind, _| {
+            assert_eq!(kind, Kind::Cape);
+            Download::Ready
+        }) else {
+            panic!("the cape-only profile must resolve without a custom body");
+        };
+        let cape = super::cape_location("cape1");
+        for (id, body, slim) in [
+            (0, "entity/player/slim/alex", true),
+            (9, "entity/player/wide/alex", false),
+        ] {
+            assert_eq!(
+                drawable_skin(id, Some(&resolved), true, |sprite| sprite == cape.as_str()),
+                (body, slim, Some(cape.as_str()))
+            );
+            assert_eq!(
+                drawable_skin(id, Some(&resolved), true, |_| false),
+                (body, slim, None)
+            );
+        }
+        assert_eq!(
+            lookup(&textures, true, |_, _| Download::Failed),
+            SkinLookup::Failed
+        );
+        assert_eq!(
+            drawable_skin(0, None, true, |_| unreachable!()),
+            ("entity/player/slim/alex", true, None)
+        );
+
+        textures.elytra = Some("https://textures.minecraft.net/texture/wings1".into());
+        assert_eq!(
+            lookup(&textures, true, |kind, _| match kind {
+                Kind::Elytra => Download::Pending,
+                _ => Download::Ready,
+            }),
+            SkinLookup::Pending
+        );
+        assert_eq!(
+            lookup(&textures, true, |kind, _| match kind {
+                Kind::Elytra => Download::Failed,
+                _ => Download::Ready,
+            }),
+            SkinLookup::Failed
+        );
+        let SkinLookup::Ready(resolved) = lookup(&textures, true, |_, _| Download::Ready) else {
+            panic!("the completed cape and elytra must resolve together");
+        };
+        assert_eq!(resolved.cape.as_deref(), Some(cape.as_str()));
+        assert_eq!(resolved.elytra, Some(super::location("elytra/", "wings1")));
+
+        textures.cape = None;
+        let SkinLookup::Ready(wings_only) = lookup(&textures, true, |_, _| Download::Ready) else {
+            panic!("elytra without a cape or custom body must still resolve");
+        };
+        assert_eq!(wings_only.body(9), ("entity/player/wide/alex", false));
+        assert!(wings_only.cape.is_none());
+        assert_eq!(wings_only.elytra, resolved.elytra);
+    }
+
+    #[test]
+    fn an_unsigned_cape_is_allowed_locally_but_not_on_a_remote_player() {
+        use super::{Download, Signature, SkinLookup, TEXTURE_URIS, lookup, unpack};
+        let value = "eyJ0ZXh0dXJlcyI6eyJDQVBFIjp7InVybCI6Imh0dHBzOi8vdGV4dHVyZXMubWluZWNyYWZ0Lm5ldC90ZXh0dXJlL2FiY2QxMjM0In19fQ==";
+        let unsigned = unpack(value, Signature::Unsigned, &TEXTURE_URIS);
+        let ready = |_, _: &str| Download::Ready;
+        let SkinLookup::Ready(local) = lookup(&unsigned, false, ready) else {
+            panic!("the local player doesn't require a signature");
+        };
+        assert_eq!(local.cape, Some(super::cape_location("abcd1234")));
+        assert_eq!(lookup(&unsigned, true, ready), SkinLookup::Disallowed);
     }
 
     /// A 1x1 PNG of `rgba`.

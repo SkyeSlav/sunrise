@@ -595,6 +595,7 @@ fn screen_ids_are_distinct_and_stable() {
         Screen::BlockEditor,
         Screen::ServerLinks,
         Screen::ConfirmLink,
+        Screen::DemoIntro,
         Screen::DialogWarning,
         Screen::Win,
         Screen::Mod,

@@ -358,6 +358,16 @@ window, which centres the mouse again; `MenuReplace::InPlace` sends none, so the
 its screen and its mouse where they are until the new screen replaces it, as when one
 screen of a machine leads to the next.
 
+### Window ids
+
+Each menu the server opens for a player takes the next id of that player's container counter
+(vanilla's `ServerPlayer.containerCounter`), 1 to 100 and round again. `player.container_counter(host)` reads
+the id the last open took, so the next one is `counter % 100 + 1`: the id to hand a menu built before the open,
+as Java's `MenuProvider.createMenu(containerId, ...)` is. `player.next_container_counter(host)` advances the
+counter as an open does without opening anything, for an open that decides after the advance that no window
+follows (a `createMenu` that answers `null`). A mod modelling `ServerPlayer.openMenu` from inside the player's
+own action closes the open menu first with `menu.close_container(host)`, which closes at the call there.
+
 ## The menu's screen
 
 Register a constructor in `Hooks::register` with `register_menu_screen`, as with NeoForge's

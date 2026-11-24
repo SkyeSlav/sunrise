@@ -65,6 +65,8 @@ pub(crate) struct Installed {
     pub(crate) loot_function_types: Vec<crate::parts::loot_types::LootFunctionTypeInfo>,
     pub(crate) loot_condition_types: Vec<crate::parts::loot_types::LootConditionTypeInfo>,
     pub(crate) dimensions: Vec<crate::world::dimension::DimensionInfo>,
+    /// The world clocks the mods registered, as `namespace:path` ids.
+    pub(crate) world_clocks: Vec<Box<str>>,
     pub(crate) chunk_generators: Vec<crate::world::chunk_generator::ChunkGeneratorInfo>,
     pub(crate) biome_sources: Vec<crate::world::biome_source::BiomeSourceInfo>,
     /// Loading warnings for each owning mod, in registration order.

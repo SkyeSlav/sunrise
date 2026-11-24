@@ -254,7 +254,7 @@ impl LevelWriteHost for JournalLevelWrite<'_, '_> {
             &options,
             state,
             |id| registry.state(id).is_some(),
-            at,
+            std::slice::from_ref(&at),
             spread,
             speed,
         ) {

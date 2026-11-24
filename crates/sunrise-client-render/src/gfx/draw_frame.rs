@@ -52,6 +52,7 @@ impl Renderer {
         // through a pack dropped (Shader Options) or not loaded yet (`Renderer::new`),
         // so the next world's sections, which the level loading screen uploads, stay.
         if !frame.title {
+            self.follow_arena_storage();
             self.follow_translucent_layout();
             self.follow_packed_layout();
         }

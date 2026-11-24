@@ -95,6 +95,32 @@ pub trait LevelEffectsBackendMut {
         count: i32,
     ) -> bool;
     /// Side: server.
+    /// Sends the same particle effect around each entry of `positions`, in slice order,
+    /// including repeated positions. Each sends a separate packet to players in the named
+    /// level whose block centre is strictly less than 32 blocks away, as in
+    /// `ServerLevel.sendParticles`. There is no limit on the number of positions.
+    ///
+    /// Uses the same validation as `LevelRef::send_particles`. If any position or shared
+    /// argument is invalid, nothing is queued and the call returns false. An empty slice
+    /// returns true without checking the particle arguments or queueing anything, but a
+    /// stale or unknown level or a call on the logical client is still refused.
+    /// True means accepted, not that a player received or drew any particles.
+    ///
+    /// The requests join the innermost open transaction in the level active at the call.
+    /// They wait for that level's outermost commit in journal order and are discarded on
+    /// abort. Delivery uses the level named by the request, even if parked.
+    #[forward_api_inputs]
+    fn level_send_particles_batch(
+        &mut self,
+        level: LevelRef,
+        options: &ParticleOptions,
+        state: Option<BlockState>,
+        positions: &[[f64; 3]],
+        spread: [f64; 3],
+        speed: f64,
+        count: i32,
+    ) -> bool;
+    /// Side: server.
     /// Plays level event `id` at `pos` with `data` for the players near it
     /// (`Level.levelEvent(null, id, pos, data)`): `1000`s are sounds, `2000`s
     /// particles, as vanilla's `LevelEvent` numbers them (`2001` breaks a

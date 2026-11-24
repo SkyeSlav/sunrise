@@ -60,7 +60,14 @@ impl GameLevel<'_> {
     ) -> bool {
         let state_ok = |id| self.registry.state(id).is_some();
         if !self.native_authoritative
-            || !mod_particles_ok(options, state, state_ok, at, spread, speed)
+            || !mod_particles_ok(
+                options,
+                state,
+                state_ok,
+                std::slice::from_ref(&at),
+                spread,
+                speed,
+            )
         {
             return false;
         }

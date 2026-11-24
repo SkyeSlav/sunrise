@@ -302,7 +302,9 @@ mod tests {
     }
 
     /// The list's order is the visit order: the reversed list reverses the
-    /// order the mobs take their hurt in (`living_damage_post`'s).
+    /// order the mobs take their hurt in (`living_damage_post`'s). The blast
+    /// lists entities as `EntitySectionStorage.forEachAccessibleNonEmptySection`
+    /// walks them: section x ascending, then arrival order within a section.
     #[test]
     #[ignore = "daily"]
     fn the_list_order_is_the_walk_order() {
@@ -340,17 +342,10 @@ mod tests {
                 explode(game);
             });
         });
+        // The walk is 902 (section x -1), then 900 and 901 (section x 0, in
+        // arrival order); the listener reversed it.
         let heard = heard.lock().unwrap();
-        let at = |id| {
-            heard
-                .iter()
-                .position(|&h| h == id)
-                .unwrap_or_else(|| panic!("{heard:?}"))
-        };
-        assert!(
-            at(900) > at(901) && at(901) > at(902),
-            "reversed, not storage order: {heard:?}"
-        );
+        assert_eq!(*heard, [901, 900, 902], "reversed, not walk order");
     }
 
     /// A position a listener takes out keeps its block and gets no fire,

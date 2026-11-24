@@ -237,24 +237,7 @@ impl Game<'_> {
         // The chat's tree until the server sends its own, or forever when it
         // sends none: the game's own, plus the commands native mods own.
         let chat_tree = self.chat_tree_for(None);
-        // Minecraft.services() has the keys wherever the game is played, single player's own
-        // server included: its guests' chat keys are checked against them.
-        let services_keys = Arc::new(std::sync::Mutex::new(ServicesKeys::Pending));
-        let slot = services_keys.clone();
-        let _ = std::thread::Builder::new()
-            .name("Services keys".into())
-            .spawn(move || {
-                use sunrise_server_files::profiles;
-                let keys = profiles::fetch_profile_key_keys(&profiles::discovery_url());
-                *slot.lock().unwrap_or_else(|e| e.into_inner()) = match keys {
-                    Ok(keys) if !keys.is_empty() => ServicesKeys::Ready(keys),
-                    Ok(_) => ServicesKeys::Missing,
-                    Err(why) => {
-                        log::error!("Sunrise: {why}");
-                        ServicesKeys::Missing
-                    }
-                };
-            });
+        let services_keys = ServicesKeys::fetching();
         self.ui.registries.selector_tokens.clear();
         self.remote = Some(Remote {
             selector_metadata_supported: true,
@@ -440,7 +423,16 @@ impl Game<'_> {
         Ok(())
     }
     /// Prepare a client session and remote state to receive packets from a studio replay.
+    /// A replayed or viewed world checks its players' signed properties as a joined
+    /// client does.
     pub(in crate::game) fn init_remote_for_replay(&mut self) -> Result<()> {
+        // Minecraft builds its `Services` once per client: a replay that opens a new
+        // session on every seek keeps the keys the session it replaces is fetching or
+        // has fetched.
+        let services_keys = match &self.remote {
+            Some(remote) => remote.services_keys.clone(),
+            None => ServicesKeys::fetching(),
+        };
         self.reset_client_item_use();
         self.realm_session = false;
         self.lan_session = false;
@@ -531,7 +523,6 @@ impl Game<'_> {
         self.boss_overlay.reset();
 
         let chat_tree = self.chat_tree_for(None);
-        let services_keys = Arc::new(std::sync::Mutex::new(ServicesKeys::Ready(Vec::new())));
 
         self.ui.registries.selector_tokens.clear();
         self.remote = Some(Remote {
@@ -938,6 +929,7 @@ impl Game<'_> {
         r.level = spawn.dimension.clone();
         r.level_key = mod_api::__private::dimension_key(&spawn.dimension);
         if new_logical_player {
+            self.drop_spam_throttler = Default::default();
             r.abilities = sunrise_client::lan::abilities::PlayerAbilities::default();
             r.own_player_info = std::cell::OnceCell::new();
             // The new LocalPlayer, admitted now, counts its ticks from 0.

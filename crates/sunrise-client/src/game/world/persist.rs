@@ -2343,7 +2343,7 @@ impl Game<'_> {
     }
 
     /// A loaded projectile's `Owner`: living hit credit and vehicle collision identity.
-    fn claim_owner(&self, p: &mut sunrise_client::projectiles::Projectile) {
+    pub(in crate::game) fn claim_owner(&self, p: &mut sunrise_client::projectiles::Projectile) {
         let Some(uuid) = p.owner_uuid else {
             return;
         };

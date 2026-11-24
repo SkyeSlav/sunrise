@@ -1839,7 +1839,7 @@ void main() {
                 64,
                 16,
                 separate_ao,
-                false,
+                sunrise_render_shaderpack::pack_atlas::TerrainDraws::Attributes,
             );
             let inputs =
                 sunrise_render_shaderpack::pack_atlas::game_inputs(Some(atlas), false, &[3, 4]);

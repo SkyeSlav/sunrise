@@ -22,6 +22,33 @@ permanent project ID. A reviewer approves it after checking that you administer 
 project is not claiming someone else's. This approves no code: each release is reviewed on its own. Two separate
 projects may use the same mod ID, so a port can sit beside the mod it replaces.
 
+You can also register by opening a
+[Register a repository](https://github.com/sunrise-org/sunrise-mods/issues/new?template=register.yml) issue on
+sunrise-org/sunrise-mods, from a GitHub account that administers the repository. Without a browser, for example
+from an agent, open it with the [GitHub CLI](https://cli.github.com/). `gh issue create --template` cannot fill an
+issue form's fields, so write the body with the form's headings:
+
+```sh
+gh issue create -R sunrise-org/sunrise-mods \
+  --title "Register <owner>/<repository>" \
+  --body "### Repository
+
+https://github.com/<owner>/<repository>
+
+### Package folders
+
+_No response_
+
+### Branch
+
+_No response_"
+```
+
+Leave `_No response_` under **Package folders** for a mod at the repository's root; otherwise list one folder per
+line, each holding a `sunrise-mod.toml`. Leave it under **Branch** unless the mod is not on the default branch.
+The registry then checks that you administer the repository, opens the registration pull request and answers on the issue. Registering
+lists nothing: your project appears on Discover once its first release is reviewed and merged.
+
 ## Releasing
 
 Commit your mod's source, its page, and `Cargo.lock` for a native mod. From the mod's folder on a clean branch

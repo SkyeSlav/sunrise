@@ -961,8 +961,7 @@ impl Game<'_> {
             else {
                 return None;
             };
-            let (value, signature) = profile.textures()?;
-            let url = skins::unpack(&value, signature, skins::texture_uris()).skin?;
+            let url = skins::unpack_insecure(profile.textures()?).skin?;
             let location = skins::skin_location(&skins::texture_hash(&url)?);
             Some((url, location))
         });

@@ -602,9 +602,16 @@ impl Guest {
         self.ip_address = address.ip().to_string();
     }
 
+    /// `ServerPlayer.nextContainerCounter`: advance the window counter to `counter % 100 + 1`
+    /// and return it. Every open takes its window id from here.
+    pub fn next_container_counter(&mut self) -> i32 {
+        self.next_window = self.next_window % 100 + 1;
+        self.next_window
+    }
+
     /// Allocate the next protocol window and a non-reusable menu identity.
     pub fn next_menu_window(&mut self) -> i32 {
-        self.next_window = self.next_window % 100 + 1;
+        self.next_container_counter();
         self.menu_generation = menu_generation();
         self.inactive_inventory_carried = self.carried.take();
         self.open_carried_sent = Some((self.next_window, None));

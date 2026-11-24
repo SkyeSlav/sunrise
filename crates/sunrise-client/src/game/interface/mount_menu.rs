@@ -20,8 +20,7 @@ use sunrise_client::{
 /// `AbstractChestedHorse.INV_CHEST_COUNT`.
 const CHEST_SIZE: usize = 15;
 pub(super) use sunrise_gameplay::mount_rules::{
-    ARMOR, CHEST, COLUMNS, SADDLE, body_armor_fits, has_mount_menu, mount_columns, shows_body,
-    shows_saddle,
+    ARMOR, CHEST, SADDLE, body_armor_fits, has_mount_menu, mount_columns, shows_body, shows_saddle,
 };
 
 /// The open mount menu: copies of the mount's slots, written back on every change.
@@ -79,30 +78,26 @@ impl Game<'_> {
         });
         self.show_mount_menu();
     }
-    /// `ClientPacketListener.handleMountScreenOpen`: a server's horse
-    /// inventory over mount `entity`, its slots to come in the menu's content.
-    pub(super) fn open_remote_mount_menu(&mut self, entity: u32, columns: usize) -> bool {
-        let Some(species) = self
-            .mobs
-            .iter()
-            .find(|m| m.id == entity)
-            .map(Mob::species)
-            .filter(|s| has_mount_menu(*s))
-        else {
-            return false;
-        };
+    /// Open the screen for the server's already installed mount window. Its
+    /// equipment and chest stacks arrive in the menu's content packets.
+    pub(super) fn open_remote_mount_menu(
+        &mut self,
+        entity: u32,
+        species: Species,
+        items: Vec<Option<ItemStack>>,
+    ) {
+        let columns = items.len() / 3;
         self.mount_menu.open = Some(Open {
             mob: entity,
             species,
-            columns: columns.min(COLUMNS),
+            columns,
             saddle: None,
             armor: None,
-            items: vec![None; CHEST_SIZE],
+            items,
             show_saddle: shows_saddle(species),
             show_armor: shows_body(species),
         });
         self.show_mount_menu();
-        true
     }
     fn show_mount_menu(&mut self) {
         if self.remote.is_none() && self.lan_acting.is_none() {
@@ -338,11 +333,17 @@ impl Game<'_> {
             _ => None,
         }
     }
+    pub(super) fn is_mount_chest_slot(&self, i: usize) -> bool {
+        self.mount_menu
+            .open
+            .as_ref()
+            .is_some_and(|open| i >= CHEST && i - CHEST < open.columns * 3)
+    }
     pub(super) fn mount_slot(&self, i: usize) -> &Option<ItemStack> {
         match self.mount_menu.open.as_ref() {
             Some(open) if i == SADDLE => &open.saddle,
             Some(open) if i == ARMOR => &open.armor,
-            Some(open) if i >= CHEST && i - CHEST < CHEST_SIZE => &open.items[i - CHEST],
+            Some(open) if i >= CHEST && i - CHEST < open.items.len() => &open.items[i - CHEST],
             _ => &self.scratch_slot,
         }
     }
@@ -350,7 +351,7 @@ impl Game<'_> {
         match self.mount_menu.open.as_mut() {
             Some(open) if i == SADDLE => &mut open.saddle,
             Some(open) if i == ARMOR => &mut open.armor,
-            Some(open) if i >= CHEST && i - CHEST < CHEST_SIZE => &mut open.items[i - CHEST],
+            Some(open) if i >= CHEST && i - CHEST < open.items.len() => &mut open.items[i - CHEST],
             _ => &mut self.scratch_slot,
         }
     }

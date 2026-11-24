@@ -468,6 +468,31 @@ pub enum RaidStatus {
     Stopped,
 }
 
+/// The world clock a level follows (`WorldClock`, a `minecraft:world_clock` registry entry): the
+/// one its dimension type names as `default_clock`, shared by every level of that dimension type
+/// and saved with the world (`ServerClockManager`). `level.clock(host)` makes one; its writes are
+/// `ServerClockManager`'s `setTotalTicks`, `setRate` and `setPaused`. A paused clock is a fixed
+/// time. A handle resolves again on each call, through its level: `false` once the level is gone,
+/// for a handle of an earlier open, and on a client.
+#[derive(sunrise_mod_api_macros::Wire, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+// exhaustive: its fields are private, so mods cannot build or destructure it
+pub struct WorldClockRef {
+    pub(crate) level: LevelRef,
+}
+
+impl WorldClockRef {
+    /// Create a handle for the game.
+    // hidden: a game-side helper, not part of the mod surface
+    #[doc(hidden)]
+    pub fn new(level: LevelRef) -> Self {
+        Self { level }
+    }
+    /// The level whose default clock this is.
+    pub fn level(self) -> LevelRef {
+        self.level
+    }
+}
+
 /// A chunk position in an open level. A handle may be kept after unloading;
 /// reads resolve it again, returning `false` or `None` when it is no longer loaded.
 #[derive(sunrise_mod_api_macros::Wire, Clone, Copy, Debug, PartialEq, Eq, Hash)]

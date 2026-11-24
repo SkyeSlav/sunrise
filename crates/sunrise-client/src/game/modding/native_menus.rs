@@ -114,6 +114,28 @@ impl Game<'_> {
             MenuReplace::InPlace => self.guest_close_all(conn),
         }
     }
+    /// `ServerPlayer.containerCounter`: the window id the player's last opened menu took.
+    pub(super) fn player_container_counter(&self, player: mod_api::PlayerRef) -> Option<i32> {
+        if !self.is_logical_server() {
+            return None;
+        }
+        Some(self.online_player_record(player)?.next_window)
+    }
+    /// `ServerPlayer.nextContainerCounter` with no menu after it: the counter moves as an open
+    /// moves it, and nothing opens or closes.
+    pub(super) fn player_next_container_counter(
+        &mut self,
+        player: mod_api::PlayerRef,
+    ) -> Option<i32> {
+        if !self.is_logical_server() {
+            return None;
+        }
+        let conn = self.online_player_record(player)?.conn;
+        self.lan
+            .as_mut()?
+            .hub
+            .update_guest(conn, |guest| guest.next_container_counter())
+    }
     /// `ServerPlayer.openMenu(provider, extraDataWriter)` for a content mod menu type and no
     /// block: the type's container slots show empty and their clicks reach the mods, as
     /// `open_menu`'s do; `extra` and `pos` go first in its `sunrise:menu_extra` payload, and
@@ -521,6 +543,10 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "native_menus/container_counter_tests.rs"]
+mod container_counter_tests;
 
 #[cfg(test)]
 #[path = "native_menus/owned_slots_tests.rs"]

@@ -837,7 +837,7 @@ handle, an entity the client doesn't track and a level it doesn't show:
   and `bounding_box` are its own, `level` is the dragon's, and it is no living entity, mob or dragon handle; it
   stops resolving when its dragon does, and removing one is refused.
 - `entity.nbt(host)` and `merge_nbt(host, compound)` read and change its data as `/data get` and `/data merge entity`
-  do (merging works on mobs, dropped items, armor stands and item frames; never on players, as in vanilla);
+  do (merging reloads mobs, dropped items, armor stands, item frames, arrows, spectral arrows and tridents; never players);
   `tags`, `add_tag`, `remove_tag` work as `/tag` does, and `name` is its name as plain text.
   `set_custom_name(host, Some(text))` names it and `None` takes the name away (`Entity.setCustomName`);
   `custom_name_visible` and `set_custom_name_visible` read and change whether the name shows at any distance. Both

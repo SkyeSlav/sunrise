@@ -2912,6 +2912,7 @@ pub(in crate::game) fn install_test_platform() {
                 install_packages: mod_platform::__private::install_packages,
                 install_registration_data: mod_platform::__private::install_registration_data,
                 install_parts: mod_platform::__private::install_parts,
+                with_registration_open: mod_platform::__private::with_registration_open,
                 profiler_is_enabled: mod_platform::__private::profiler::is_enabled,
                 profiler_start: mod_platform::__private::profiler::start,
                 profiler_stop: mod_platform::__private::profiler::stop,

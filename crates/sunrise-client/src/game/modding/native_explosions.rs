@@ -33,7 +33,7 @@ fn blast_ok(center: [f64; 3], radius: f32) -> bool {
 fn blast_particle(id: &str) -> Result<ParticleOptions, ExplodeError> {
     let options =
         ParticleOptions::simple(ParticleType::from_name(id).ok_or(ExplodeError::InvalidParticle)?);
-    if !mod_particles_ok(&options, None, |_| false, [0.0; 3], [0.0; 3], 0.0) {
+    if !mod_particles_ok(&options, None, |_| false, &[[0.0; 3]], [0.0; 3], 0.0) {
         return Err(ExplodeError::InvalidParticle);
     }
     Ok(options)

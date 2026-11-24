@@ -216,6 +216,11 @@ the stack's components choose the particle sprites. The explicit sprite list in
 Block, block-marker, falling-dust, dust-pillar and block-crumble requests need a valid
 block state argument. Server sends refuse trail and vibration requests.
 
+To send the same effect around several positions, pass a slice to
+`level.send_particles_batch(host, &options, state, &positions, spread, speed, count)`. The whole
+request is checked before anything is queued, and each position becomes its own send, in slice
+order.
+
 ## Block hit and destroy debris
 
 Use the [`BlockPart` hit/destroy callbacks](../../concepts/parts/block-parts.md#hit-and-destroy-particles)

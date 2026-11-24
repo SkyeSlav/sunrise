@@ -291,6 +291,9 @@ pub struct Gpu {
     pub fragment_storage: bool,
     /// Storage read and written by vertex shaders (a geometry stage).
     pub vertex_storage: bool,
+    /// Storage read by vertex shaders: per-section terrain reading its arena page
+    /// (`pack_atlas::TerrainDraws::Pages`).
+    pub vertex_reads: bool,
     /// `clear_texture`; without it images are cleared by copying zeros.
     pub clear: bool,
     pub adapter_formats: bool,
@@ -305,6 +308,7 @@ impl Gpu {
             fragment_storage: flags.contains(D::FRAGMENT_WRITABLE_STORAGE),
             vertex_storage: flags.contains(D::VERTEX_STORAGE)
                 && features.contains(wgpu::Features::VERTEX_WRITABLE_STORAGE),
+            vertex_reads: flags.contains(D::VERTEX_STORAGE),
             clear: features.contains(wgpu::Features::CLEAR_TEXTURE),
             adapter_formats: features
                 .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES),
@@ -316,7 +320,7 @@ impl Gpu {
             match w.trim() {
                 "compute" => gpu.compute = false,
                 "fragment-storage" => gpu.fragment_storage = false,
-                "vertex-storage" => gpu.vertex_storage = false,
+                "vertex-storage" => (gpu.vertex_storage, gpu.vertex_reads) = (false, false),
                 "clear" => gpu.clear = false,
                 _ => {}
             }
