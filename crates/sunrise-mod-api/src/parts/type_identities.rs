@@ -8,6 +8,7 @@ pub(crate) enum TypeIdentityDomain {
     ItemCapability,
     EntityCapability,
     RenderData,
+    FeatureRenderer,
 }
 
 #[derive(Clone, Copy, Debug)]

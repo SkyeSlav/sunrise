@@ -1277,6 +1277,8 @@ mod native_explosions_tests;
 mod native_fake_disconnect_tests;
 #[path = "game/modding/native_falling.rs"]
 mod native_falling;
+#[path = "game/modding/native_feature_renderers.rs"]
+mod native_feature_renderers;
 #[path = "game/modding/native_feature_types.rs"]
 mod native_feature_types;
 #[cfg(test)]

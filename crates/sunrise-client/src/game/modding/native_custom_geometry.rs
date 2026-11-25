@@ -54,6 +54,7 @@ impl<'a, 'g> GameWorldStageDriver<'a, 'g> {
 impl Drop for GameWorldStageDriver<'_, '_> {
     fn drop(&mut self) {
         self.render_state.clear();
+        self.draw.clear_feature_submits();
         self.game.discard_submitted_groups(self.draw);
     }
 }
@@ -87,6 +88,7 @@ impl sunrise_client::gfx::world_primitives::FrameHooks for GameWorldStageDriver<
         self.draw.begin_custom_geometry();
         self.game.native_submit_custom_geometry(&view, self.draw);
         self.game.submit_debug_geometry(&view, self.draw);
+        self.game.flush_feature_renderers(&view, self.draw);
     }
 
     fn on_after_sky(&mut self, sections: &[mod_api::RenderableSection], oit_on: bool) {
@@ -242,6 +244,60 @@ impl Game<'_> {
         for renderer in &self.debug_renderers {
             renderer.draw(self, view, &mut context);
         }
+    }
+    /// Validate and enqueue a typed custom feature node for `phase` in the current view.
+    pub(in crate::game) fn native_world_submit_feature(
+        &self,
+        draw: &mut WorldGeometry,
+        feature_type: &'static str,
+        type_id: std::any::TypeId,
+        phase: mod_api::RenderPhaseKey,
+        push: &mut dyn FnMut(
+            Option<&mut (dyn std::any::Any + Send + Sync)>,
+        ) -> Result<
+            Option<Box<dyn std::any::Any + Send + Sync>>,
+            mod_api::FeatureSubmitError,
+        >,
+    ) -> Result<(), mod_api::FeatureSubmitError> {
+        let Some(table) = super::native_feature_renderers::table() else {
+            return Err(mod_api::FeatureSubmitError::Unregistered);
+        };
+        draw.feature_submits_mut()
+            .submit_raw(table.inner(), feature_type, type_id, phase, push)
+    }
+    /// Flush queued custom feature submissions in `RenderPhaseKey::EXECUTION_ORDER`, isolating
+    /// panicking renderers and dropping every queued value before returning.
+    fn flush_feature_renderers(
+        &self,
+        view: &mod_api::WorldRenderView<'_>,
+        draw: &mut WorldGeometry,
+    ) {
+        if draw.feature_submits_is_empty() {
+            return;
+        }
+        let Some(table) = super::native_feature_renderers::table() else {
+            draw.clear_feature_submits();
+            return;
+        };
+        for &phase in mod_api::RenderPhaseKey::EXECUTION_ORDER {
+            let groups = draw.take_feature_phase(phase);
+            if groups.is_empty() {
+                continue;
+            }
+            let mut context = GameWorldDrawContext::new(self, draw);
+            for (id, nodes) in groups {
+                super::native_feature_renderers::invoke(
+                    table,
+                    id,
+                    self,
+                    view,
+                    phase,
+                    &*nodes,
+                    &mut context,
+                );
+            }
+        }
+        draw.clear_feature_submits();
     }
     /// Whether any mod subscribes to world rendering hooks or active debug renderers.
     pub(super) fn has_world_render_hooks(&self) -> bool {

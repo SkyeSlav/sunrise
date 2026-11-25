@@ -591,6 +591,26 @@ impl WorldDrawContext for GameWorldDrawContext<'_, '_> {
                 renderer.pack_override_state(slot as usize)
             }))
     }
+    fn submit_feature_raw(
+        &mut self,
+        feature_type: &'static str,
+        type_id: std::any::TypeId,
+        phase: RenderPhaseKey,
+        push: &mut dyn FnMut(
+            Option<&mut (dyn std::any::Any + Send + Sync)>,
+        ) -> Result<
+            Option<Box<dyn std::any::Any + Send + Sync>>,
+            FeatureSubmitError,
+        >,
+    ) -> Result<(), FeatureSubmitError> {
+        self.game.native_world_submit_feature(
+            &mut *self.surface,
+            feature_type,
+            type_id,
+            phase,
+            push,
+        )
+    }
 }
 /// The only mod surface that appends CPU geometry for named passes.
 pub(crate) struct GamePrepareRenderBuffersContext<'a, 'g> {

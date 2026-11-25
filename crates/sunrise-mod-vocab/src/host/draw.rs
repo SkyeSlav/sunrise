@@ -618,6 +618,24 @@ pub trait WorldDrawContext {
         let _ = pipeline;
         Ok(PackOverrideState::NoPack)
     }
+    /// Submit a typed custom feature node into `phase` under `feature_type`.
+    // hidden: object-safe backing method for `dyn WorldDrawContext::submit_feature`.
+    #[doc(hidden)]
+    fn submit_feature_raw(
+        &mut self,
+        feature_type: &'static str,
+        type_id: std::any::TypeId,
+        phase: RenderPhaseKey,
+        push: &mut dyn FnMut(
+            Option<&mut (dyn std::any::Any + Send + Sync)>,
+        ) -> Result<
+            Option<Box<dyn std::any::Any + Send + Sync>>,
+            FeatureSubmitError,
+        >,
+    ) -> Result<(), FeatureSubmitError> {
+        let _ = (feature_type, type_id, phase, push);
+        Err(FeatureSubmitError::Unsupported)
+    }
 }
 /// CPU-side submission of batches for the current world view. The renderer uploads them after
 /// this hook, before it opens any pass that may draw them.

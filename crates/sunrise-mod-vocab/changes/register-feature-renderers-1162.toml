@@ -1,0 +1,24 @@
+ids = [
+    "hook:register_feature_renderers",
+    "method:Hooks::register_feature_renderers",
+    "type:RegisterFeatureRenderersEvent",
+    "type:RenderPhaseKey",
+    "type:FeatureRendererType",
+    "handle:FeatureRendererType::new",
+    "handle:FeatureRendererType::id",
+    "trait:FeatureRenderer",
+    "trait:FeatureRenderers",
+    "handle:FeatureRenderers::register",
+    "type:FeatureRegistrationError",
+    "type:FeatureSubmitError",
+    "handle:WorldDrawContext::submit_feature",
+    "trait:FeatureRendererRegistrar",
+    "handle:Registrar::register_feature_renderer_type",
+]
+why = """Add Hooks::register_feature_renderers (NeoForge 26.3 RegisterFeatureRenderersEvent, #1162) and typed per-phase feature submission mirroring NeoForge's RenderPhaseKeys.
+
+- `RenderPhaseKey` mirrors all 14 vanilla/NeoForge 26.3 `RenderPhaseKeys` (`Solid`, `Shadows`, `NameTags`, `Texts`, `ShapeOutlines`, `TranslucentBlocksAndItems`, `TranslucentModels`, `TranslucentCustomGeometry`, `TranslucentGizmos`, `BreakingOverlay`, `WaterMask`, `AfterTerrain`, `AlwaysOnTop`, `Outline`) with `RenderPhaseKey::EXECUTION_ORDER` matching vanilla's `FeatureRenderDispatcher`.
+- `FeatureRendererType<S: Send + Sync + 'static>` registers its `(namespaced id, Rust type)` identity at startup via `Registrar::register_feature_renderer_type` through the shared startup identity table, refusing cross-type collisions naming both mods and both types.
+- `Hooks::register_feature_renderers` binds `FeatureRenderer<S>` implementations once at client startup, refusing duplicate registrations naming both mods and rolling back panicking listeners.
+- `WorldDrawContext::submit_feature(&TYPE, phase, node)` queues typed nodes into per-view arenas with `Any`/`TypeId` verification (`Unregistered` / `TypeMismatch` errors, never pointer casts), flushed in `RenderPhaseKey::EXECUTION_ORDER` and cleared/dropped per view before any mod library unloads."""
+migrate = "Additive only."

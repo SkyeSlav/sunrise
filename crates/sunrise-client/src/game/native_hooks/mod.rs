@@ -485,6 +485,7 @@ mod register_enchantment_effects;
 mod register_entity_layers;
 mod register_entity_renderers;
 mod register_entity_spectator_shaders;
+mod register_feature_renderers;
 mod register_fluid_models;
 mod register_game_tests;
 mod register_gui_layers;

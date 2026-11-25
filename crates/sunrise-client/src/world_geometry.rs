@@ -152,6 +152,8 @@ pub struct WorldGeometry {
     active: ActiveTarget,
     /// Whether `finalize` has already closed pass stages and appended `custom`.
     finalized: bool,
+    /// Per-view typed custom feature submissions grouped by `(RenderPhaseKey, id)`.
+    feature_submits: mod_api::FeatureSubmitQueue,
 }
 impl Default for WorldGeometry {
     fn default() -> Self {
@@ -185,6 +187,7 @@ impl Default for WorldGeometry {
             oit_stage_ends: [[0; 4]; OIT_STAGES - 1],
             active: ActiveTarget::Primary,
             finalized: false,
+            feature_submits: mod_api::FeatureSubmitQueue::new(),
         }
     }
 }
@@ -218,6 +221,26 @@ impl WorldGeometry {
         self.oit_stage_ends = [[0; 4]; OIT_STAGES - 1];
         self.active = ActiveTarget::Primary;
         self.finalized = false;
+        self.feature_submits.clear();
+    }
+    /// Drop all queued custom feature submissions immediately.
+    pub fn clear_feature_submits(&mut self) {
+        self.feature_submits.clear();
+    }
+    /// Whether no custom feature nodes are queued for this view.
+    pub fn feature_submits_is_empty(&self) -> bool {
+        self.feature_submits.is_empty()
+    }
+    /// Borrow the per-view custom feature submission queue.
+    pub fn feature_submits_mut(&mut self) -> &mut mod_api::FeatureSubmitQueue {
+        &mut self.feature_submits
+    }
+    /// Drain all queued `(feature_type, Vec<S>)` groups for `phase` in submission order.
+    pub fn take_feature_phase(
+        &mut self,
+        phase: mod_api::RenderPhaseKey,
+    ) -> Vec<(&'static str, Box<dyn std::any::Any + Send + Sync>)> {
+        self.feature_submits.take_phase(phase)
     }
     /// Borrow a stage-scoped surface for `native_render_level_stage`.
     pub fn stage_surface(&mut self, stage: RenderLevelStage) -> StageSurface<'_> {

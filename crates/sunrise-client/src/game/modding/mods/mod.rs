@@ -863,6 +863,26 @@ pub(super) fn register_client_presentations(
     register_entity_spectator_shaders(role);
     register_render_pipelines(role, vanilla_root)?;
     register_entity_renderers(role);
+    register_feature_renderers(role)?;
+    Ok(())
+}
+
+/// Collect and publish the mods' custom feature renderers once at startup, before resources load.
+pub(super) fn register_feature_renderers(role: ExecutionRole) -> sunrise_client::Result<()> {
+    if !role.is_client() {
+        return Ok(());
+    }
+    let mut registry = mod_api::FeatureRendererRegistry::default();
+    Game::native_register_feature_renderers(&RegistrationContext::new(), &mut registry);
+    let table = registry.into_table().map_err(|errors| {
+        let message = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, message)
+    })?;
+    super::native_feature_renderers::register(table);
     Ok(())
 }
 
