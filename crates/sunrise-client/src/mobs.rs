@@ -4948,7 +4948,17 @@ impl Mob {
             // otherwise Wolf.getHurtSound/getDeathSound and Cat.getHurtSound/getDeathSound
             // read the world's sound variant table, as do Pig, Cow and Chicken's
             // (their variant always resolves, so there is no sound of their own).
-            let variant_sound = if absorbed {
+            // A content type's declared hurt or death slot replaces the template's
+            // `getHurtSound`/`getDeathSound`, variant sets included.
+            let declared = matches!(
+                if dead {
+                    self.kind.sound_overrides.death
+                } else {
+                    self.kind.sound_overrides.hurt
+                },
+                entity_sounds::Selection::Id(_) | entity_sounds::Selection::Mute
+            );
+            let variant_sound = if absorbed || declared {
                 None
             } else {
                 match self.species() {
