@@ -7,7 +7,8 @@ use sunrise_core::{
     geometry::VoxelShape,
     position::{BlockPos, ChunkPos},
     ticks::{
-        ChunkTicks, LevelTicks, ScheduleResult, ScheduledTick, TickError, TickPriority, TickTypeId,
+        ChunkTicks, LevelTicks, ScheduleResult, ScheduledTick, TickArea, TickError, TickPriority,
+        TickTypeId,
     },
 };
 
@@ -250,6 +251,29 @@ impl Ticks {
     pub fn will_block_tick_this_tick(&mut self, pos: BlockPos, block: BlockId) -> bool {
         self.blocks
             .will_tick_this_tick(pos, TickTypeId(u32::from(block.0)))
+    }
+    /// Copy scheduled block ticks in `area` from `source` into `self` (`LevelTicks.copyAreaFrom`).
+    pub fn copy_block_ticks_from(&mut self, source: &Self, area: TickArea, offset: BlockPos) {
+        self.blocks.copy_area_from(&source.blocks, area, offset);
+    }
+    /// Copy scheduled block ticks in `area` from `source` into `self`, mapping each position
+    /// with `map_pos`.
+    pub fn copy_block_ticks_from_mapped(
+        &mut self,
+        source: &Self,
+        area: TickArea,
+        map_pos: impl FnMut(BlockPos) -> BlockPos,
+    ) {
+        self.blocks
+            .copy_area_from_mapped(&source.blocks, area, map_pos);
+    }
+    /// Copy scheduled block ticks in `area` within `self`, mapping each position with `map_pos`.
+    pub fn copy_block_ticks_mapped(
+        &mut self,
+        area: TickArea,
+        map_pos: impl FnMut(BlockPos) -> BlockPos,
+    ) {
+        self.blocks.copy_area_mapped(area, map_pos);
     }
     /// `Level.getBlockRandomPos`.
     pub fn block_random_pos(&mut self, x: i32, y: i32, z: i32, y_mask: i32) -> BlockPos {

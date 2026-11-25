@@ -504,6 +504,88 @@ mod tests {
         while level.next_tick().unwrap().is_some() {}
         level.finish_tick().unwrap();
     }
+    #[test]
+    fn copy_area_from_keeps_delay_priority_and_sub_tick_order_across_offset() {
+        let mut source = level();
+        let mut dest = level();
+        let early_low = tick(1, 0, 12, 1, 10);
+        let early_high = tick(2, 1, 12, -1, 12);
+        let same_prio_first = tick(3, 2, 12, 0, 11);
+        let same_prio_second = tick(4, 3, 12, 0, 15);
+        let later = tick(5, 4, 20, -3, 13);
+        let outside = tick(6, 10, 12, -3, 14);
+        for t in [
+            early_low,
+            early_high,
+            same_prio_first,
+            same_prio_second,
+            later,
+            outside,
+        ] {
+            assert_eq!(source.schedule(t), ScheduleResult::Added);
+        }
+        let area = TickArea::new(BlockPos::new(0, 64, 0), BlockPos::new(4, 64, 0));
+        let offset = BlockPos::new(16, 2, 0);
+        dest.copy_area_from(&source, area, offset);
+
+        // Source ticks stay untouched.
+        assert_eq!(source.count(), 6);
+        assert_eq!(dest.count(), 5);
+
+        let mut ran_at_12 = Vec::new();
+        dest.tick(12, 10, |_| true, |_, t| ran_at_12.push(t))
+            .unwrap();
+        assert_eq!(
+            ran_at_12
+                .iter()
+                .map(|t| (t.kind, t.pos, t.trigger_tick, t.priority))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    early_high.kind,
+                    early_high.pos.offset(16, 2, 0),
+                    12,
+                    TickPriority::High,
+                ),
+                (
+                    same_prio_first.kind,
+                    same_prio_first.pos.offset(16, 2, 0),
+                    12,
+                    TickPriority::Normal,
+                ),
+                (
+                    same_prio_second.kind,
+                    same_prio_second.pos.offset(16, 2, 0),
+                    12,
+                    TickPriority::Normal,
+                ),
+                (
+                    early_low.kind,
+                    early_low.pos.offset(16, 2, 0),
+                    12,
+                    TickPriority::Low,
+                ),
+            ]
+        );
+        // Sub-tick order is shifted monotonically: sub - min + max + 1 (min=10, max=15 -> +6).
+        assert_eq!(ran_at_12[1].sub_tick_order, 17);
+        assert_eq!(ran_at_12[2].sub_tick_order, 21);
+
+        let mut ran_at_19 = Vec::new();
+        dest.tick(19, 10, |_| true, |_, t| ran_at_19.push(t))
+            .unwrap();
+        assert!(ran_at_19.is_empty());
+
+        let mut ran_at_20 = Vec::new();
+        dest.tick(20, 10, |_| true, |_, t| ran_at_20.push(t))
+            .unwrap();
+        assert_eq!(ran_at_20.len(), 1);
+        assert_eq!(ran_at_20[0].kind, later.kind);
+        assert_eq!(ran_at_20[0].pos, later.pos.offset(16, 2, 0));
+        assert_eq!(ran_at_20[0].trigger_tick, 20);
+        assert_eq!(ran_at_20[0].priority, TickPriority::ExtremelyHigh);
+        assert_eq!(ran_at_20[0].sub_tick_order, 19);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -882,13 +964,17 @@ impl LevelTicks {
         }
         ticks
     }
-    fn schedule_copy(&mut self, ticks: Vec<ScheduledTick>, offset: BlockPos) {
+    fn schedule_copy_mapped(
+        &mut self,
+        ticks: Vec<ScheduledTick>,
+        mut map_pos: impl FnMut(BlockPos) -> BlockPos,
+    ) {
         let Some(min) = ticks.iter().map(|t| t.sub_tick_order).min() else {
             return;
         };
         let max = ticks.iter().map(|t| t.sub_tick_order).max().unwrap();
         for mut tick in ticks {
-            tick.pos = tick.pos.offset(offset.x, offset.y, offset.z);
+            tick.pos = map_pos(tick.pos);
             tick.sub_tick_order = tick
                 .sub_tick_order
                 .wrapping_sub(min)
@@ -898,6 +984,28 @@ impl LevelTicks {
         }
     }
     pub fn copy_area(&mut self, area: TickArea, offset: BlockPos) {
-        self.schedule_copy(self.area_ticks(area), offset);
+        self.copy_area_mapped(area, |pos| pos.offset(offset.x, offset.y, offset.z));
+    }
+    /// Vanilla `LevelTicks.copyAreaFrom`: copy scheduled ticks inside `area` of `source` into
+    /// `self`, displaced by `offset`, keeping each tick's trigger tick, priority and relative
+    /// sub-tick order. `source` is left unchanged.
+    pub fn copy_area_from(&mut self, source: &Self, area: TickArea, offset: BlockPos) {
+        self.copy_area_from_mapped(source, area, |pos| pos.offset(offset.x, offset.y, offset.z));
+    }
+    /// Copy scheduled ticks inside `area` of `self` to positions mapped by `map_pos`, keeping
+    /// each tick's trigger tick, priority and relative sub-tick order.
+    pub fn copy_area_mapped(&mut self, area: TickArea, map_pos: impl FnMut(BlockPos) -> BlockPos) {
+        self.schedule_copy_mapped(self.area_ticks(area), map_pos);
+    }
+    /// Copy scheduled ticks inside `area` of `source` into `self`, mapping each tick's position
+    /// with `map_pos` while keeping its trigger tick, priority and relative sub-tick order.
+    /// `source` is left unchanged.
+    pub fn copy_area_from_mapped(
+        &mut self,
+        source: &Self,
+        area: TickArea,
+        map_pos: impl FnMut(BlockPos) -> BlockPos,
+    ) {
+        self.schedule_copy_mapped(source.area_ticks(area), map_pos);
     }
 }
