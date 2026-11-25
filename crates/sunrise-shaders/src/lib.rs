@@ -13,7 +13,7 @@
 //! - [`Config`] and [`draw_buffers`]: the buffer settings and output lists stage files carry (1.7, 6.1).
 //! - [`load_post`]: a dimension's `prepare`, `deferred`, `composite` and `final` programs, in order (2.1).
 //! - [`load_textures`]: the custom textures `texture.*` and `customTexture.*` name (3.4).
-//! - [`Macros`] and [`eval_condition`]: the macros packs test, and the `#if` arithmetic (1.5).
+//! - [`Macros`]: the macros packs test and define (1.5); the `#if` arithmetic is `sunrise_glsl::eval_condition`.
 
 mod biomes;
 mod block_ids;
@@ -36,7 +36,6 @@ pub use biomes::{
     category as biome_category, pack_id as biome_pack_id, precipitation as biome_precipitation,
 };
 pub use block_ids::BlockIds;
-pub use condition::{Conditionals, eval_condition, resolve_defined};
 pub use config::{
     BUFFERS, Buffer, Config, Format, HALF_LIVES, Kind, SHADOW_COLORS, Shadow, buffer_index,
     draw_buffers, shadow_color,

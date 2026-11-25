@@ -9,7 +9,8 @@
 //! replaces the earlier one, with a note.
 
 use crate::Macros;
-use crate::condition::{Conditionals, split_directive};
+use crate::condition::{apply, split_directive};
+use sunrise_glsl::Conditionals;
 
 /// One `key=value`, with the line it starts on (from 1).
 #[derive(Clone, Debug, PartialEq)]
@@ -148,7 +149,7 @@ impl Properties {
         conditionals: &mut Conditionals,
         macros: &mut Macros,
     ) {
-        match conditionals.apply(word, rest, macros) {
+        match apply(conditionals, word, rest, macros) {
             Err(e) => self.note(number, &e),
             Ok(true) => {}
             Ok(false) if conditionals.active() => match word {

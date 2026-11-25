@@ -6,7 +6,8 @@ use std::{
 };
 
 use super::{anonymous_structs, atomic_vectors, interface_blocks, scan::is_ident};
-use crate::{Preprocessed, macros::lex};
+use crate::Preprocessed;
+use sunrise_glsl::lex;
 
 struct Token<'a> {
     text: &'a str,

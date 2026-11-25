@@ -40,6 +40,8 @@ pub mod connected;
 pub mod containers;
 pub mod controller_ui;
 pub mod core_shader;
+#[cfg(test)]
+mod core_spirv_tests;
 pub mod crash;
 pub mod custom_sky;
 pub mod datapack;

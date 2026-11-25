@@ -16,7 +16,7 @@ use std::fmt::Write;
 
 use super::scan::{is_ident, significant};
 use crate::Preprocessed;
-use crate::macros::lex;
+use sunrise_glsl::lex;
 
 const ATOMICS: [&str; 8] = [
     "atomicAdd",

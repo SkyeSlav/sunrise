@@ -1,8 +1,8 @@
 //! Specialize opaque image parameters to their bound resources. GLSL image parameters do not
 //! carry a storage format, while Naga's image types do. This preserves the actual global image
 //! type/access and writes no pack files. Unsupported dynamic handles remain compiler errors.
-use crate::macros::lex;
 use std::collections::{BTreeMap, BTreeSet};
+use sunrise_glsl::lex;
 
 #[derive(Clone)]
 struct Function {

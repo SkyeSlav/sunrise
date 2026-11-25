@@ -4,7 +4,7 @@
 //! one, `hz_struct<n>`; nothing else changes.
 
 use super::scan::significant;
-use crate::macros::lex;
+use sunrise_glsl::lex;
 
 /// `code` with a name for each struct type declared without one, or `None` when it has none.
 pub(super) fn name(code: &str) -> Option<String> {

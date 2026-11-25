@@ -15,7 +15,7 @@ use std::fmt::Write;
 use super::scan::{QUALIFIERS, STORAGE, significant};
 use super::{Error, GbuffersInputs, Program, Target};
 use crate::Preprocessed;
-use crate::macros::lex;
+use sunrise_glsl::lex;
 
 /// How a geometry program's vertex invocations reach their triangle's vertices.
 #[derive(Clone, Debug, Default)]

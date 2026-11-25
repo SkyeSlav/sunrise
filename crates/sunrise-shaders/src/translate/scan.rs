@@ -9,7 +9,7 @@ use naga::ShaderStage;
 use super::Error;
 use super::rewrite::{attribute_value, is_zero_literal};
 use crate::Preprocessed;
-use crate::macros::lex;
+use sunrise_glsl::lex;
 
 /// A varying: its name and its declaration with `@` where the name goes (`flat ivec2 @[2];`).
 pub(super) struct Var {

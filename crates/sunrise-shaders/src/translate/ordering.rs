@@ -15,7 +15,7 @@
 //! Both only narrow what may happen to what the pack was written for, and keep the lines.
 
 use super::scan::{is_ident, significant};
-use crate::macros::lex;
+use sunrise_glsl::lex;
 
 const ATOMICS: [&str; 8] = [
     "atomicAdd",

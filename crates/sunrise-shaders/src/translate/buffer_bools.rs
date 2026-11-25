@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use super::Error;
 use super::scan::{is_ident, significant};
 use crate::Preprocessed;
-use crate::macros::lex;
+use sunrise_glsl::lex;
 
 /// A `bool` member: where its type is, and its name.
 struct Member<'a> {

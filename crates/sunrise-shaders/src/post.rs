@@ -15,8 +15,8 @@ use std::collections::BTreeSet;
 use crate::config::{self, Config};
 use crate::custom::Custom;
 use crate::{
-    ComputeProgram, eval_condition, preprocess, translate_composite, translate_compute,
-    translate_gbuffers, translate_shadow,
+    ComputeProgram, preprocess, translate_composite, translate_compute, translate_gbuffers,
+    translate_shadow,
 };
 use crate::{GbuffersInputs, Macros, Pack, Preprocessed, Program, Properties, Target};
 
@@ -1912,7 +1912,7 @@ fn enabled(
     };
     // `true`/`false` as numbers, every other name as `defined(name)`, then the `#if` arithmetic.
     let mut condition = String::new();
-    for token in crate::macros::lex(expr) {
+    for token in sunrise_glsl::lex(expr) {
         match token {
             "true" => condition.push('1'),
             "false" => condition.push('0'),
@@ -1923,7 +1923,7 @@ fn enabled(
             t => condition.push_str(t),
         }
     }
-    eval_condition(&condition, macros).ok() != Some(0)
+    sunrise_glsl::eval_condition(&condition, macros).ok() != Some(0)
 }
 
 /// `blend.<program>`: `Some(None)` for `off`, `Some(factors)`, or `None` when absent or not

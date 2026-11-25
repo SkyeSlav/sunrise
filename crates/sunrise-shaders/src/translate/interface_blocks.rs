@@ -10,7 +10,7 @@
 //! where they were.
 
 use super::scan::significant;
-use crate::macros::lex;
+use sunrise_glsl::lex;
 
 /// Qualifiers a member may carry before its type.
 const MEMBER_QUALIFIERS: [&str; 11] = [

@@ -8,7 +8,7 @@
 //! LOGS: none.
 //! READS-BY: `compile` in `mod.rs`, before parsing.
 //! ENDS-WHEN: naga's GLSL frontend converts array and struct constructor arguments itself.
-use crate::macros::lex;
+use sunrise_glsl::lex;
 
 const ELEMENTS: [&str; 16] = [
     "float", "int", "uint", "bool", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4", "uvec2",

@@ -7,7 +7,9 @@
 //! explicit locations or without) is written again as the Vulkan-flavoured GLSL 450 naga reads:
 //! - GLSL a GL compiler takes and naga doesn't is rewritten first ([`glsl_fixups`]: a helper
 //!   taking the `sampler2D` it reads, an array sized by its initializer only);
-//! - includes are inlined ([`Includes`]), under the defines the program is compiled with;
+//! - includes are inlined ([`Includes`]) and the directives run here, under the defines the
+//!   program is compiled with: `#if` branches, `#define`, `#undef` and `#line` are consumed and
+//!   the code that is left has its macros expanded, so naga's own preprocessor sees none;
 //! - the uniform blocks get the bindings of [`Inputs::blocks`], and each sampler of
 //!   [`Inputs::samplers`] is split into a texture and a sampler object, combined again where the
 //!   sampler is named;
@@ -33,12 +35,18 @@ use naga::ShaderStage;
 use naga::front::glsl::{Frontend, InterfaceLimits, Options};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 
+mod condition;
 mod glsl_fixups;
+mod import_conditions;
 mod located;
+mod macros;
 mod stage;
 
+pub use condition::{Conditionals, eval_condition, int_literal};
 pub use located::{Error, Expanded, Location, describe};
 use located::{Lines, Origin};
+use macros::is_ident;
+pub use macros::{Macros, lex};
 pub use stage::{BindingMap, Source, compile_stage};
 
 /// What a program's pipeline gives it, beyond its [`Glue`].
@@ -426,15 +434,7 @@ pub fn translate(
     let vertex_code = rewritten(&vertex_text, ShaderStage::Vertex, &mut names)?;
     let fragment_code = rewritten(&fragment_text, ShaderStage::Fragment, &mut names)?;
     let compiled = |code: &Expanded, stage| {
-        compile(
-            stage,
-            code,
-            inputs.defines,
-            &names,
-            provided,
-            glue.interface,
-        )
-        .map_err(|errors: Vec<Error>| {
+        compile(stage, code, &names, provided, glue.interface).map_err(|errors: Vec<Error>| {
             errors
                 .into_iter()
                 .map(|e| in_stage(stage, e))
@@ -577,8 +577,6 @@ pub fn glsl_options(stage: ShaderStage, defines: &[&str], limits: InterfaceLimit
     options
 }
 
-mod import_conditions;
-
 fn expand_with(
     text: &str,
     file: &str,
@@ -656,14 +654,19 @@ fn expand_with(
             } else {
                 text
             };
-            let mut branches = import_conditions::Conditionals::default();
+            let mut branches = Conditionals::default();
             let mut line_offset = 0i64;
-            for (n, line) in text.lines().enumerate() {
+            let lines: Vec<&str> = text.lines().collect();
+            let mut n = 0;
+            while n < lines.len() {
+                let first = n;
+                n += 1;
+                let line = lines[first];
                 // The line the author wrote it on: the first of a continued line.
                 let written = physical
-                    .get(n)
+                    .get(first)
                     .copied()
-                    .unwrap_or_else(|| u32::try_from(n + 1).unwrap_or(u32::MAX));
+                    .unwrap_or_else(|| u32::try_from(first + 1).unwrap_or(u32::MAX));
                 let origin = Some(Origin {
                     file,
                     line: written,
@@ -674,15 +677,38 @@ fn expand_with(
                     (&d[..i], d[i..].trim())
                 });
                 if let Some(state) = &mut self.conditions {
-                    // Whether the line is the preprocessor's alone (a branch's or `#line`).
+                    // Whether the line is the preprocessor's alone, and the code it leaves: a
+                    // branch's, a definition's or `#line`, none of which reach the frontend.
+                    let mut code = None;
                     let consumed: Result<bool, ImportRefusal> = 'directive: {
-                        let location = u32::try_from(i64::from(physical[n]) + line_offset);
+                        let location = u32::try_from(i64::from(physical[first]) + line_offset);
                         let Ok(location) = location else {
                             break 'directive Err(ImportRefusal::Directive(
                                 "line number outside GLSL range".into(),
                             ));
                         };
-                        match branches.apply_with(word, |kind| state.test(kind, rest, location)) {
+                        state.at_line(location);
+                        if directive.is_none() {
+                            if !branches.active() {
+                                break 'directive Ok(true);
+                            }
+                            // A macro call's arguments may span lines: they join the line the
+                            // call starts on.
+                            let joined = state.macros().join_call(line, &lines[n..]);
+                            let line = match &joined {
+                                Some((joined, taken)) => {
+                                    n += taken;
+                                    joined.as_str()
+                                }
+                                None => line,
+                            };
+                            match state.expand(line) {
+                                Ok(expanded) => code = Some(expanded),
+                                Err(why) => break 'directive Err(ImportRefusal::Directive(why)),
+                            }
+                            break 'directive Ok(false);
+                        }
+                        match branches.apply_with(word, |kind| state.test(kind, rest)) {
                             Ok(skipped) if skipped || !branches.active() => {
                                 break 'directive Ok(true);
                             }
@@ -690,16 +716,24 @@ fn expand_with(
                             Err(why) => break 'directive Err(ImportRefusal::Directive(why)),
                         }
                         match word {
-                            "define" => state.define(rest),
-                            "undef" => state.undef(rest),
+                            "define" => {
+                                break 'directive state
+                                    .define_line(rest)
+                                    .map(|()| true)
+                                    .map_err(ImportRefusal::Directive);
+                            }
+                            "undef" => {
+                                state.undef(rest);
+                                break 'directive Ok(true);
+                            }
                             "version" if depth == 0 => {
-                                state.define(&format!(
-                                    "__VERSION__ {}",
-                                    rest.split_whitespace().next().unwrap_or("110")
-                                ));
+                                state.define(
+                                    "__VERSION__",
+                                    rest.split_whitespace().next().unwrap_or("110"),
+                                );
                             }
                             "line" => {
-                                let next = match state.line(rest, location) {
+                                let next = match state.line(rest) {
                                     Ok(next) => next,
                                     Err(why) => {
                                         break 'directive Err(ImportRefusal::Directive(why));
@@ -707,13 +741,9 @@ fn expand_with(
                                 };
                                 line_offset = i64::from(next)
                                     - i64::from(
-                                        physical.get(n + 1).copied().unwrap_or(physical[n] + 1),
+                                        physical.get(n).copied().unwrap_or(physical[first] + 1),
                                     );
                                 break 'directive Ok(true);
-                            }
-                            "" if state.uses_line(line) => {
-                                let directive = format!("#line {}\n", location.saturating_sub(1));
-                                self.out.push(&directive, origin);
                             }
                             _ => {}
                         }
@@ -723,6 +753,14 @@ fn expand_with(
                         Ok(true) => continue,
                         Ok(false) => {}
                         Err(refusal) => return Err(self.refused(file, written, refusal)),
+                    }
+                    if let Some(code) = code {
+                        self.out.push(&code, origin);
+                        self.out.push("\n", origin);
+                        if self.out.text().len() > MAX_EXPANDED {
+                            return Err(self.refused(file, written, ImportRefusal::TooLarge));
+                        }
+                        continue;
                     }
                 }
                 match word {
@@ -866,29 +904,6 @@ fn strip_comments(text: &str) -> String {
             _ => out.push(c),
         }
     }
-    out
-}
-
-fn is_ident(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_'
-}
-
-/// `text` with each whole identifier `from` written as `to`.
-fn replace_ident(text: &str, from: &str, to: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find(from) {
-        let before = rest[..at].chars().next_back();
-        let after = rest[at + from.len()..].chars().next();
-        out.push_str(&rest[..at]);
-        if before.is_some_and(is_ident) || after.is_some_and(is_ident) {
-            out.push_str(from);
-        } else {
-            out.push_str(to);
-        }
-        rest = &rest[at + from.len()..];
-    }
-    out.push_str(rest);
     out
 }
 
@@ -1291,12 +1306,11 @@ fn main_at(text: &str) -> impl Iterator<Item = usize> + '_ {
 fn compile(
     stage: ShaderStage,
     code: &Expanded,
-    defines: &[&str],
     names: &Names,
     provided: &dyn Fn(&str) -> bool,
     limits: InterfaceLimits,
 ) -> Result<(naga::Module, naga::valid::ModuleInfo), Vec<Error>> {
-    let options = glsl_options(stage, defines, limits);
+    let options = glsl_options(stage, &[], limits);
     let text = code.text();
     let module = Frontend::default().parse(&options, text).map_err(|e| {
         // The line naga read, as the translator wrote it, each found among the line breaks.
@@ -2051,6 +2065,22 @@ mod tests {
                 .unwrap()
                 .contains("float included;")
         );
+    }
+
+    /// The directives are the translator's: a program's `#define` lines and branches never reach
+    /// naga, and its code arrives with the macros expanded, a call over several lines included,
+    /// each line still the one the author wrote it on.
+    #[test]
+    fn directives_run_here_and_the_code_arrives_expanded() {
+        let source = "#version 330\n#define SQ(x) ((x) * (x))\n#define N 4\n#if N == 4.0\nfloat a = SQ(N);\n#else\nfloat a = 0.0;\n#endif\nfloat b = SQ(\n    N + 1\n);\nfloat c = __LINE__;\n";
+        let expanded =
+            expand_includes(source, VSH_FILE, "", &includes(&|_| Ok(None)), Some(&[])).unwrap();
+        assert_eq!(
+            expanded.text(),
+            "float a = ((4) * (4));\nfloat b = ((4 + 1) * (4 + 1));\nfloat c = 12;\n"
+        );
+        let at = |needle: &str| expanded.location_at(expanded.text().find(needle)).line;
+        assert_eq!([at("float a"), at("float b"), at("float c")], [5, 9, 12]);
     }
 
     #[test]

@@ -12,12 +12,11 @@ use std::collections::HashMap;
 
 use crate::Macros;
 use crate::Pack;
-use crate::condition::{Conditionals, split_directive};
+use crate::condition::{apply, split_directive};
 use crate::pack::normalize;
+use sunrise_glsl::Conditionals;
 
 const MAX_DEPTH: usize = 10;
-/// How many lines one macro call may span.
-const MAX_CALL_LINES: usize = 64;
 
 /// Where a line came from: an index into [`Preprocessed::files`] and a line number from 1.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -122,16 +121,12 @@ impl Run<'_> {
             }
             n += 1;
             // A macro call's arguments may span lines: they join the line the call starts on.
-            if !line.trim_start().starts_with('#') && self.conditionals.active() {
-                while n < lines.len()
-                    && n - first < MAX_CALL_LINES
-                    && !lines[n].trim_start().starts_with('#')
-                    && self.macros.unfinished_call(&line, &lines[n..])
-                {
-                    line.push(' ');
-                    line.push_str(lines[n]);
-                    n += 1;
-                }
+            if !line.trim_start().starts_with('#')
+                && self.conditionals.active()
+                && let Some((joined, taken)) = self.macros.join_call(&line, &lines[n..])
+            {
+                line = joined;
+                n += taken;
             }
             let origin = Origin {
                 file,
@@ -169,7 +164,7 @@ impl Run<'_> {
         let Some((word, rest)) = split_directive(after) else {
             return self.diagnose(origin, &format!("unknown directive `#{}`", after.trim()));
         };
-        match self.conditionals.apply(word, rest, &self.macros) {
+        match apply(&mut self.conditionals, word, rest, &self.macros) {
             // As Iris loads such a pack: the branch is skipped, the program kept.
             Err(e) if e.ends_with("read as false") => {
                 return self.out.warnings.push(Diagnostic { origin, message: e });

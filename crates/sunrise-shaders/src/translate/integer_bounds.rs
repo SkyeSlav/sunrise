@@ -1,7 +1,7 @@
 //! Resolve the scalar signed/unsigned clamp case still ambiguous in Naga.
 //! Only an unambiguous `int` value with two unsigned literal bounds is changed.
-use crate::macros::lex;
 use std::collections::{BTreeMap, BTreeSet};
+use sunrise_glsl::lex;
 
 pub(super) fn rewrite(text: &str) -> String {
     let tokens = lex(text);

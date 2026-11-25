@@ -4939,7 +4939,6 @@ name = "sunrise-glsl"
 version = "0.1.0"
 dependencies = [
  "naga",
- "pp-rs",
  "wgpu-types",
 ]
 

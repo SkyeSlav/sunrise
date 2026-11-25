@@ -8,7 +8,6 @@ description = "One GLSL program and a description of its inputs as validated nag
 
 [dependencies]
 naga = { version = "30.0.1", features = ["glsl-in"] }
-pp-rs = "0.2.1"
 # `ShaderStages`, the stages that read a binding: the type wgpu takes for a layout entry.
 wgpu-types = "30.0.1"
 

@@ -1201,7 +1201,7 @@ fn fold_work_groups(code: &str, groups: [u32; 3]) -> Result<Option<(String, Fold
         return Err(too_many());
     }
     let [x, y, z] = groups;
-    let mut tokens: Vec<String> = crate::macros::lex(code)
+    let mut tokens: Vec<String> = sunrise_glsl::lex(code)
         .into_iter()
         .map(str::to_owned)
         .collect();
@@ -1227,7 +1227,7 @@ fn fold_work_groups(code: &str, groups: [u32; 3]) -> Result<Option<(String, Fold
 /// `code` with `gl_WorkGroupSize` written as the constant its `layout(local_size_*)` declares:
 /// GLSL defines it so, and naga's HLSL writer has no such built-in.
 fn work_group_size(code: &str) -> Result<String, String> {
-    let mut tokens: Vec<String> = crate::macros::lex(code)
+    let mut tokens: Vec<String> = sunrise_glsl::lex(code)
         .into_iter()
         .map(str::to_owned)
         .collect();
@@ -1385,7 +1385,7 @@ impl<'w> ConstantSize<'w> {
             }
             // GLSL's literal (hex, octal); one whose digits don't fit its radix (`08`, `018u`)
             // is read as decimal, as before octal was read.
-            number => crate::condition::int_literal(number)
+            number => sunrise_glsl::int_literal(number)
                 .ok()
                 .or_else(|| number.trim_end_matches(['u', 'U']).parse().ok()),
         }
