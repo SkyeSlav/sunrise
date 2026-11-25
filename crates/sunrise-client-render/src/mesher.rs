@@ -413,7 +413,7 @@ pub struct TerrainSource {
     cell: u32,
 }
 impl TerrainSource {
-    pub(crate) fn new(state: u32, pos: [i32; 3], emission: u8, fluid: bool) -> Self {
+    pub fn new(state: u32, pos: [i32; 3], emission: u8, fluid: bool) -> Self {
         debug_assert!(pos.iter().all(|&v| (0..16).contains(&v)));
         Self {
             state,
@@ -424,6 +424,19 @@ impl TerrainSource {
                 | 1 << 13
                 | u32::from(emission.min(15)) << 14,
         }
+    }
+    /// The quad's `mc_Entity` id under `ids` (`Renderer::set_shader_pack`'s `block_ids`, two a
+    /// state: the model's, then the fluid's), as flat draws look it up in their table
+    /// (`pack_atlas`'s `hz_material`): the fluid's for a fluid, -1 for a state past the table;
+    /// in the word `cell` keeps, for the normal stream (`terrain_normals`).
+    pub(crate) fn with_id(self, ids: &[i32]) -> [u32; 2] {
+        let column = (self.cell >> 12) as usize & 1;
+        let id = if (self.state as usize) < ids.len() / 2 {
+            ids[2 * self.state as usize + column]
+        } else {
+            -1
+        };
+        [id as u32, self.cell]
     }
 }
 
