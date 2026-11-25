@@ -194,7 +194,10 @@ pub const CAN_START_RAID: &str = "minecraft:gameplay/can_start_raid";
 impl GameplayAttributes {
     /// Reads the dimension types, biomes and timelines under `root/data`, and the timeline
     /// tags from `root` and the world's packs (`overlay`).
-    pub fn load(root: &std::path::Path, overlay: &sunrise_world::loot::PackOverlay) -> Self {
+    pub fn load(
+        root: &std::path::Path,
+        overlay: &sunrise_world::loot::PackOverlay,
+    ) -> std::io::Result<Self> {
         use serde_json::Value;
         let data = root.join("data/minecraft");
         let read = |p: std::path::PathBuf| -> Option<Value> {
@@ -221,11 +224,7 @@ impl GameplayAttributes {
             list("timeline").into_iter().collect();
         let tags = sunrise_world::tag_layers::load(root, "timeline", overlay, |id| {
             timelines.contains_key(id)
-        })
-        .unwrap_or_else(|error| {
-            log::warn!("Sunrise: timeline tags unavailable: {error}");
-            Default::default()
-        });
+        })?;
         for (dim, v) in list("dimension_type") {
             for key in keys {
                 if let Some(b) = v["attributes"][key].as_bool() {
@@ -293,7 +292,7 @@ impl GameplayAttributes {
                 }
             }
         }
-        out
+        Ok(out)
     }
     /// The attribute in a dimension type and biome at an overworld clock time.
     pub fn value(&self, key: &str, dimension: &str, biome: &str, clock: i64) -> bool {
@@ -349,7 +348,7 @@ mod tag_cycle_tests {
             );
         }
         let attributes =
-            GameplayAttributes::load(root.path(), &sunrise_world::loot::PackOverlay::NONE);
+            GameplayAttributes::load(root.path(), &sunrise_world::loot::PackOverlay::NONE).unwrap();
         for dimension in ["minecraft:one", "minecraft:two"] {
             assert!(!attributes.value(CAN_PILLAGER_PATROL_SPAWN, dimension, "minecraft:plains", 0));
         }
@@ -375,6 +374,7 @@ mod tag_cycle_tests {
         );
         let attributes = |files: &[(String, Vec<Vec<u8>>)]| {
             GameplayAttributes::load(root.path(), &sunrise_world::loot::PackOverlay::new(files))
+                .unwrap()
         };
         let value = |attributes: &GameplayAttributes| {
             attributes.value(

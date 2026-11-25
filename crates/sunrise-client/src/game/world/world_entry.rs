@@ -686,7 +686,7 @@ impl Game<'_> {
                 banner_tags,
             ),
             (&sources, &recipes),
-        );
+        )?;
         self.prepare_professions(root, &items, &overlay, &mut stations)?;
         // Use the same candidate's IDs and bound tags for data map targets.
         let datapack_registries =
@@ -751,7 +751,7 @@ impl Game<'_> {
         // The timeline tags the raid code reads bind from this world's packs too.
         let gameplay = Arc::new(sunrise_client::patrol::GameplayAttributes::load(
             root, &overlay,
-        ));
+        )?);
         let data_maps = native_data_maps::DataMaps::load(&data_map_types, &overlay, &registries)
             .with_builtins(builtin)
             .with_biome_keys(mod_api::__private::BiomeKeys::new(
@@ -778,6 +778,15 @@ impl Game<'_> {
             .map(|(tag, members)| (tag, members.into_iter().collect()))
             .collect(),
         );
+        // `HolderSetCodec.lookupTag`: an advancement naming a tag that is not bound is refused.
+        let unbound = advancements.unbound_tags(|registry, tag| {
+            pack_tags
+                .get(registry)
+                .is_some_and(|tags| tags.contains_key(tag))
+        });
+        if !unbound.is_empty() {
+            return Err(unbound.join("\n").into());
+        }
         // The API's key order is live state as well: do not change it for a
         // candidate refused by the condition readers.
         api_values::resolve_enchantment_registry(&items)?;

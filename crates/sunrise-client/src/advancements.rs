@@ -535,6 +535,39 @@ impl Tree {
         tree.index_player_facts();
         tree
     }
+    /// The advancements that name a `#tag` of `loot_table` or `recipe` ids (a reward's `loot`,
+    /// `recipe_unlocked`/`recipe_crafted`'s `recipes`, `player_generates_container_loot`'s
+    /// `loot_tables`) that `bound(registry, full tag id)` denies. `HolderSetCodec.lookupTag`
+    /// fails an advancement with such a tag ("Missing tag"), like any other refused one.
+    pub fn unbound_tags(&self, bound: impl Fn(&str, &str) -> bool) -> Vec<String> {
+        let mut refused = Vec::new();
+        let mut check = |advancement: &str, registry: &str, entry: Option<&str>| {
+            if let Some(tag) = entry.and_then(|s| s.strip_prefix('#'))
+                && !bound(registry, &full(tag))
+            {
+                refused.push(format!(
+                    "advancement {advancement}: Missing tag: '{}' in '{registry}'",
+                    full(tag)
+                ));
+            }
+        };
+        for a in &self.list {
+            for entry in &a.rewards.loot {
+                check(&a.id, "loot_table", Some(entry));
+            }
+            for c in &a.criteria {
+                let (registry, key) = match c.trigger.as_str() {
+                    "minecraft:recipe_unlocked" | "minecraft:recipe_crafted" => {
+                        ("recipe", "recipes")
+                    }
+                    "minecraft:player_generates_container_loot" => ("loot_table", "loot_tables"),
+                    _ => continue,
+                };
+                check(&a.id, registry, c.conditions.read()[key].as_str());
+            }
+        }
+        refused
+    }
     /// Index the `recipe_unlocked` criteria by recipe: a grant that unlocks
     /// twenty recipes tested every one of the ~1,300 recipe advancements'
     /// criteria for each (several ms in one tick).
@@ -3726,6 +3759,38 @@ mod tests {
         assert!(holds(player, &ctx, &weather));
         assert_eq!(calls.get(), 3);
         drop(tree);
+    }
+
+    /// A `#tag` in a reward's loot, a recipe trigger or the loot table trigger that is not bound
+    /// refuses the advancement (`HolderSetCodec.lookupTag`); a bound one and a plain id pass.
+    #[test]
+    fn an_unbound_tag_in_loot_or_recipes_is_reported() {
+        let a = parse(
+            "test:a",
+            &serde_json::json!({"criteria": {
+                "unlocked": {"trigger": "recipe_unlocked", "conditions": {"recipes": "#gone"}},
+                "crafted": {"trigger": "recipe_crafted", "conditions": {"recipes": "#kept"}},
+                "opened": {"trigger": "player_generates_container_loot",
+                    "conditions": {"loot_tables": "#lost"}},
+                "plain": {"trigger": "recipe_unlocked", "conditions": {"recipes": "stick"}}
+            }, "rewards": {"loot": ["#minecraft:missing", "#kept", "test:table"]}}),
+        )
+        .unwrap();
+        let mut tree = Tree::default();
+        tree.list.push(a);
+        let mut refused = tree.unbound_tags(|registry, tag| {
+            registry == "recipe" && tag == "minecraft:kept"
+                || registry == "loot_table" && tag == "minecraft:kept"
+        });
+        refused.sort();
+        assert_eq!(
+            refused,
+            [
+                "advancement test:a: Missing tag: 'minecraft:gone' in 'recipe'",
+                "advancement test:a: Missing tag: 'minecraft:lost' in 'loot_table'",
+                "advancement test:a: Missing tag: 'minecraft:missing' in 'loot_table'",
+            ]
+        );
     }
 
     /// A bare trigger, item or recipe id reaches the indexes as `minecraft:`.

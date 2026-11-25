@@ -1476,7 +1476,8 @@ impl Game<'_> {
             .level
             .recipe_book
             .add_recipes(&world_stations!(self).recipe_index, &rewards);
-        // `AdvancementRewards.loot` is a `HolderSet<LootTable>`: ids, or a tag's members in order.
+        // `AdvancementRewards.loot` is a `HolderSet<LootTable>`: ids, or a tag's members in order
+        // (a tag that is not bound refused the advancement when the tree loaded).
         let loot = self.server_loot.get();
         let tables: Vec<String> = a
             .rewards
@@ -1486,8 +1487,10 @@ impl Game<'_> {
                 Some(tag) => loot
                     .as_ref()
                     .and_then(|loot| loot.registry_tags("loot_table")?.get(&*adv::full(tag)))
+                    .into_iter()
+                    .flatten()
                     .cloned()
-                    .unwrap_or_default(),
+                    .collect::<Vec<String>>(),
                 None => vec![entry.clone()],
             })
             .collect();

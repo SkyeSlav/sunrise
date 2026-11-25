@@ -470,7 +470,7 @@ impl Trades {
     /// Load from a resource root; `overlay` (the world's data packs'
     /// content files) merges over it, the way a pack stack layers
     /// (`SimpleJsonResourceReloadListener`, `TagLoader`).
-    pub fn load(root: &Path, overlay: &sunrise_world::loot::PackOverlay) -> Self {
+    pub fn load(root: &Path, overlay: &sunrise_world::loot::PackOverlay) -> std::io::Result<Self> {
         let data = root.join("data/minecraft");
         let mut trades = walk(&data.join("villager_trade"));
         let mut sets = walk(&data.join("trade_set"));
@@ -488,28 +488,21 @@ impl Trades {
             }
         }
         // Their tags bind through the one tag loader (`TagLoader.load` and `build`).
-        let registries = sunrise_world::tag_layers::builtin_ids(root).unwrap_or_else(|error| {
-            log::warn!("Sunrise: registry report unavailable: {error}");
-            Default::default()
-        });
+        let registries = sunrise_world::tag_layers::builtin_ids(root)?;
         let potions = registries.get("potion");
-        let bind = |registry: &str, contains: &dyn Fn(&str) -> bool| {
-            sunrise_world::tag_layers::load(root, registry, overlay, contains).unwrap_or_else(
-                |error| {
-                    log::warn!("Sunrise: {registry} tags unavailable: {error}");
-                    HashMap::new()
-                },
-            )
-        };
-        let tags = bind("villager_trade", &|id| trades.contains_key(id));
-        let potion_tags = bind("potion", &|id| potions.is_none_or(|ids| ids.contains(id)));
-        Self {
+        let tags = sunrise_world::tag_layers::load(root, "villager_trade", overlay, |id| {
+            trades.contains_key(id)
+        })?;
+        let potion_tags = sunrise_world::tag_layers::load(root, "potion", overlay, |id| {
+            potions.is_some_and(|ids| ids.contains(id))
+        })?;
+        Ok(Self {
             trades,
             tags,
             professions: std::sync::Arc::new(crate::mobs::villager::ResolvedProfessions::vanilla()),
             sets,
             potion_tags,
-        }
+        })
     }
     /// The random sequence of a trade set (`TradeSet.randomSequence`).
     pub fn sequence(&self, set_id: &str) -> Option<String> {
@@ -1410,6 +1403,11 @@ mod enchant_select_tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, text).unwrap();
         };
+        std::fs::write(
+            root.path().join("registries.json"),
+            r#"{"minecraft:potion":{"entries":{"minecraft:swiftness":{},"minecraft:strength":{},"minecraft:luck":{}}}}"#,
+        )
+        .unwrap();
         write("villager_trade/offer.json", "{}");
         write(
             "tags/potion/pool.json",
@@ -1433,7 +1431,7 @@ mod enchant_select_tests {
                 vec![br##"{"values":[{"id":"minecraft:absent","required":false},"#minecraft:offers"]}"##.to_vec()],
             ),
         ];
-        let trades = Trades::load(root.path(), &PackOverlay::new(&files));
+        let trades = Trades::load(root.path(), &PackOverlay::new(&files)).unwrap();
         assert_eq!(
             trades.potion_tags["minecraft:pool"],
             ["minecraft:strength", "minecraft:luck"]
