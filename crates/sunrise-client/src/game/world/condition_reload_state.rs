@@ -5,6 +5,7 @@ pub(super) struct StagedWorldTables {
     pub(super) advancements: Arc<sunrise_client::advancements::Tree>,
     pub(super) health: sunrise_client::health::HealthResources,
     pub(super) datapack_registries: Option<mod_api::DatapackRegistrySet>,
+    pub(super) data: Arc<sunrise_client::datapack::DataPacks>,
 }
 
 pub(super) struct PreparedWorldReload {
@@ -16,4 +17,5 @@ pub(super) struct PreparedWorldReload {
     pub(super) wire: Option<Arc<sunrise_client::lan::data::SyncData>>,
     pub(super) wire_tags: sunrise_client::lan::data::WorldTags,
     pub(super) datapack_registries: Option<mod_api::DatapackRegistrySet>,
+    pub(super) data: Arc<sunrise_client::datapack::DataPacks>,
 }
