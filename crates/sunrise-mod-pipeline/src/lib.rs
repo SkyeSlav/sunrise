@@ -234,6 +234,11 @@ pub enum ModBindingKind {
     CombinedImageSampler,
     /// Integer texel buffer (`isamplerBuffer`/`usamplerBuffer`, read-only storage at `k`).
     TexelBuffer,
+    /// std430 storage buffer block (`buffer Name { ... }`, `binding = k`).
+    StorageBuffer {
+        /// Whether the block is `readonly`.
+        read_only: bool,
+    },
 }
 
 /// One mod-declared set-1 binding passed into [`Options::mod_bindings`].
@@ -249,6 +254,7 @@ pub struct Set1Bindings<'a> {
     pub blocks: Vec<(&'a str, u32)>,
     pub samplers: Vec<(&'a str, u32)>,
     pub texel_buffers: Vec<(&'a str, u32)>,
+    pub storage_buffers: Vec<(&'a str, u32, bool)>,
     pub push_constant_binding: Option<u32>,
     pub next_binding: u32,
 }
@@ -273,6 +279,10 @@ pub fn assign_set1_bindings<'a>(
             }
             ModBindingKind::TexelBuffer => {
                 out.texel_buffers.push((b.name, next));
+                next += 1;
+            }
+            ModBindingKind::StorageBuffer { read_only } => {
+                out.storage_buffers.push((b.name, next, read_only));
                 next += 1;
             }
         }
@@ -326,6 +336,17 @@ pub fn extract_mod_bindings(
                 line = line[..comment].trim();
             }
             if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(block) = sunrise_glsl::storage_block(line) {
+                if !is_reserved(block.name) && !out.iter().any(|(n, _)| n == block.name) {
+                    out.push((
+                        block.name.to_owned(),
+                        ModBindingKind::StorageBuffer {
+                            read_only: block.qualifiers.contains(&"readonly"),
+                        },
+                    ));
+                }
                 continue;
             }
             let Some(at) = line.find("uniform") else {
@@ -798,6 +819,7 @@ fn translate_inner(
         extra_blocks: &set1.blocks,
         extra_samplers: &set1.samplers,
         extra_texel_buffers: &set1.texel_buffers,
+        extra_storage_buffers: &set1.storage_buffers,
         push_constant_binding: set1.push_constant_binding,
         loose: &[],
         defines,
@@ -885,6 +907,7 @@ pub fn translate_linear_fragment(
             extra_blocks: &set1.blocks,
             extra_samplers: &set1.samplers,
             extra_texel_buffers: &set1.texel_buffers,
+            extra_storage_buffers: &set1.storage_buffers,
             push_constant_binding: set1.push_constant_binding,
             loose: &[],
             defines: &defines,
@@ -1473,6 +1496,71 @@ void main() {
                 ("TintBlock".to_owned(), ModBindingKind::UniformBuffer),
                 ("CustomTex".to_owned(), ModBindingKind::CombinedImageSampler),
             ]
+        );
+    }
+    #[test]
+    fn storage_blocks_translate_into_set_one_and_refuse_undeclared_or_mismatched_access() {
+        let vsh = "\
+#version 330
+in vec3 Position;
+in vec2 UV0;
+in vec4 Color;
+layout(std430) readonly buffer Quads {
+    uint words[];
+};
+out vec2 texCoord0;
+out vec4 vertexColor;
+void main() {
+    float w = float(words[gl_VertexID]);
+    gl_Position = vec4(Position + vec3(w * 0.0), 1.0);
+    texCoord0 = UV0;
+    vertexColor = Color;
+}
+";
+        let fsh = "\
+#version 330
+in vec2 texCoord0;
+in vec4 vertexColor;
+out vec4 fragColor;
+void main() {
+    fragColor = vertexColor;
+}
+";
+        let declared = |read_only| {
+            [ModBinding {
+                name: "Quads",
+                kind: ModBindingKind::StorageBuffer { read_only },
+            }]
+        };
+        let bindings = declared(true);
+        let opts = Options {
+            mod_bindings: &bindings,
+            check_backends: true,
+            ..Default::default()
+        };
+        translate(&sources(vsh, fsh), &opts, &stub_include)
+            .expect("a read-only storage block translates");
+
+        let err = translate(&sources(vsh, fsh), &Options::default(), &stub_include)
+            .expect_err("an undeclared storage block is refused");
+        assert!(err[0].message.contains("Quads"), "got: {err:?}");
+
+        let bindings = declared(false);
+        let opts = Options {
+            mod_bindings: &bindings,
+            ..Default::default()
+        };
+        let err = translate(&sources(vsh, fsh), &opts, &stub_include)
+            .expect_err("a `readonly` block declared read-write is refused");
+        assert!(err[0].message.contains("read-write"), "got: {err:?}");
+
+        let (extracted, _) = extract_mod_bindings(vsh, fsh, false);
+        assert_eq!(
+            extracted,
+            vec![(
+                "Quads".to_owned(),
+                ModBindingKind::StorageBuffer { read_only: true }
+            )]
         );
     }
 }

@@ -501,6 +501,57 @@ impl Game<'_> {
             .ok_or(mod_api::BufferError::Unavailable)?;
         renderer.uniform_buffer_destroy(mod_api::content::crash::current_native_mod(), buffer)
     }
+    /// Allocate a retained GPU [`mod_api::StorageBufferRef`] on the active renderer.
+    pub(super) fn create_storage_buffer(
+        &self,
+        desc: &mod_api::StorageBufferDescriptor,
+    ) -> Result<mod_api::StorageBufferRef, mod_api::BufferError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(mod_api::BufferError::Unavailable)?;
+        renderer.create_storage_buffer(mod_api::content::crash::current_native_mod(), desc)
+    }
+    /// Queue `data` for `offset` of retained storage `buffer`.
+    pub(super) fn storage_buffer_write_range(
+        &self,
+        buffer: mod_api::StorageBufferRef,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<(), mod_api::BufferError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(mod_api::BufferError::Unavailable)?;
+        renderer.storage_buffer_write_range(
+            mod_api::content::crash::current_native_mod(),
+            buffer,
+            offset,
+            data,
+        )
+    }
+    /// The size retained storage `buffer` was created with.
+    pub(super) fn storage_buffer_size(
+        &self,
+        buffer: mod_api::StorageBufferRef,
+    ) -> Result<u64, mod_api::BufferError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(mod_api::BufferError::Unavailable)?;
+        renderer.storage_buffer_size(mod_api::content::crash::current_native_mod(), buffer)
+    }
+    /// Free retained storage `buffer` and retire the handle.
+    pub(super) fn storage_buffer_release(
+        &self,
+        buffer: mod_api::StorageBufferRef,
+    ) -> Result<(), mod_api::BufferError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(mod_api::BufferError::Unavailable)?;
+        renderer.storage_buffer_release(mod_api::content::crash::current_native_mod(), buffer)
+    }
     /// Validate and resolve per-draw set-1 [`mod_api::DrawBindings`] against pipeline `slot`'s
     /// declared `BindGroupLayout` and `push_constant_size`.
     fn resolve_draw_bindings(
@@ -549,6 +600,7 @@ impl Game<'_> {
                 view: wgpu::TextureView,
             },
             TexelBytes(Vec<u8>),
+            Storage(sunrise_client::gfx::mod_storage::ResolvedStorageRange),
         }
         let mut staged = Vec::with_capacity(layout.entries.len());
         for decl in &layout.entries {
@@ -657,6 +709,15 @@ impl Game<'_> {
                     };
                     staged.push(StagedEntry::TexelBytes(expanded));
                 }
+                (
+                    mod_api::BindingKind::StorageBuffer { .. },
+                    mod_api::BindingValue::StorageBuffer(slice),
+                ) => {
+                    let range = renderer
+                        .resolve_mod_storage_range(owner, *slice)
+                        .map_err(PipelineDrawError::Buffer)?;
+                    staged.push(StagedEntry::Storage(range));
+                }
                 _ => return Err(PipelineDrawError::InvalidBinding),
             }
         }
@@ -705,6 +766,16 @@ impl Game<'_> {
                         sunrise_client::gfx::mod_pipelines::ResolvedSet1Entry::Texture {
                             view_id,
                             view,
+                        },
+                    );
+                }
+                StagedEntry::Storage(range) => {
+                    resolved_entries.push(
+                        sunrise_client::gfx::mod_pipelines::ResolvedSet1Entry::StorageBuffer {
+                            id: range.id,
+                            buffer: range.buffer,
+                            offset: range.offset,
+                            size: range.length,
                         },
                     );
                 }

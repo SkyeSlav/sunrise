@@ -105,6 +105,7 @@ pub fn translate_core_at(
         extra_blocks: &[],
         extra_samplers: &[],
         extra_texel_buffers: &[],
+        extra_storage_buffers: &[],
         push_constant_binding: None,
         loose: &LOOSE,
         defines: &defines,

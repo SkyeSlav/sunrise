@@ -98,6 +98,14 @@ pub enum ResolvedSet1Entry {
     },
     /// Expanded `i32`/`u32` texel buffer byte range in `Batch::texel_data` / `Batch::oit_texel_data`.
     TexelBuffer { byte_range: std::ops::Range<usize> },
+    /// A range of a retained storage buffer (`StorageBufferRef`), already checked against the
+    /// device's binding limits.
+    StorageBuffer {
+        id: u64,
+        buffer: wgpu::Buffer,
+        offset: u64,
+        size: u64,
+    },
 }
 
 /// Resolved set-1 resource bindings for one [`PipelineDraw`] in exact declaration order.
@@ -603,6 +611,8 @@ enum Set1ResourceKey {
     Texture(u64),
     /// Texel storage buffer range `(offset, size)`.
     TexelBuffer(u64, u64),
+    /// Retained storage buffer range `(unique_id, offset, size)`.
+    Storage(u64, u64, u64),
 }
 
 /// Cache key for steady-state zero-allocation set-1 `wgpu::BindGroup` reuse.
@@ -812,6 +822,36 @@ fn build_set1_layout(
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(4),
+                    },
+                    count: None,
+                });
+                compiled_entries.push(CompiledSet1Entry {
+                    binding: next_binding,
+                    kind: entry.kind,
+                });
+                next_binding += 1;
+            }
+            BindingKind::StorageBuffer { read_only } => {
+                storage_count += 1;
+                // wgpu's gate: a writable storage buffer is visible to the vertex stage only on
+                // a device with `VERTEX_WRITABLE_STORAGE`; a shader that writes one there is
+                // refused when the pipeline is created.
+                let visibility = if read_only
+                    || device
+                        .features()
+                        .contains(wgpu::Features::VERTEX_WRITABLE_STORAGE)
+                {
+                    wgpu::ShaderStages::VERTEX_FRAGMENT
+                } else {
+                    wgpu::ShaderStages::FRAGMENT
+                };
+                layout_entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: next_binding,
+                    visibility,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only },
                         has_dynamic_offset: false,
                         min_binding_size: wgpu::BufferSize::new(4),
                     },
@@ -2453,6 +2493,39 @@ impl ModPipelines {
             }
         }
 
+        // wgpu gives a buffer written by shaders one usage for the whole pass: a buffer bound
+        // read-write in one draw and read-only in another of the frame is refused before any
+        // GPU call, and so is one bound twice in a draw with a writable binding.
+        let mut conflicting: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut uses: HashMap<u64, (bool, bool)> = HashMap::new();
+        for (sd, bindings) in &staged {
+            let Some(Some(compiled)) = self.pipelines.get(sd.slot) else {
+                continue;
+            };
+            for (entry, spec) in bindings.entries.iter().zip(&compiled.set1_entries) {
+                if let (
+                    ResolvedSet1Entry::StorageBuffer { id, .. },
+                    BindingKind::StorageBuffer { read_only },
+                ) = (entry, spec.kind)
+                {
+                    let used = uses.entry(*id).or_default();
+                    if read_only {
+                        used.0 = true;
+                    } else {
+                        used.1 = true;
+                    }
+                    if used.0 && used.1 {
+                        conflicting.insert(*id);
+                    }
+                }
+            }
+        }
+        if !conflicting.is_empty() {
+            log::warn!(
+                "Sunrise: mod draws binding a storage buffer both read-only and read-write in one frame are skipped"
+            );
+        }
+
         for (sd, bindings) in staged {
             let Some(Some(compiled)) = self.pipelines.get(sd.slot) else {
                 continue;
@@ -2495,6 +2568,18 @@ impl ModPipelines {
                         let (offset, size) = sd.texel_spans[texel_cursor];
                         texel_cursor += 1;
                         key_resources.push(Set1ResourceKey::TexelBuffer(offset, size));
+                    }
+                    (
+                        ResolvedSet1Entry::StorageBuffer {
+                            id, offset, size, ..
+                        },
+                        BindingKind::StorageBuffer { .. },
+                    ) => {
+                        if conflicting.contains(id) {
+                            valid = false;
+                            break;
+                        }
+                        key_resources.push(Set1ResourceKey::Storage(*id, *offset, *size));
                     }
                     _ => {
                         valid = false;
@@ -2592,6 +2677,24 @@ impl ModPipelines {
                                 }),
                             });
                         }
+                        (
+                            ResolvedSet1Entry::StorageBuffer {
+                                buffer,
+                                offset,
+                                size,
+                                ..
+                            },
+                            BindingKind::StorageBuffer { .. },
+                        ) => {
+                            bg_entries.push(wgpu::BindGroupEntry {
+                                binding: spec.binding,
+                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                    buffer,
+                                    offset: *offset,
+                                    size: wgpu::BufferSize::new(*size),
+                                }),
+                            });
+                        }
                         _ => {
                             valid = false;
                             break;
@@ -2616,11 +2719,16 @@ impl ModPipelines {
                 if !valid {
                     continue;
                 }
+                let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
                 let created = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("Mod pipeline set-1"),
                     layout: set1_layout,
                     entries: &bg_entries,
                 });
+                if let Some(error) = pollster::block_on(validation.pop()) {
+                    log::warn!("Sunrise: a mod draw's set-1 bindings were refused: {error}");
+                    continue;
+                }
                 self.set1_bind_group_cache
                     .insert(cache_key, created.clone());
                 created
@@ -2635,6 +2743,19 @@ impl ModPipelines {
                 prepared.set1_bind_group = Some((bind_group, dynamic_offsets));
             }
         }
+    }
+
+    /// Drop cached set-1 bind groups holding storage buffers `released` since the last frame, so
+    /// a released buffer is freed once the frame that still draws it is done.
+    pub fn forget_storage(&mut self, released: &[u64]) {
+        if released.is_empty() {
+            return;
+        }
+        self.set1_bind_group_cache.retain(|key, _| {
+            !key.resources
+                .iter()
+                .any(|r| matches!(r, Set1ResourceKey::Storage(id, ..) if released.contains(id)))
+        });
     }
 
     /// Draws the prepared runs and unified draws of stages `first..=last` in the order queued,
@@ -5064,6 +5185,140 @@ void main() {
             uniforms.resolve(None, ubo, 16).unwrap_err(),
             mod_api::PipelineDrawError::Buffer(mod_api::BufferError::Stale)
         );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn storage_buffer_ranges_written_with_write_range_are_read_by_the_fragment_shader() {
+        let _guard = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let id = Identifier::parse("mod_prim2:storage").unwrap();
+        let vsh = "#version 330\n\
+            in vec3 Position;\n\
+            in vec2 UV0;\n\
+            in vec4 Color;\n\
+            void main() {\n\
+                vec2 ndc = vec2(Position.x / 32.0 - 1.0, 1.0 - Position.y / 32.0);\n\
+                gl_Position = vec4(ndc, 0.5, 1.0);\n\
+            }\n";
+        let fsh = "#version 330\n\
+            layout(std430) readonly buffer Tints { vec4 tint[]; };\n\
+            out vec4 fragColor;\n\
+            void main() {\n\
+                fragColor = tint[0];\n\
+            }\n";
+        let p = RenderPipeline::new(
+            id.clone(),
+            id,
+            PipelineBlend::Opaque,
+            mod_api::WorldDepth::ThroughWalls,
+        )
+        .bind_group_layout(
+            mod_api::BindGroupLayout::builder()
+                .entry(mod_api::BindEntry::new(
+                    "Tints",
+                    mod_api::BindingKind::StorageBuffer { read_only: true },
+                ))
+                .build()
+                .unwrap(),
+        );
+        let set = Pipelines::build(&[p], 1, |file| {
+            if file.ends_with(".vsh") {
+                Ok(Some(vsh.to_owned()))
+            } else if file.ends_with(".fsh") {
+                Ok(Some(fsh.to_owned()))
+            } else {
+                Ok(sunrise_mod_pipeline::stubs::read(
+                    file.strip_prefix("assets/")
+                        .and_then(|r| r.split_once('/'))
+                        .map(|(ns, p)| format!("{ns}:{p}"))
+                        .as_deref()
+                        .unwrap_or(""),
+                )
+                .map(str::to_owned))
+            }
+        })
+        .expect("storage buffer pipeline must translate");
+
+        // Two sub-ranges 256 bytes apart: a multiple of every device's offset alignment.
+        let mut storage = crate::gfx::mod_storage::ModStorageBuffers::default();
+        let buffer = storage
+            .create(&device, None, &mod_api::StorageBufferDescriptor::new(512))
+            .unwrap();
+        storage
+            .write_range(
+                None,
+                buffer,
+                0,
+                bytemuck::cast_slice(&[1.0f32, 0.0, 0.0, 1.0]),
+            )
+            .unwrap();
+        storage
+            .write_range(
+                None,
+                buffer,
+                256,
+                bytemuck::cast_slice(&[0.0f32, 1.0, 0.0, 1.0]),
+            )
+            .unwrap();
+        storage.flush(&device, &queue);
+        let limits = device.limits();
+        let range = |offset| {
+            storage
+                .resolve(&limits, None, buffer.slice(offset, 16))
+                .unwrap()
+        };
+        let quad = |x: f32| {
+            [[x, 0.0], [x, 32.0], [x + 32.0, 32.0], [x + 32.0, 0.0]].map(|[x, y]| PipelineVertex {
+                pos: [x, y, 0.0],
+                uv: [0.0, 0.0],
+                color: 0xFFFF_FFFF,
+            })
+        };
+        let vertices: Vec<PipelineVertex> = [quad(0.0), quad(32.0)].concat();
+        let vbytes = bytemuck::cast_slice(&vertices);
+        let draw = |offset: u64, first: u64| {
+            let r = range(offset);
+            PipelineDraw {
+                slot: 0,
+                stage: 4,
+                modifier_stack: 0,
+                draw: MeshDraw::vertices(0..4),
+                source: PipelineDrawSource::Transient {
+                    vertex_ranges: vec![(
+                        0,
+                        first * 4 * std::mem::size_of::<PipelineVertex>() as u64
+                            ..(first + 1) * 4 * std::mem::size_of::<PipelineVertex>() as u64,
+                    )],
+                    index_range: None,
+                },
+                bindings: Some(ResolvedDrawBindings {
+                    entries: vec![ResolvedSet1Entry::StorageBuffer {
+                        id: r.id,
+                        buffer: r.buffer,
+                        offset: r.offset,
+                        size: r.length,
+                    }],
+                    push_constants: None,
+                }),
+            }
+        };
+        let draws = [draw(0, 0), draw(256, 1)];
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut primitives = WorldPrimitives::new(&device, (format, false));
+        let gpu = (device, queue);
+        let batch = Batch {
+            set: Some(&set),
+            draws: &draws,
+            transient_vertices: vbytes,
+            time: 0.0,
+            ..Default::default()
+        };
+        let at = render(&gpu, &mut primitives, format, batch, STAGES - 1);
+        assert_near(at(16, 16), [255.0, 0.0, 0.0, 255.0], 2.0, "first range");
+        assert_near(at(48, 16), [0.0, 255.0, 0.0, 255.0], 2.0, "second range");
     }
 
     #[test]

@@ -191,6 +191,9 @@ pub struct Renderer {
     pub(crate) mod_meshes: std::sync::Mutex<mod_meshes::ModMeshes>,
     /// Retained GPU uniform buffers backing [`mod_api::UniformBufferRef`] and cached mod textures.
     pub(crate) mod_uniforms: std::sync::Mutex<mod_uniforms::ModUniformBuffers>,
+    /// Retained GPU storage buffers backing [`mod_api::StorageBufferRef`]; they outlive a resource
+    /// reload and a world close.
+    pub(crate) mod_storage: std::sync::Mutex<mod_storage::ModStorageBuffers>,
     pub(crate) text_polygon_offset_pipeline: wgpu::RenderPipeline,
     pub(crate) world_text_pipeline: wgpu::RenderPipeline,
     pub(crate) text_mark_pipelines: [wgpu::RenderPipeline; 2],

@@ -905,6 +905,9 @@ fn mod_bindings_from_layout(
                 mod_api::BindingKind::TexelBuffer { .. } => {
                     sunrise_mod_pipeline::ModBindingKind::TexelBuffer
                 }
+                mod_api::BindingKind::StorageBuffer { read_only } => {
+                    sunrise_mod_pipeline::ModBindingKind::StorageBuffer { read_only }
+                }
                 _ => return None,
             };
             Some(sunrise_mod_pipeline::ModBinding {

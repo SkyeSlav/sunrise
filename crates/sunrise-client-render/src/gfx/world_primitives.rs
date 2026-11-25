@@ -755,6 +755,12 @@ impl WorldPrimitives {
         }
     }
 
+    /// Drop cached bind groups of released mod storage buffers (see
+    /// [`mod_pipelines::ModPipelines::forget_storage`]).
+    pub fn forget_storage(&mut self, released: &[u64]) {
+        self.pipelines.forget_storage(released);
+    }
+
     /// Uploads this frame's `batch`, drawn with `view_proj` (camera-relative world to clip,
     /// jittered as the world is) into a frame `viewport` pixels big, sampling `atlas`. When
     /// `vanilla_blocks` is `Some`, mod GLSL pipelines bind those `core_lines::uniforms` blocks

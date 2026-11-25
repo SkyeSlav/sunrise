@@ -47,6 +47,9 @@ pub struct Inputs<'a> {
     /// Extra integer texel buffers by name: read-only storage buffer at `b` in
     /// [`Self::extra_set`].
     pub extra_texel_buffers: &'a [(&'a str, u32)],
+    /// Extra std430 storage buffer blocks by name: `(name, binding, read_only)` in
+    /// [`Self::extra_set`]. The block's `readonly` qualifier must agree with `read_only`.
+    pub extra_storage_buffers: &'a [(&'a str, u32, bool)],
     /// Optional binding in [`Self::extra_set`] onto which `layout(push_constant) uniform ...`
     /// blocks are translated as a std140 uniform buffer. `None` refuses `layout(push_constant)`.
     pub push_constant_binding: Option<u32>,
@@ -800,6 +803,50 @@ fn block_name(line: &str) -> Option<&str> {
         .then_some(name)
 }
 
+/// A `[layout(..)] [memory qualifiers] buffer Name {` line: a std430 storage buffer block.
+#[derive(Debug, PartialEq, Eq)]
+pub struct StorageBlock<'a> {
+    /// The block's name.
+    pub name: &'a str,
+    /// Its memory qualifiers (`readonly`, `writeonly`, `coherent`, `volatile`, `restrict`).
+    pub qualifiers: Vec<&'a str>,
+    /// The line from the block's `{` on, empty when the brace is on the next line.
+    pub tail: &'a str,
+}
+
+/// The storage buffer block a line opens, if it opens one.
+pub fn storage_block(line: &str) -> Option<StorageBlock<'_>> {
+    let mut rest = line.trim();
+    if let Some(after) = rest.strip_prefix("layout") {
+        let after = after.trim_start().strip_prefix('(')?;
+        rest = after[after.find(')')? + 1..].trim_start();
+    }
+    let word_end = |s: &str| s.find(|c: char| !is_ident(c)).unwrap_or(s.len());
+    let mut qualifiers = Vec::new();
+    loop {
+        let (word, after) = rest.split_at(word_end(rest));
+        let after = after.trim_start();
+        match word {
+            "readonly" | "writeonly" | "coherent" | "volatile" | "restrict" => {
+                qualifiers.push(word);
+                rest = after;
+            }
+            "buffer" => {
+                let (name, tail) = after.split_at(word_end(after));
+                let tail = tail.trim_start();
+                return (!name.is_empty() && (tail.is_empty() || tail.starts_with('{'))).then_some(
+                    StorageBlock {
+                        name,
+                        qualifiers,
+                        tail,
+                    },
+                );
+            }
+            _ => return None,
+        }
+    }
+}
+
 /// Whether the `layout(...)` qualifier before `uniform` names `push_constant`.
 fn is_push_constant_block(line: &str) -> bool {
     let Some(at) = line.find("uniform") else {
@@ -849,6 +896,12 @@ fn other_binding_base(inputs: &Inputs) -> Result<u32, String> {
             let next = b
                 .checked_add(1)
                 .ok_or_else(|| "texel buffer binding index overflow".to_owned())?;
+            base = base.max(next);
+        }
+        for &(_, b, _) in inputs.extra_storage_buffers {
+            let next = b
+                .checked_add(1)
+                .ok_or_else(|| "storage buffer binding index overflow".to_owned())?;
             base = base.max(next);
         }
         if let Some(b) = inputs.push_constant_binding {
@@ -942,6 +995,38 @@ fn rewrite(
     };
     for source_line in text.lines() {
         for line in declaration_lines(source_line) {
+            if let Some(block) = storage_block(line) {
+                let Some(&(_, binding, read_only)) = inputs
+                    .extra_storage_buffers
+                    .iter()
+                    .find(|(buffer, _, _)| *buffer == block.name)
+                else {
+                    return Err(format!(
+                        "storage buffer {} is not declared on this pipeline",
+                        block.name
+                    ));
+                };
+                if block.qualifiers.contains(&"readonly") != read_only {
+                    return Err(format!(
+                        "storage buffer {} is declared {} in the layout but {} in the shader",
+                        block.name,
+                        if read_only { "read-only" } else { "read-write" },
+                        if read_only {
+                            "without `readonly`"
+                        } else {
+                            "`readonly`"
+                        },
+                    ));
+                }
+                let set = inputs.extra_set;
+                let (name, qualifiers, tail) = (block.name, block.qualifiers.join(" "), block.tail);
+                writeln!(
+                    out,
+                    "layout(std430, set = {set}, binding = {binding}) {qualifiers} buffer {name} {tail}"
+                )
+                .unwrap();
+                continue;
+            }
             if let Some(name) = block_name(line) {
                 let (set, binding) = if is_push_constant_block(line) {
                     let Some(b) = inputs.push_constant_binding else {
@@ -1285,6 +1370,7 @@ mod tests {
             extra_blocks: &[],
             extra_samplers: &[],
             extra_texel_buffers: &[],
+            extra_storage_buffers: &[],
             push_constant_binding: None,
             loose: &LOOSE,
             defines,
@@ -1662,6 +1748,23 @@ mod tests {
         assert_eq!(block_name("uniform sampler2D Sampler0;"), None);
     }
 
+    /// Only a storage buffer's declaration names a storage block, with its memory qualifiers.
+    #[test]
+    fn storage_blocks_are_read_from_buffer_declarations_only() {
+        let block = storage_block("layout(std430) readonly buffer Quads {").unwrap();
+        assert_eq!(
+            (block.name, block.qualifiers, block.tail),
+            ("Quads", vec!["readonly"], "{")
+        );
+        let block = storage_block("buffer Free { uint slots[]; };").unwrap();
+        assert_eq!((block.name, block.qualifiers.len()), ("Free", 0));
+        assert_eq!(storage_block("buffer Next").unwrap().tail, "");
+        assert_eq!(storage_block("uniform isamplerBuffer Faces;"), None);
+        assert_eq!(storage_block("uniform Day {"), None);
+        assert_eq!(storage_block("vec4 buffer;"), None);
+        assert_eq!(storage_block("uint data[];"), None);
+    }
+
     /// An array too large to lay out (#4134) is the shader's error at its line, not a panic.
     #[test]
     fn an_array_too_large_to_lay_out_is_an_error() {
@@ -1878,6 +1981,7 @@ mod tests {
             extra_blocks: &[],
             extra_samplers: &[],
             extra_texel_buffers: &[],
+            extra_storage_buffers: &[],
             push_constant_binding: None,
             loose: &[],
             defines: &[],
@@ -2017,6 +2121,7 @@ mod tests {
             extra_blocks: &[("ModParams", 0)],
             extra_samplers: &[("ModTex", 1)],
             extra_texel_buffers: &[("ModLut", 3)],
+            extra_storage_buffers: &[],
             push_constant_binding: Some(4),
             loose: &[],
             defines: &[],

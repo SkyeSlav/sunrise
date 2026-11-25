@@ -1589,6 +1589,8 @@ impl Renderer {
                 .as_deref()
                 .map_or(frame.world_primitives, |hooks| hooks.prepared_primitives());
             let mod_blocks = (!batch.pipelines.runs.is_empty()).then(vanilla_blocks);
+            // Mods' queued storage buffer writes land in call order before anything draws.
+            self.flush_mod_storage();
             let prepared = self
                 .world_primitives
                 .as_mut()
@@ -1602,6 +1604,11 @@ impl Renderer {
                     &self.entity_atlas,
                     mod_blocks.as_ref(),
                 );
+            let released = self.take_released_mod_storage();
+            self.world_primitives
+                .as_mut()
+                .expect("world primitives")
+                .forget_storage(&released);
             let bound = self
                 .pack_post
                 .as_ref()

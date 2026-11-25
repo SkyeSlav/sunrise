@@ -15,6 +15,7 @@ pub(crate) mod entity_layers;
 pub(crate) mod entity_render_attachments;
 pub(crate) mod entity_renderers;
 pub(crate) mod item_extensions;
+pub(crate) mod storage_buffer;
 // hidden: a module of game-side types; mods use their re-exports
 #[doc(hidden)]
 pub mod first_person;

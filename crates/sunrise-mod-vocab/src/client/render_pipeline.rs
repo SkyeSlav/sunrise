@@ -2033,6 +2033,16 @@ pub enum BindingKind {
         /// Integer texel format.
         format: TexelBufferFormat,
     },
+    /// A std430 storage buffer block (`layout(std430) [readonly] buffer Name { ... };`), bound
+    /// to a range of a retained [`StorageBufferRef`] ([`BindingValue::StorageBuffer`]). The
+    /// GLSL block's `readonly` qualifier must agree with `read_only`. Writes are gated as
+    /// `wgpu` gates them: a vertex-stage write needs `VERTEX_WRITABLE_STORAGE`, and a pipeline
+    /// that uses a writable block in the vertex stage on a device without it is refused at
+    /// registration.
+    StorageBuffer {
+        /// Whether shaders only read the block.
+        read_only: bool,
+    },
 }
 
 /// One named binding in a mod-declared set-1 [`BindGroupLayout`]
@@ -2227,12 +2237,16 @@ pub enum BufferError {
     NotOwned,
     /// Buffer byte length was zero.
     Empty,
-    /// Byte offset or byte length is not 4-byte aligned (`wgpu::COPY_BUFFER_ALIGNMENT`).
+    /// Byte offset or byte length is not 4-byte aligned (`wgpu::COPY_BUFFER_ALIGNMENT`), or a
+    /// storage buffer range's offset is not a multiple of the device's
+    /// `min_storage_buffer_offset_alignment`.
     InvalidAlignment,
     /// `byte_offset + bytes.len()` exceeds the buffer's capacity.
     OutOfRange,
     /// Requested buffer size exceeds the active device's uniform/buffer binding limit.
     ExceedsDeviceLimit,
+    /// A storage buffer range is longer than the device's `max_storage_buffer_binding_size`.
+    ExceedsBindingLimit,
 }
 
 impl std::fmt::Display for BufferError {
@@ -2245,6 +2259,7 @@ impl std::fmt::Display for BufferError {
             Self::InvalidAlignment => "buffer offset and byte length must be 4-byte aligned",
             Self::OutOfRange => "buffer write exceeds buffer capacity",
             Self::ExceedsDeviceLimit => "buffer size exceeds active device limit",
+            Self::ExceedsBindingLimit => "buffer range exceeds the device's storage binding limit",
         })
     }
 }
@@ -2380,6 +2395,8 @@ pub enum BindingValue<'a> {
     /// Raw texel elements matching the entry's [`TexelBufferFormat`] (1 byte/texel for `R8*`,
     /// 4 bytes/texel for `R32*`).
     TexelBuffer(&'a [u8]),
+    /// A range of a retained [`StorageBufferRef`] for a [`BindingKind::StorageBuffer`] entry.
+    StorageBuffer(StorageBufferSlice),
 }
 
 /// Per-draw set-1 resource bindings passed to [`crate::WorldDrawContext::draw_mesh`] and
@@ -2424,6 +2441,13 @@ impl<'a> DrawBindings<'a> {
     /// Bind a [`TextureSource`] to combined image sampler entry `name`.
     pub fn texture(mut self, name: &'a str, source: TextureSource<'a>) -> Self {
         self.entries.push((name, BindingValue::Texture(source)));
+        self
+    }
+
+    /// Bind `slice` of a retained storage buffer to storage buffer entry `name`.
+    pub fn storage_buffer(mut self, name: &'a str, slice: StorageBufferSlice) -> Self {
+        self.entries
+            .push((name, BindingValue::StorageBuffer(slice)));
         self
     }
 

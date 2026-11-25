@@ -242,6 +242,7 @@ use frame_policy::{frame_configuration, overlay_format, sunrise_tone_curve};
 mod lod;
 pub mod mod_meshes;
 pub mod mod_pipelines;
+pub mod mod_storage;
 pub mod mod_uniforms;
 mod native_material;
 mod native_pack;

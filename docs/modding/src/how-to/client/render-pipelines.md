@@ -253,6 +253,24 @@ A pipeline without `.textured(…)` binds neither `Sampler0` nor `SpriteRect`: r
 (or including `<sunrise:pipeline_sprite.glsl>`) refuses the shader with a note naming
 `RenderPipeline::textured`.
 
+## Storage buffers
+
+A pipeline reads large, sparsely updated data (compact geometry records, per-instance tables) from
+a std430 storage buffer. Create it once with `host.create_storage_buffer(&StorageBufferDescriptor::new(size))`
+(a multiple of 4 bytes, up to the device's `max_buffer_size`), update ranges with
+`buffer.write_range(host, offset, bytes)` (queued and applied in call order before the next frame),
+and free it with `buffer.release(host)`. It survives a resource reload and a world close, and is
+freed when the mod unloads.
+
+Declare it in the layout with `BindEntry::new("Tints", BindingKind::StorageBuffer { read_only: true })`
+and write the block in GLSL with the same access (`layout(std430) readonly buffer Tints { vec4 tint[]; };`;
+a layout that says read-write needs a block without `readonly`). Bind a range of the buffer per draw
+with `DrawBindings::new().storage_buffer("Tints", buffer.slice(offset, length))`. A range is at most
+the device's `max_storage_buffer_binding_size` bytes with its offset a multiple of
+`min_storage_buffer_offset_alignment`; the buffer itself may be larger. A writable block in the
+vertex stage needs `VERTEX_WRITABLE_STORAGE`; a device without it refuses such a pipeline. Every
+refusal is a `BufferError` or `PipelineDrawError`, never a panic.
+
 ## Participating in translated shader packs
 
 When an Iris/OptiFine shader pack is active and owns terrain rendering, a mod pipeline without a

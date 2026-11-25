@@ -2456,6 +2456,7 @@ impl Game<'_> {
         if let Some(renderer) = &self.renderer {
             renderer.retire_disabled_mod_meshes(&effective);
             renderer.retire_disabled_mod_uniforms(&effective);
+            renderer.retire_unloaded_mod_storage(&effective);
         }
         self.mods.apply_code_switches(&effective);
     }
