@@ -557,7 +557,7 @@ impl Renderer {
         );
         // Lend the primary selection made by the resident walk; submit before the world passes.
         let hook_oit = !frame.title && self.oit_active_for(self.improved_transparency);
-        if !frame.title
+        let env_suppress = if !frame.title
             && let Some(hooks) = hooks.as_deref_mut()
         {
             self.visible_renderable_sections.clear();
@@ -579,7 +579,10 @@ impl Renderer {
                         }),
                 );
             hooks.on_custom_geometry(&self.visible_renderable_sections, hook_oit);
-        }
+            hooks.on_environment_effects(&self.visible_renderable_sections, hook_oit)
+        } else {
+            world_primitives::EnvironmentEffectSuppressions::default()
+        };
         let now = std::time::Instant::now();
         let mut visible_lods = std::mem::take(&mut self.visible_lods);
         visible_lods.clear();
@@ -1261,11 +1264,17 @@ impl Renderer {
                 bytemuck::cast_slice(lines),
             );
         }
+        let vanilla_weather: &[Vertex] = if env_suppress.weather {
+            &[]
+        } else {
+            frame.weather
+        };
+        let vanilla_clouds = frame.clouds.as_ref().filter(|_| !env_suppress.clouds);
         self.weather.prepare(
             &self.device,
             &mut encoder,
             &mut self.uploads,
-            frame.weather,
+            vanilla_weather,
             frame.weather_time,
         );
         let live_hooks = !frame.title && hooks.is_some();
@@ -1442,7 +1451,7 @@ impl Renderer {
             }
         };
         let clear = linear_blend::stored_clear(clear, self.output.frame.linear_light);
-        let sky_visible = sky_open(frame);
+        let sky_visible = sky_open(frame) && !env_suppress.skybox;
         if let Some((rotation, brightness)) = frame.stars {
             self.stars.prepare(
                 &mut self.uploads,
@@ -1745,7 +1754,7 @@ impl Renderer {
         let ordinary_skin = skin.filter(|_| !pack_skin);
         self.entity_order.prepare(entities, ordinary_skin, oit_on);
         let entity_quads = entity_quads + posed / 4;
-        let weather_quads = frame.weather.len() as u32 / 4;
+        let weather_quads = vanilla_weather.len() as u32 / 4;
         let text_solid_quads = text_offset_solid_quads + text_normal_solid_quads;
         let world_quads = entity_quads
             + text_quads
@@ -1788,7 +1797,7 @@ impl Renderer {
         let pack_clouds = core_clouds::CloudsFrame {
             pack_shader: self.core_clouds.as_ref().is_some_and(|c| c.classic()),
             pack_oit_shader: (self.core_clouds.as_ref()).is_some_and(|c| c.improved_transparency()),
-            clouds: frame.clouds.is_some(),
+            clouds: vanilla_clouds.is_some(),
             native_clouds,
             improved_transparency: oit_on,
             shader_pack: self.pack_post.as_ref().is_some_and(|p| p.1.is_some()),
@@ -1797,7 +1806,7 @@ impl Renderer {
                 && self.hdr.as_ref().is_some_and(|h| h.lighting),
         }
         .pack_draws();
-        let pack_cloud_quads = match (self.core_clouds.as_mut(), frame.clouds.as_ref()) {
+        let pack_cloud_quads = match (self.core_clouds.as_mut(), vanilla_clouds) {
             (Some(core), Some(input)) if pack_clouds => {
                 let view = views.primary();
                 let vanilla = core_lines::uniforms(
@@ -1828,10 +1837,8 @@ impl Renderer {
             }
             _ => None,
         };
-        let native_input = frame
-            .clouds
-            .as_ref()
-            .filter(|_| core_clouds::native_mesh(native_clouds, pack_cloud_quads));
+        let native_input =
+            vanilla_clouds.filter(|_| core_clouds::native_mesh(native_clouds, pack_cloud_quads));
         let cloud_quads = if let Some(input) = native_input {
             let (rebuilt, uniform) =
                 crate::spans::time("clouds", || self.cloud_mesh.prepare(input));
@@ -3637,7 +3644,7 @@ impl Renderer {
                     };
                     // A pack's `OIT_CLOUDS` in their place.
                     let pack_clouds = (self.core_clouds.as_ref())
-                        .zip(frame.clouds.as_ref())
+                        .zip(vanilla_clouds)
                         .filter(|_| pack_cloud_quads.is_some_and(|q| q > 0));
                     let indices = &self.indices;
                     let pack_clouds = pack_clouds.map(|(core, input)| {
@@ -3927,7 +3934,7 @@ impl Renderer {
                 );
             }
             // Under Improved Transparency a pack's clouds drew in its stages.
-            if let (Some(core), Some(input)) = (&self.core_clouds, frame.clouds.as_ref())
+            if let (Some(core), Some(input)) = (&self.core_clouds, vanilla_clouds)
                 && pack_cloud_quads.is_some_and(|quads| {
                     core_clouds::classic_pass_draws(quads, pack_draws_clouds, oit_on)
                 })

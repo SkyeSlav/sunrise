@@ -862,6 +862,7 @@ pub(super) fn register_client_presentations(
     register_dimension_transition_screens(role);
     register_entity_spectator_shaders(role);
     register_render_pipelines(role, vanilla_root)?;
+    register_custom_environment_effect_renderers(role)?;
     register_entity_renderers(role);
     Ok(())
 }
@@ -907,6 +908,21 @@ fn register_render_pipelines(
     let mut pipelines = Vec::new();
     Game::native_register_render_pipelines(&RegistrationContext::new(), &mut pipelines);
     sunrise_client_render::mod_pipelines::register(pipelines, vanilla_root)?;
+    Ok(())
+}
+
+/// Validate and freeze custom environment effect renderers once at client startup, before the
+/// first world view renders. Registrations survive resource reloads and world changes.
+fn register_custom_environment_effect_renderers(role: ExecutionRole) -> sunrise_client::Result<()> {
+    if !role.is_client() {
+        return Ok(());
+    }
+    let mut renderers = Vec::new();
+    Game::native_register_custom_environment_effect_renderers(
+        &RegistrationContext::new(),
+        &mut renderers,
+    );
+    sunrise_client_render::environment_effects::register(renderers)?;
     Ok(())
 }
 

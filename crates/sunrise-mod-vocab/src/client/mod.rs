@@ -14,6 +14,7 @@ pub(crate) mod dynamic_texture;
 pub(crate) mod entity_layers;
 pub(crate) mod entity_render_attachments;
 pub(crate) mod entity_renderers;
+pub(crate) mod environment_effects;
 pub(crate) mod item_extensions;
 // hidden: a module of game-side types; mods use their re-exports
 #[doc(hidden)]

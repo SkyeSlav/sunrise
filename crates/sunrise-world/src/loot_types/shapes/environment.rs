@@ -277,6 +277,7 @@ pub(super) fn value(attribute: &attributes::Attribute) -> Option<Kind> {
         },
         AttributeKind::RgbColor => Named("rgb_string"),
         AttributeKind::ArgbColor => Named("argb_string"),
+        AttributeKind::Identifier => Id,
         AttributeKind::AmbientParticles | AttributeKind::Other => {
             OTHER.iter().find(|row| row.name == attribute.id)?.kind
         }

@@ -109,6 +109,15 @@ pub struct PreparedHookGeometry {
     pub text_patches: Vec<crate::font::Patch>,
 }
 
+/// Which vanilla environment passes were suppressed by custom environment effect renderers
+/// (`Hooks::register_custom_environment_effect_renderers`) for the active view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EnvironmentEffectSuppressions {
+    pub skybox: bool,
+    pub clouds: bool,
+    pub weather: bool,
+}
+
 /// Renderer-driven lifecycle for mod world rendering hooks (`submit_custom_geometry`,
 /// `prepare_render_buffers`, and `render_level_stage`).
 pub trait FrameHooks {
@@ -118,6 +127,15 @@ pub trait FrameHooks {
         true
     }
     fn on_custom_geometry(&mut self, sections: &[mod_api::RenderableSection], oit_on: bool);
+    /// Run active custom environment effect renderers (skybox, clouds, weather) using extracted
+    /// view state only, returning which vanilla passes are suppressed for this view.
+    fn on_environment_effects(
+        &mut self,
+        _sections: &[mod_api::RenderableSection],
+        _oit_on: bool,
+    ) -> EnvironmentEffectSuppressions {
+        EnvironmentEffectSuppressions::default()
+    }
     fn on_after_sky(&mut self, sections: &[mod_api::RenderableSection], oit_on: bool);
     fn on_prepare_render_buffers(
         &mut self,

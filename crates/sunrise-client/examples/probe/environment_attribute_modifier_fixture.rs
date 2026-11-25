@@ -14,6 +14,7 @@ fn format(value: &Value) -> String {
         Value::Rgb(v) => v.map(bits).join(" "),
         Value::Argb(v) => v.map(bits).join(" "),
         Value::AmbientParticles(list) => format!("{list:?}"),
+        Value::Identifier(id) => id.to_string(),
         Value::Other(json) => json.to_string(),
     }
 }
@@ -44,6 +45,7 @@ fn registry(output: &mut String) -> std::fmt::Result {
             Kind::RgbColor => "minecraft:rgb_color",
             Kind::ArgbColor => "minecraft:argb_color",
             Kind::AmbientParticles => "minecraft:ambient_particles",
+            Kind::Identifier => "neoforge:identifier",
             Kind::Other => "other",
         };
         let default = a.default_value();

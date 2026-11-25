@@ -10,6 +10,14 @@ use std::sync::{Arc, LazyLock};
 use sunrise_core::nbt::Tag;
 
 pub const AMBIENT_PARTICLES: &str = "visual/ambient_particles";
+/// `NeoForgeEnvironmentAttributes.CUSTOM_SKYBOX`.
+pub const CUSTOM_SKYBOX: &str = "neoforge:custom_skybox";
+/// `NeoForgeEnvironmentAttributes.CUSTOM_CLOUDS`.
+pub const CUSTOM_CLOUDS: &str = "neoforge:custom_clouds";
+/// `NeoForgeEnvironmentAttributes.CUSTOM_WEATHER_EFFECTS`.
+pub const CUSTOM_WEATHER_EFFECTS: &str = "neoforge:custom_weather_effects";
+/// `NeoForgeEnvironmentAttributes.DEFAULT_CUSTOM_{SKYBOX,CLOUDS,WEATHER_EFFECTS}`.
+pub const DEFAULT_CUSTOM_ENVIRONMENT_EFFECT: &str = "minecraft:default";
 
 /// `AmbientParticle`: the decoded options plus an independent spawn probability.
 #[derive(Clone, Debug, PartialEq)]
@@ -87,6 +95,7 @@ pub enum Kind {
     RgbColor,
     ArgbColor,
     AmbientParticles,
+    Identifier,
     Other,
 }
 
@@ -98,6 +107,7 @@ pub enum Value {
     Rgb([f32; 3]),
     Argb([f32; 4]),
     AmbientParticles(Arc<[AmbientParticle]>),
+    Identifier(sunrise_core::Identifier),
     Other(Json),
 }
 
@@ -107,6 +117,7 @@ enum Default {
     Rgb(i32),
     Argb(i32),
     EmptyAmbientParticles,
+    DefaultIdentifier,
     Unported,
 }
 
@@ -357,14 +368,32 @@ pub static ATTRIBUTES: [Attribute; 51] = {
     ]
 };
 
-/// The attribute an id names, with or without its `minecraft:` namespace (`Identifier.parse`).
+/// `NeoForgeEnvironmentAttributes`: `neoforge:custom_*` identifier attributes.
+/// Kept separate from vanilla `ATTRIBUTES` so vanilla parity dumps stay bit-exact.
+pub static NEOFORGE_ATTRIBUTES: [Attribute; 3] = {
+    use Default as D;
+    use Kind::Identifier;
+    [
+        a(
+            CUSTOM_WEATHER_EFFECTS,
+            Identifier,
+            D::DefaultIdentifier,
+            Range::Any,
+        ),
+        a(CUSTOM_CLOUDS, Identifier, D::DefaultIdentifier, Range::Any),
+        a(CUSTOM_SKYBOX, Identifier, D::DefaultIdentifier, Range::Any),
+    ]
+};
+
+/// The attribute an id names, with or without its `minecraft:` namespace (`Identifier.parse`),
+/// or under `neoforge:` for `NeoForgeEnvironmentAttributes`.
 pub fn attribute(id: &str) -> Option<&'static Attribute> {
-    let path = match id.split_once(':') {
-        Some(("minecraft", path)) => path,
-        Some(_) => return None,
-        None => id,
-    };
-    ATTRIBUTES.iter().find(|a| a.id == path)
+    match id.split_once(':') {
+        Some(("minecraft", path)) => ATTRIBUTES.iter().find(|a| a.id == path),
+        Some(("neoforge", _)) => NEOFORGE_ATTRIBUTES.iter().find(|a| a.id == id),
+        Some(_) => None,
+        None => ATTRIBUTES.iter().find(|a| a.id == id),
+    }
 }
 
 /// `ARGB.from8BitChannel` of each byte: `vector3fFromRGB24` / `vector4fFromARGB32`.
@@ -375,11 +404,12 @@ fn channels(color: i32) -> [f32; 4] {
 }
 
 impl Attribute {
-    /// `EnvironmentAttributes`: all visual and audio attributes are syncable;
-    /// the gameplay attributes opt in individually.
+    /// `EnvironmentAttributes`: all visual, audio and NeoForge custom environment effect
+    /// attributes are syncable; the gameplay attributes opt in individually.
     pub(crate) fn is_syncable(&self) -> bool {
         self.id.starts_with("visual/")
             || self.id.starts_with("audio/")
+            || self.id.starts_with("neoforge:")
             || matches!(
                 self.id,
                 "gameplay/sky_light_level"
@@ -404,6 +434,13 @@ impl Attribute {
                 static EMPTY: LazyLock<Arc<[AmbientParticle]>> = LazyLock::new(|| Arc::from([]));
                 Value::AmbientParticles(Arc::clone(&EMPTY))
             }
+            Default::DefaultIdentifier => {
+                static DEFAULT_ID: LazyLock<sunrise_core::Identifier> = LazyLock::new(|| {
+                    sunrise_core::Identifier::parse(DEFAULT_CUSTOM_ENVIRONMENT_EFFECT)
+                        .expect("valid default custom environment effect identifier")
+                });
+                Value::Identifier(DEFAULT_ID.clone())
+            }
             Default::Unported => return None,
         })
     }
@@ -427,6 +464,7 @@ impl Attribute {
             Kind::RgbColor => Value::Rgb(rgb(json)?),
             Kind::ArgbColor => Value::Argb(argb(json)?),
             Kind::AmbientParticles => Value::AmbientParticles(AmbientParticle::parse_list(json)?),
+            Kind::Identifier => Value::Identifier(identifier(json)?),
             Kind::Other => {
                 crate::loot::types::validate_environment_value(self, json)
                     .map_err(|error| error.to_string())?;
@@ -440,6 +478,15 @@ impl Attribute {
         }
         Ok(value)
     }
+}
+
+/// `Identifier.CODEC` (`NeoForgeAttributeTypes.IDENTIFIER`): a JSON string that parses as an
+/// `Identifier`.
+fn identifier(json: &Json) -> Result<sunrise_core::Identifier, String> {
+    let text = json
+        .as_str()
+        .ok_or_else(|| format!("not an identifier: {json}"))?;
+    sunrise_core::Identifier::parse(text).map_err(|e| format!("{text}: {e}"))
 }
 
 /// `Codec.BOOL` through `JsonOps.getBooleanValue`: only a JSON boolean.
@@ -934,6 +981,7 @@ impl AttributeMap {
                 Value::Rgb(v) => color(v),
                 Value::Argb(v) => color(v),
                 Value::AmbientParticles(list) => ambient_particles_to_nbt(&list),
+                Value::Identifier(id) => Tag::String(id.as_str().into()),
                 Value::Other(v) => json_nbt::json_to_tag(&v).map_err(|e| e.to_string())?,
             })
         }
@@ -993,7 +1041,12 @@ impl AttributeMap {
                         return Err(format!("{} is a computed attribute", attribute.id));
                     }
                 };
-                Ok((format!("minecraft:{}", attribute.id).as_str().into(), tag))
+                let key = if attribute.id.contains(':') {
+                    attribute.id.into()
+                } else {
+                    format!("minecraft:{}", attribute.id).as_str().into()
+                };
+                Ok((key, tag))
             })
             .collect()
     }
@@ -1273,5 +1326,63 @@ mod ambient_particle_tests {
                 .unwrap(),
         );
         assert_eq!(bits(&particles), mid_bits);
+    }
+}
+
+#[cfg(test)]
+mod custom_environment_effect_attribute_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn neoforge_custom_effect_attributes_parse_default_and_encode() {
+        for id in [CUSTOM_SKYBOX, CUSTOM_CLOUDS, CUSTOM_WEATHER_EFFECTS] {
+            let attr = attribute(id).expect("neoforge custom effect attribute registered");
+            assert_eq!(attr.kind, Kind::Identifier);
+            assert!(attr.is_syncable());
+            assert!(!attr.spatially_interpolated());
+            let default = attr.default_value().expect("default identifier");
+            assert_eq!(
+                default,
+                Value::Identifier(
+                    sunrise_core::Identifier::parse(DEFAULT_CUSTOM_ENVIRONMENT_EFFECT).unwrap()
+                )
+            );
+        }
+
+        let map = AttributeMap::parse(&json!({
+            CUSTOM_SKYBOX: "example:aurora",
+            CUSTOM_CLOUDS: {"modifier": "override", "argument": "example:nebula"},
+            CUSTOM_WEATHER_EFFECTS: "example:ash_storm",
+        }))
+        .unwrap();
+        let sky = attribute(CUSTOM_SKYBOX).unwrap();
+        assert_eq!(
+            map.apply(sky, &sky.default_value().unwrap()),
+            Value::Identifier(sunrise_core::Identifier::parse("example:aurora").unwrap())
+        );
+
+        let nbt = map.into_network_nbt().unwrap();
+        assert_eq!(
+            nbt.get(CUSTOM_SKYBOX),
+            Some(&Tag::String("example:aurora".into()))
+        );
+        assert_eq!(
+            nbt.get(CUSTOM_CLOUDS),
+            Some(&Tag::String("example:nebula".into()))
+        );
+        assert_eq!(
+            nbt.get(CUSTOM_WEATHER_EFFECTS),
+            Some(&Tag::String("example:ash_storm".into()))
+        );
+
+        assert!(AttributeMap::parse(&json!({CUSTOM_SKYBOX: "UPPERCASE:bad"})).is_err());
+        assert!(AttributeMap::parse(&json!({CUSTOM_SKYBOX: 42})).is_err());
+        assert!(
+            AttributeMap::parse(&json!({
+                CUSTOM_SKYBOX: {"modifier": "add", "argument": "example:a"}
+            }))
+            .is_err()
+        );
     }
 }

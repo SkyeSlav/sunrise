@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 use sunrise_assets::resource_source::ResourceSource;
 use sunrise_world::environment_attributes::{
-    AMBIENT_PARTICLES, Attribute, AttributeMap, Entry, Kind, Value, attribute,
+    AMBIENT_PARTICLES, Attribute, AttributeMap, CUSTOM_CLOUDS, CUSTOM_SKYBOX,
+    CUSTOM_WEATHER_EFFECTS, DEFAULT_CUSTOM_ENVIRONMENT_EFFECT, Entry, Kind, Value, attribute,
 };
 use sunrise_world::environment_system::{BiomeBlend, Builder, Conditions, System};
 use sunrise_world::environment_timeline::Timeline;
@@ -338,7 +339,7 @@ fn as_number(value: &Value) -> f64 {
         Value::Argb([r, g, b, a]) => {
             f64::from((byte(*a) << 24 | byte(*r) << 16 | byte(*g) << 8 | byte(*b)) as i32)
         }
-        Value::AmbientParticles(_) | Value::Other(_) => 0.0,
+        Value::AmbientParticles(_) | Value::Identifier(_) | Value::Other(_) => 0.0,
     }
 }
 
@@ -1170,6 +1171,40 @@ impl Environment {
             cloud_height: float("visual/cloud_height"),
         }
     }
+
+    /// Sample the active custom environment effect renderer identifiers
+    /// (`neoforge:custom_skybox`, `neoforge:custom_clouds`, `neoforge:custom_weather_effects`).
+    /// Any slot resolving to `minecraft:default` returns `None`, so vanilla dimensions run zero
+    /// custom callbacks.
+    pub fn custom_effects(&self, at: &Sample) -> CustomEffectIds {
+        let non_default = |id: &str| match self.value(id, at) {
+            Some(Value::Identifier(resolved))
+                if resolved.as_str() != DEFAULT_CUSTOM_ENVIRONMENT_EFFECT =>
+            {
+                Some(resolved)
+            }
+            _ => None,
+        };
+        CustomEffectIds {
+            skybox: non_default(CUSTOM_SKYBOX),
+            clouds: non_default(CUSTOM_CLOUDS),
+            weather: non_default(CUSTOM_WEATHER_EFFECTS),
+        }
+    }
+}
+
+/// Resolved non-default custom environment effect identifiers for the active view.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CustomEffectIds {
+    pub skybox: Option<sunrise_core::Identifier>,
+    pub clouds: Option<sunrise_core::Identifier>,
+    pub weather: Option<sunrise_core::Identifier>,
+}
+
+impl CustomEffectIds {
+    pub fn is_empty(&self) -> bool {
+        self.skybox.is_none() && self.clouds.is_none() && self.weather.is_none()
+    }
 }
 
 /// `Level.updateSkyBrightness`'s darkening: from the sky light level, a dimension value.
@@ -1711,5 +1746,41 @@ mod tests {
         assert_eq!(sky("minecraft:forest"), [1.0, 0.0, 0.0]);
         // Plains land on the transparent pixel: the colour before stays.
         assert_eq!(sky("minecraft:plains"), [128.0 / 255.0; 3]);
+    }
+
+    #[test]
+    fn custom_environment_effect_attributes_default_to_none_on_vanilla_dimensions() {
+        use sunrise_assets::resource_source::Resource;
+        let vanilla = ResourceSource::indexed(std::collections::BTreeMap::from([(
+            "data/minecraft/dimension_type/overworld.json".into(),
+            Resource::bytes(br#"{"attributes":{}}"#.to_vec()),
+        )]));
+        let env = Environment::load(&vanilla).unwrap();
+        assert!(env.custom_effects(&Sample::default()).is_empty());
+
+        let custom = ResourceSource::indexed(std::collections::BTreeMap::from([(
+            "data/minecraft/dimension_type/overworld.json".into(),
+            Resource::bytes(
+                br#"{
+                    "attributes": {
+                        "neoforge:custom_skybox": "example:aurora_sky",
+                        "neoforge:custom_clouds": "example:nebula_clouds",
+                        "neoforge:custom_weather_effects": "minecraft:default"
+                    }
+                }"#
+                .to_vec(),
+            ),
+        )]));
+        let env = Environment::load(&custom).unwrap();
+        let ids = env.custom_effects(&Sample::default());
+        assert_eq!(
+            ids.skybox.as_ref().map(sunrise_core::Identifier::as_str),
+            Some("example:aurora_sky")
+        );
+        assert_eq!(
+            ids.clouds.as_ref().map(sunrise_core::Identifier::as_str),
+            Some("example:nebula_clouds")
+        );
+        assert_eq!(ids.weather, None);
     }
 }

@@ -1,0 +1,28 @@
+ids = [
+    "hook:register_custom_environment_effect_renderers",
+    "method:Hooks::register_custom_environment_effect_renderers",
+    "type:RegisterCustomEnvironmentEffectRenderersEvent",
+    "handle:RegisterCustomEnvironmentEffectRenderersEvent::register_skybox",
+    "handle:RegisterCustomEnvironmentEffectRenderersEvent::register_clouds",
+    "handle:RegisterCustomEnvironmentEffectRenderersEvent::register_weather",
+    "const:CUSTOM_SKYBOX_ATTRIBUTE",
+    "const:CUSTOM_CLOUDS_ATTRIBUTE",
+    "const:CUSTOM_WEATHER_EFFECTS_ATTRIBUTE",
+    "const:DEFAULT_CUSTOM_ENVIRONMENT_EFFECT",
+    "type:CloudStatus",
+    "type:SkyRenderState",
+    "type:CloudsRenderState",
+    "type:WeatherRenderState",
+    "trait:CustomSkyboxRenderer",
+    "trait:CustomCloudsRenderer",
+    "trait:CustomWeatherEffectRenderer",
+    "type:EnvironmentEffectKind",
+    "type:EnvironmentEffectRegistrationError",
+    "type:EnvironmentEffectRendererRegistration",
+]
+why = """Add Hooks::register_custom_environment_effect_renderers (NeoForge 26.3 RegisterCustomEnvironmentEffectRendererEvent, #968) and NeoForgeEnvironmentAttributes (`neoforge:custom_skybox`, `neoforge:custom_clouds`, `neoforge:custom_weather_effects`).
+
+- Mods register custom skybox, clouds, and snow/rain renderers once at client startup via `event.register_skybox`, `event.register_clouds`, and `event.register_weather`. Registering `minecraft:default` is refused immediately, and duplicate IDs per slot fail client startup naming both mods.
+- Custom renderers read only extracted per-view state (`WorldRenderView` with `RenderDataKey` entries from `Hooks::extract_level_render_state`, plus `SkyRenderState`, `CloudsRenderState`, or `WeatherRenderState`) and submit geometry through `WorldDrawContext`; no live `ClientHost` world queries are available during drawing.
+- Returning `true` suppresses vanilla's corresponding skybox, clouds, or snow/rain draw for that view; vanilla dimensions keep `minecraft:default` and run zero callbacks."""
+migrate = "Additive only."

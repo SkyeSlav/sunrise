@@ -72,6 +72,7 @@ pub mod terrain_model;
 pub use sunrise_polytone::creative_tabs as polytone_creative_tabs;
 pub use sunrise_world::json_folder;
 pub mod dimension_transition;
+pub mod environment_effects;
 pub mod fluid_models;
 pub mod level_loading;
 pub mod light;

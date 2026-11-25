@@ -12,6 +12,29 @@ use sunrise_client::screen_effects::{CameraQuads, sampling};
 use sunrise_client::terrain_model;
 use sunrise_client::world_geometry::{self, ModelBatch, WorldGeometry};
 
+/// Resolved custom environment effect renderers and frozen extracted state for the active view.
+#[derive(Default)]
+pub(super) struct ActiveEnvironmentEffects {
+    pub(super) skybox: Option<(
+        &'static sunrise_client_render::environment_effects::RegisteredSkyboxRenderer,
+        mod_api::SkyRenderState,
+    )>,
+    pub(super) clouds: Option<(
+        &'static sunrise_client_render::environment_effects::RegisteredCloudsRenderer,
+        mod_api::CloudsRenderState,
+    )>,
+    pub(super) weather: Option<(
+        &'static sunrise_client_render::environment_effects::RegisteredWeatherRenderer,
+        mod_api::WeatherRenderState,
+    )>,
+}
+
+impl ActiveEnvironmentEffects {
+    pub(super) fn has_any(&self) -> bool {
+        self.skybox.is_some() || self.clouds.is_some() || self.weather.is_some()
+    }
+}
+
 /// Drives mod world rendering hooks from `Renderer::draw_frame`'s real visibility, sky, prepare,
 /// pass-stage, and post-world boundaries.
 pub(super) struct GameWorldStageDriver<'a, 'g> {
@@ -20,6 +43,7 @@ pub(super) struct GameWorldStageDriver<'a, 'g> {
     alpha: f64,
     draw: &'a mut WorldGeometry,
     render_state: mod_api::LevelRenderState,
+    environment_effects: ActiveEnvironmentEffects,
 }
 
 impl<'a, 'g> GameWorldStageDriver<'a, 'g> {
@@ -35,7 +59,13 @@ impl<'a, 'g> GameWorldStageDriver<'a, 'g> {
             alpha,
             draw,
             render_state: mod_api::LevelRenderState::new(),
+            environment_effects: ActiveEnvironmentEffects::default(),
         }
+    }
+
+    pub(super) fn with_environment_effects(mut self, effects: ActiveEnvironmentEffects) -> Self {
+        self.environment_effects = effects;
+        self
     }
 
     fn view<'v>(
@@ -87,6 +117,45 @@ impl sunrise_client::gfx::world_primitives::FrameHooks for GameWorldStageDriver<
         self.draw.begin_custom_geometry();
         self.game.native_submit_custom_geometry(&view, self.draw);
         self.game.submit_debug_geometry(&view, self.draw);
+    }
+
+    fn on_environment_effects(
+        &mut self,
+        sections: &[mod_api::RenderableSection],
+        oit_on: bool,
+    ) -> sunrise_client::gfx::world_primitives::EnvironmentEffectSuppressions {
+        if !self.environment_effects.has_any() {
+            return sunrise_client::gfx::world_primitives::EnvironmentEffectSuppressions::default();
+        }
+        let view = Self::view(
+            self.frame_camera,
+            self.alpha,
+            self.game.world.game_time,
+            sections,
+            oit_on,
+            &self.render_state,
+        );
+        let mut context = GameWorldDrawContext::new(self.game, self.draw);
+        let skybox = self
+            .environment_effects
+            .skybox
+            .as_ref()
+            .is_some_and(|(renderer, state)| renderer.render_sky(&view, state, &mut context));
+        let clouds = self
+            .environment_effects
+            .clouds
+            .as_ref()
+            .is_some_and(|(renderer, state)| renderer.render_clouds(&view, state, &mut context));
+        let weather = self
+            .environment_effects
+            .weather
+            .as_ref()
+            .is_some_and(|(renderer, state)| renderer.render_weather(&view, state, &mut context));
+        sunrise_client::gfx::world_primitives::EnvironmentEffectSuppressions {
+            skybox,
+            clouds,
+            weather,
+        }
     }
 
     fn on_after_sky(&mut self, sections: &[mod_api::RenderableSection], oit_on: bool) {

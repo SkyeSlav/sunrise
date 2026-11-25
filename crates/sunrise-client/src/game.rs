@@ -11473,7 +11473,7 @@ impl Game<'_> {
             environment.set_frame(&frame);
             polytone_frame = Some(&frame);
         }
-        let mut sky = environment.sample(&sunrise_client::environment::Sample {
+        let env_sample = sunrise_client::environment::Sample {
             day_time: self.view_day_time(),
             rain,
             thunder,
@@ -11481,7 +11481,14 @@ impl Game<'_> {
             biome: Some(attributes_of(biome)),
             post_blend: Some(&post_blend),
             post_biome: Some(post_of(biome)),
-        });
+        };
+        let mut sky = environment.sample(&env_sample);
+        let custom_env_effects =
+            if self.title.is_none() && sunrise_client_render::environment_effects::has_any() {
+                environment.custom_effects(&env_sample)
+            } else {
+                sunrise_client::environment::CustomEffectIds::default()
+            };
         self.end_flash_sky(&mut sky, alpha);
         if self.flash > 0 && !self.settings.file.bool("hideLightningFlashes") {
             // ClientLevel's flash layer while skyFlashTime > 0: the sky colour
@@ -12124,10 +12131,70 @@ impl Game<'_> {
                     max_buffer_size: renderer.max_buffer_size(),
                     staged_prepared_draws: prepared_draws.len() as u64,
                 }));
+                let active_env_effects = if custom_env_effects.is_empty() {
+                    native_custom_geometry::ActiveEnvironmentEffects::default()
+                } else {
+                    let skybox_renderer = custom_env_effects
+                        .skybox
+                        .as_ref()
+                        .and_then(sunrise_client_render::environment_effects::skybox)
+                        .map(|renderer| {
+                            let mut state = mod_api::SkyRenderState::default();
+                            state.sky_color = sky.sky_color;
+                            state.sunrise_color = sky.sunrise_color;
+                            state.fog_color = sky.fog_color;
+                            state.sun_angle = sky.sun_angle;
+                            state.moon_angle = sky.moon_angle;
+                            state.star_angle = sky.star_angle;
+                            state.star_brightness = sky.star_brightness;
+                            state.rain_level = rain;
+                            state.thunder_level = thunder;
+                            state.sky_fog_end = sky.sky_fog_end;
+                            state.is_end_sky = skybox == Skybox::End;
+                            (renderer, state)
+                        });
+                    let clouds_renderer = custom_env_effects
+                        .clouds
+                        .as_ref()
+                        .and_then(sunrise_client_render::environment_effects::clouds)
+                        .map(|renderer| {
+                            let mut state = mod_api::CloudsRenderState::default();
+                            state.status = match self.settings.clouds.as_str() {
+                                "off" => mod_api::CloudStatus::Off,
+                                "fast" => mod_api::CloudStatus::Fast,
+                                _ => mod_api::CloudStatus::Fancy,
+                            };
+                            state.color = sky.cloud_color;
+                            state.height = sky.cloud_height;
+                            state.range = self.settings.cloud_range.max(0) as u32;
+                            state.cloud_fog_end = sky.cloud_fog_end;
+                            state.game_time = self.world.game_time;
+                            state.partial_tick = alpha as f32;
+                            (renderer, state)
+                        });
+                    let weather_renderer = custom_env_effects
+                        .weather
+                        .as_ref()
+                        .and_then(sunrise_client_render::environment_effects::weather)
+                        .map(|renderer| {
+                            let mut state = mod_api::WeatherRenderState::default();
+                            state.rain_level = rain;
+                            state.thunder_level = thunder;
+                            state.radius = self.settings.weather_radius;
+                            state.game_time = self.world.game_time;
+                            state.partial_tick = alpha as f32;
+                            (renderer, state)
+                        });
+                    native_custom_geometry::ActiveEnvironmentEffects {
+                        skybox: skybox_renderer,
+                        clouds: clouds_renderer,
+                        weather: weather_renderer,
+                    }
+                };
                 let world_camera = self
                     .native_camera_frame
                     .as_ref()
-                    .filter(|_| self.has_world_render_hooks());
+                    .filter(|_| self.has_world_render_hooks() || active_env_effects.has_any());
                 let mut driver = world_camera.map(|camera| {
                     native_custom_geometry::GameWorldStageDriver::new(
                         self,
@@ -12135,6 +12202,7 @@ impl Game<'_> {
                         alpha,
                         &mut world_geometry,
                     )
+                    .with_environment_effects(active_env_effects)
                 });
                 let rendered = consume(
                     renderer,

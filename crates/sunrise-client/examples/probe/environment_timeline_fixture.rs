@@ -14,6 +14,7 @@ fn format(value: &Value) -> String {
         Value::Rgb(v) => v.map(bits).join(" "),
         Value::Argb(v) => v.map(bits).join(" "),
         Value::AmbientParticles(list) => format!("{list:?}"),
+        Value::Identifier(id) => id.to_string(),
         Value::Other(json) => json.to_string(),
     }
 }
