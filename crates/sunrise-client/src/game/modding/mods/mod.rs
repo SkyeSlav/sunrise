@@ -2457,6 +2457,7 @@ impl Game<'_> {
             renderer.retire_disabled_mod_meshes(&effective);
             renderer.retire_disabled_mod_uniforms(&effective);
             renderer.retire_unloaded_mod_storage(&effective);
+            renderer.retire_disabled_mod_render_targets(&effective);
         }
         self.mods.apply_code_switches(&effective);
     }

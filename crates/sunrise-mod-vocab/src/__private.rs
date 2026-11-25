@@ -372,6 +372,11 @@ pub mod built {
         crate::UniformBufferRef::from_parts(generation, slot)
             .expect("published uniform buffer generation")
     }
+    /// Wrap a slot in the retained GPU offscreen render target store.
+    pub fn render_target_ref(generation: u64, slot: u32) -> crate::RenderTargetRef {
+        crate::RenderTargetRef::from_parts(generation, slot)
+            .expect("published render target generation")
+    }
 }
 
 /// What the game reads of handles and calls on the API's own types.

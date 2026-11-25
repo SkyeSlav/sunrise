@@ -230,6 +230,7 @@ impl Game<'_> {
         if let Some(renderer) = &self.renderer {
             renderer.clear_mod_meshes();
             renderer.clear_mod_uniforms();
+            renderer.clear_mod_render_targets();
         }
         self.levels.clear();
         self.world.water_tickets.clear();

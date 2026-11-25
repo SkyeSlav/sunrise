@@ -194,6 +194,8 @@ pub struct Renderer {
     /// Retained GPU storage buffers backing [`mod_api::StorageBufferRef`]; they outlive a resource
     /// reload and a world close.
     pub(crate) mod_storage: std::sync::Mutex<mod_storage::ModStorageBuffers>,
+    /// Mod-owned offscreen GPU render targets backing [`mod_api::RenderTargetRef`].
+    pub(crate) mod_render_targets: std::sync::Mutex<mod_render_targets::ModRenderTargets>,
     pub(crate) text_polygon_offset_pipeline: wgpu::RenderPipeline,
     pub(crate) world_text_pipeline: wgpu::RenderPipeline,
     pub(crate) text_mark_pipelines: [wgpu::RenderPipeline; 2],

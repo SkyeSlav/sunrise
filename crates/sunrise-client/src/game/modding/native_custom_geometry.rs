@@ -552,6 +552,51 @@ impl Game<'_> {
             .ok_or(mod_api::BufferError::Unavailable)?;
         renderer.storage_buffer_release(mod_api::content::crash::current_native_mod(), buffer)
     }
+    /// Allocate a mod-owned offscreen [`mod_api::RenderTargetRef`] on the active renderer.
+    pub(super) fn create_render_target(
+        &self,
+        desc: &mod_api::RenderTargetDescriptor,
+    ) -> Result<mod_api::RenderTargetRef, mod_api::RenderTargetError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(mod_api::RenderTargetError::Unavailable)?;
+        renderer.create_render_target(mod_api::content::crash::current_native_mod(), desc)
+    }
+    /// Resize mod-owned offscreen `target` (no-op if unchanged).
+    pub(super) fn render_target_resize(
+        &self,
+        target: mod_api::RenderTargetRef,
+        size: [u32; 2],
+    ) -> Result<(), mod_api::RenderTargetError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(mod_api::RenderTargetError::Unavailable)?;
+        renderer.render_target_resize(mod_api::content::crash::current_native_mod(), target, size)
+    }
+    /// Query pixel dimensions of mod-owned offscreen `target`.
+    pub(super) fn render_target_size(
+        &self,
+        target: mod_api::RenderTargetRef,
+    ) -> Result<[u32; 2], mod_api::RenderTargetError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(mod_api::RenderTargetError::Unavailable)?;
+        renderer.render_target_size(mod_api::content::crash::current_native_mod(), target)
+    }
+    /// Free mod-owned offscreen `target` and retire the handle.
+    pub(super) fn render_target_destroy(
+        &self,
+        target: mod_api::RenderTargetRef,
+    ) -> Result<(), mod_api::RenderTargetError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(mod_api::RenderTargetError::Unavailable)?;
+        renderer.render_target_destroy(mod_api::content::crash::current_native_mod(), target)
+    }
     /// Validate and resolve per-draw set-1 [`mod_api::DrawBindings`] against pipeline `slot`'s
     /// declared `BindGroupLayout` and `push_constant_size`.
     fn resolve_draw_bindings(
@@ -559,6 +604,20 @@ impl Game<'_> {
         draw: &mut WorldGeometry,
         slot: u32,
         bindings: &mod_api::DrawBindings<'_>,
+    ) -> Result<Option<sunrise_client::gfx::mod_pipelines::ResolvedDrawBindings>, PipelineDrawError>
+    {
+        self.resolve_draw_bindings_for_target(draw, slot, bindings, None)
+    }
+
+    /// Validate and resolve per-draw set-1 [`mod_api::DrawBindings`] for either the main world
+    /// pass (`active_target = None`) or an offscreen pass (`active_target = Some(target)`),
+    /// refusing self-sampling with [`PipelineDrawError::TargetReadWriteHazard`].
+    pub(super) fn resolve_draw_bindings_for_target(
+        &self,
+        draw: &mut WorldGeometry,
+        slot: u32,
+        bindings: &mod_api::DrawBindings<'_>,
+        active_target: Option<mod_api::RenderTargetRef>,
     ) -> Result<Option<sunrise_client::gfx::mod_pipelines::ResolvedDrawBindings>, PipelineDrawError>
     {
         let (layout, pc_size) = self
@@ -637,7 +696,7 @@ impl Game<'_> {
                     staged.push(StagedEntry::InlineUniform(bytes));
                 }
                 (
-                    mod_api::BindingKind::CombinedImageSampler { .. },
+                    mod_api::BindingKind::CombinedImageSampler { filter, .. },
                     mod_api::BindingValue::Texture(source),
                 ) => {
                     let (view_id, view) = match source {
@@ -677,6 +736,25 @@ impl Game<'_> {
                             return Err(PipelineDrawError::InvalidBinding);
                         }
                         mod_api::TextureSource::Lightmap => renderer.mod_lightmap_texture_view(),
+                        mod_api::TextureSource::RenderTargetColor(target, attachment) => {
+                            let filterable = filter == mod_api::SamplerFilter::Linear;
+                            renderer.resolve_mod_render_target_color(
+                                owner,
+                                active_target,
+                                *target,
+                                *attachment,
+                                filterable,
+                            )?
+                        }
+                        mod_api::TextureSource::RenderTargetDepth(target) => {
+                            let filterable = filter == mod_api::SamplerFilter::Linear;
+                            renderer.resolve_mod_render_target_depth(
+                                owner,
+                                active_target,
+                                *target,
+                                filterable,
+                            )?
+                        }
                         _ => return Err(PipelineDrawError::InvalidBinding),
                     };
                     staged.push(StagedEntry::Texture { view_id, view });
