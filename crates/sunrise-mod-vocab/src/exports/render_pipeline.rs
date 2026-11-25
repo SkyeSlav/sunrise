@@ -1,13 +1,21 @@
 pub use client::render_pipeline::{
     BlendEquation, BlendFactor, BlendFunction, BlendOp, ColorTargetState, ColorWrite, DepthCompare,
-    DepthState, MAX_COLOR_TARGETS, PackBinding, PackDepthTarget, PackGlslInput,
+    DepthState, DrawBindings, DrawRange, IndexFormat, MAX_COLOR_TARGETS,
 };
 pub use client::render_pipeline::{
-    PackOverrideState, PackPassSlot, PackUniformDecl, PackUniformType, PackUniformValue,
-    PipelineBlend, PipelineDrawError, PipelineGeometryClass, PipelineModifier, PipelineModifierRef,
-    PipelineQuad, PipelineState,
+    MAX_VERTEX_BINDINGS, MAX_VERTEX_ELEMENTS, MeshBackendRef, MeshBufferInit, MeshContext,
+    MeshDescriptor, MeshDraw, MeshError, MeshIndexInit, MeshRef, PackBinding, PackDepthTarget,
 };
 pub use client::render_pipeline::{
-    PipelineTexture, PipelineTextureError, PipelineVertexFormat, PolygonMode, PrimitiveTopology,
-    RenderPipeline, RenderPipelineError, RenderPipelineRef,
+    PackGlslInput, PackOverrideState, PackPassSlot, PackUniformDecl, PackUniformType,
+    PackUniformValue, PipelineBlend, PipelineDrawError, PipelineGeometryClass, PipelineModifier,
+    PipelineModifierRef, PipelineQuad,
+};
+pub use client::render_pipeline::{
+    PipelineState, PipelineTexture, PipelineTextureError, PipelineVertexFormat, PolygonMode,
+    PrimitiveTopology, RenderPipeline, RenderPipelineError, RenderPipelineRef, VERTEX_ALIGNMENT,
+    VertexAttribute, VertexAttributeFormat,
+};
+pub use client::render_pipeline::{
+    VertexFormat, VertexFormatBuilder, VertexFormatError, VertexStepMode,
 };

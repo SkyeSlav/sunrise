@@ -13,7 +13,7 @@ use sunrise_render_core::UniformFrameView;
 use sunrise_shaders::{BUFFERS, Group, SHADOW_COLORS};
 
 use super::construction::*;
-use super::mod_pack::{ModDrawChunk, ModPassSlot, ModUniformValue};
+use super::mod_pack::{ModDrawChunk, ModDrawKind, ModPassSlot, ModUniformValue};
 use crate::PollLive;
 use crate::pack_entities::{
     BEAM, BLOCK, BLOCK_TRANSLUCENT, DESTROY, ENTITY, PARTICLE, PARTICLE_TRANSLUCENT, TRANSLUCENT,
@@ -1532,7 +1532,7 @@ impl PackPost {
             let has_draws = self
                 .mod_draws
                 .iter()
-                .any(|d| d.slot == m.slot && !d.quads.is_empty());
+                .any(|d| d.slot == m.slot && !d.is_empty());
             if !has_draws {
                 continue;
             }
@@ -1555,12 +1555,26 @@ impl PackPost {
                     self.draws.bind(&mut rp, stage);
                 }
                 for chunk in &self.mod_draws {
-                    if chunk.slot != m.slot || chunk.quads.is_empty() {
+                    if chunk.slot != m.slot || chunk.is_empty() {
                         continue;
                     }
-                    rp.set_vertex_buffer(0, chunk.vertices.slice(..));
-                    rp.set_index_buffer(chunk.indices.slice(..), wgpu::IndexFormat::Uint32);
-                    rp.draw_indexed(chunk.quads.start * 6..chunk.quads.end * 6, 0, 0..1);
+                    for (binding, buffer, range) in &chunk.vertex_buffers {
+                        rp.set_vertex_buffer(*binding, buffer.slice(range.clone()));
+                    }
+                    match &chunk.kind {
+                        ModDrawKind::Vertices { vertices } => {
+                            rp.draw(vertices.clone(), chunk.instances.clone());
+                        }
+                        ModDrawKind::Indexed {
+                            buffer,
+                            format,
+                            indices,
+                            base_vertex,
+                        } => {
+                            rp.set_index_buffer(buffer.slice(..), *format);
+                            rp.draw_indexed(indices.clone(), *base_vertex, chunk.instances.clone());
+                        }
+                    }
                 }
             }
             if slot != ModPassSlot::Shadow {
@@ -2752,7 +2766,7 @@ impl PackPost {
                 && self
                     .mod_draws
                     .iter()
-                    .any(|d| d.slot == m.slot && !d.quads.is_empty())
+                    .any(|d| d.slot == m.slot && !d.is_empty())
         });
         let cache_hit = !has_shadow_entities
             && !has_shadow_mod_draws

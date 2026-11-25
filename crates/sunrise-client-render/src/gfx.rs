@@ -240,6 +240,7 @@ mod linear_blend;
 use frame_policy::frame_format;
 use frame_policy::{frame_configuration, overlay_format, sunrise_tone_curve};
 mod lod;
+pub mod mod_meshes;
 pub mod mod_pipelines;
 mod native_material;
 mod native_pack;

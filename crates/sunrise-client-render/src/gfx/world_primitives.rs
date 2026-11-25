@@ -96,6 +96,7 @@ impl OitBatch<'_> {
 pub struct DrawRanges {
     pub primitives: [std::ops::Range<u32>; 4],
     pub pipeline_runs: std::ops::Range<u32>,
+    pub pipeline_draws: std::ops::Range<u32>,
 }
 
 /// Extra frame data produced by `submit_custom_geometry`, debug renderers, and
@@ -163,6 +164,8 @@ impl Batch<'_> {
     pub fn is_empty(&self) -> bool {
         self.pipelines.runs.is_empty()
             && self.pipelines.oit_runs.is_empty()
+            && self.pipelines.draws.is_empty()
+            && self.pipelines.oit_draws.is_empty()
             && self.quads.is_empty()
             && self.quads_through.is_empty()
             && self.lines.is_empty()
@@ -917,6 +920,24 @@ impl WorldPrimitives {
                 None => self
                     .pipelines
                     .draw_prepared_runs(pass, &self.indices, &ranges),
+            }
+            drew = true;
+        }
+        let has_pipeline_draws = draws.iter().any(|d| !d.pipeline_draws.is_empty());
+        if has_pipeline_draws {
+            let ranges: Vec<std::ops::Range<u32>> = draws
+                .iter()
+                .filter(|d| !d.pipeline_draws.is_empty())
+                .map(|d| d.pipeline_draws.clone())
+                .collect();
+            match oit {
+                Some(stage) => {
+                    self.pipelines
+                        .draw_prepared_oit_draws(pass, stage, &self.indices, &ranges)
+                }
+                None => self
+                    .pipelines
+                    .draw_prepared_draws(pass, &self.indices, &ranges),
             }
             drew = true;
         }

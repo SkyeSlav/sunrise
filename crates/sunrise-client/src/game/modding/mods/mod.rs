@@ -2447,6 +2447,9 @@ impl Game<'_> {
         self.instance_groups
             .borrow_mut()
             .retire_disabled(&effective);
+        if let Some(renderer) = &self.renderer {
+            renderer.retire_disabled_mod_meshes(&effective);
+        }
         self.mods.apply_code_switches(&effective);
     }
 }

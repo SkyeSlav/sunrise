@@ -184,6 +184,11 @@ pub struct ProgramSources<'a> {
     pub fragment: &'a str,
 }
 
+/// Default vertex inputs (`PipelineVertexFormat::PositionTexColor`) in deterministic
+/// sequential location order (`0..3`).
+pub const DEFAULT_VERTEX_INPUTS: [(&str, &str); 3] =
+    [("Position", "vec3"), ("UV0", "vec2"), ("Color", "vec4")];
+
 /// Compilation options for [`translate`].
 #[derive(Clone, Copy)]
 pub struct Options<'a> {
@@ -193,6 +198,9 @@ pub struct Options<'a> {
     /// Pipeline defines (`NAME` or `NAME value`) in order; [`DEPTH_ZERO_TO_ONE`] is always
     /// prepended automatically.
     pub defines: &'a [&'a str],
+    /// Declared vertex inputs `(name, glsl_type)` in deterministic sequential location order
+    /// (`0..N`) across `(binding_index, attribute_index)`. Defaults to [`DEFAULT_VERTEX_INPUTS`].
+    pub vertex_inputs: &'a [(&'a str, &'a str)],
     /// Whether the target frame stores linear light (attaching [`LINEAR_FRAGMENT_FINISH`]).
     pub linear_light: bool,
     /// Also run SPIR-V, Metal and DirectX 12 backend translation checks (used by
@@ -207,6 +215,7 @@ impl Default for Options<'_> {
         Self {
             textured: false,
             defines: &[],
+            vertex_inputs: &DEFAULT_VERTEX_INPUTS,
             linear_light: false,
             check_backends: false,
             interface: DEVICELESS_INTERFACE_LIMITS,
@@ -227,7 +236,7 @@ pub struct BuiltProgram {
 /// Vertex & fragment `Glue` for `PipelineVertexFormat::PositionTexColor`.
 pub fn pipeline_glue(interface: InterfaceLimits, linear_light: bool) -> Glue<'static> {
     Glue {
-        inputs: &[("Position", "vec3"), ("UV0", "vec2"), ("Color", "vec4")],
+        inputs: &DEFAULT_VERTEX_INPUTS,
         prelude: "layout(location = 0) in vec3 hz_pos;\n\
                   layout(location = 1) in vec2 hz_uv;\n\
                   layout(location = 2) in vec4 hz_color;",
@@ -237,6 +246,201 @@ pub fn pipeline_glue(interface: InterfaceLimits, linear_light: bool) -> Glue<'st
         fragment_finish: linear_light.then_some(LINEAR_FRAGMENT_FINISH),
         interface,
     }
+}
+
+/// Build the `prelude` and `setup` snippets for an arbitrary list of `(name, glsl_type)` vertex
+/// inputs assigned deterministic sequential locations `0..N`.
+fn build_owned_glue(vertex_inputs: &[(&str, &str)]) -> (String, String) {
+    use std::fmt::Write as _;
+    let mut prelude = String::new();
+    let mut setup = String::new();
+    for (loc, (name, ty)) in vertex_inputs.iter().enumerate() {
+        writeln!(prelude, "layout(location = {loc}) in {ty} hz_attr_{loc};").unwrap();
+        write!(setup, "{name} = hz_attr_{loc}; ").unwrap();
+    }
+    (prelude, setup)
+}
+
+/// Whether `ty` is a GLSL scalar/vector type producible by `VertexAttributeFormat::glsl_type`.
+fn is_supported_vertex_glsl_type(ty: &str) -> bool {
+    matches!(
+        ty,
+        "float"
+            | "vec2"
+            | "vec3"
+            | "vec4"
+            | "int"
+            | "ivec2"
+            | "ivec3"
+            | "ivec4"
+            | "uint"
+            | "uvec2"
+            | "uvec3"
+            | "uvec4"
+    )
+}
+
+/// Parse top-level vertex `in <type> <name>;` declarations from preprocessed GLSL source,
+/// returning `(byte_offset, name, glsl_type)`.
+fn parse_vertex_in_decls(text: &str) -> Vec<(usize, &str, &str)> {
+    let mut out = Vec::new();
+    let mut brace_depth = 0u32;
+    let mut in_block_comment = false;
+    let mut line_start = 0usize;
+    for raw_line in text.split_inclusive('\n') {
+        let offset = line_start;
+        line_start += raw_line.len();
+        let mut line = raw_line.trim();
+        if in_block_comment {
+            if let Some(end) = line.find("*/") {
+                in_block_comment = false;
+                line = line[end + 2..].trim();
+            } else {
+                continue;
+            }
+        }
+        if let Some(start) = line.find("/*") {
+            if let Some(end) = line[start + 2..].find("*/") {
+                // Single-line block comment; ignore only if it's the whole line.
+                if start == 0 && start + 2 + end + 2 >= line.len() {
+                    continue;
+                }
+            } else {
+                in_block_comment = true;
+                line = line[..start].trim();
+            }
+        }
+        if let Some(comment) = line.find("//") {
+            line = line[..comment].trim();
+        }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let open_braces = line.bytes().filter(|&b| b == b'{').count() as u32;
+        let close_braces = line.bytes().filter(|&b| b == b'}').count() as u32;
+        let top_level = brace_depth == 0 && open_braces == 0 && close_braces == 0;
+        brace_depth = brace_depth
+            .saturating_add(open_braces)
+            .saturating_sub(close_braces);
+        if !top_level {
+            continue;
+        }
+        for stmt in line.split(';') {
+            let mut rest = stmt.trim();
+            if rest.is_empty() {
+                continue;
+            }
+            // Strip optional `layout(...)`.
+            if let Some(after_layout) = rest.strip_prefix("layout") {
+                let trimmed = after_layout.trim_start();
+                if let Some(after_open) = trimmed.strip_prefix('(')
+                    && let Some(close) = after_open.find(')')
+                {
+                    rest = after_open[close + 1..].trim_start();
+                }
+            }
+            let tokens = rest.split_whitespace();
+            let mut saw_in = false;
+            let mut ty = None;
+            let mut name = None;
+            for tok in tokens {
+                if !saw_in {
+                    if tok == "in" {
+                        saw_in = true;
+                    } else if matches!(
+                        tok,
+                        "flat"
+                            | "smooth"
+                            | "noperspective"
+                            | "centroid"
+                            | "sample"
+                            | "invariant"
+                            | "highp"
+                            | "mediump"
+                            | "lowp"
+                    ) {
+                        continue;
+                    } else {
+                        break;
+                    }
+                } else if ty.is_none() {
+                    if matches!(tok, "highp" | "mediump" | "lowp") {
+                        continue;
+                    }
+                    ty = Some(tok);
+                } else if name.is_none() {
+                    name = Some(tok);
+                    break;
+                }
+            }
+            if let (Some(ty), Some(name)) = (ty, name) {
+                // Skip function prototypes or array-syntax edge cases only if invalid ident.
+                if name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                    out.push((offset, name, ty));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Extract declared vertex `in` attributes `(name, glsl_type)` from expanded vertex GLSL for
+/// standalone tooling (`cargo sunrise-mod check`) that validates `.vsh` files without running
+/// the mod's Rust registration code.
+pub fn extract_vertex_inputs(vertex_expanded: &str) -> Result<Vec<(String, String)>, String> {
+    let decls = parse_vertex_in_decls(vertex_expanded);
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(decls.len());
+    for (_, name, ty) in decls {
+        if !is_supported_vertex_glsl_type(ty) {
+            return Err(format!(
+                "unsupported vertex input type `{ty}` for `{name}`: expected float/vecN/int/ivecN/uint/uvecN"
+            ));
+        }
+        if !seen.insert(name) {
+            return Err(format!("duplicate vertex input `{name}`"));
+        }
+        out.push((name.to_owned(), ty.to_owned()));
+        if out.len() > 16 {
+            return Err("vertex shader declares more than 16 vertex inputs".to_owned());
+        }
+    }
+    Ok(out)
+}
+
+/// Refuse any top-level vertex `in` declaration that is not listed in `vertex_inputs` or whose
+/// GLSL type disagrees with the pipeline's [`VertexFormat`].
+fn validate_vertex_inputs(
+    vertex_file: &str,
+    vertex_expanded: &str,
+    vertex_inputs: &[(&str, &str)],
+) -> Result<(), Problem> {
+    for (offset, name, ty) in parse_vertex_in_decls(vertex_expanded) {
+        match vertex_inputs.iter().find(|(n, _)| *n == name) {
+            None => {
+                return Err(located(
+                    vertex_file,
+                    vertex_expanded,
+                    Some(offset),
+                    format!(
+                        "undeclared vertex input `{name}`: declare it in RenderPipeline::vertex_binding"
+                    ),
+                ));
+            }
+            Some((_, expected)) if *expected != ty => {
+                return Err(located(
+                    vertex_file,
+                    vertex_expanded,
+                    Some(offset),
+                    format!(
+                        "vertex input `{name}` declared as `{ty}` in shader, expected `{expected}` from VertexFormat"
+                    ),
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
 }
 
 /// Prepend [`DEPTH_ZERO_TO_ONE`] to caller-supplied defines.
@@ -330,6 +534,11 @@ fn translate_inner(
             msg,
         )]);
     }
+    if let Err(prob) =
+        validate_vertex_inputs(sources.vertex_file, &vertex_expanded, options.vertex_inputs)
+    {
+        return Err(vec![prob]);
+    }
 
     let fragment_expanded = sunrise_glsl::expand_includes(
         sources.fragment,
@@ -379,7 +588,16 @@ fn translate_inner(
         defines,
         includes: &includes,
     };
-    let glue = pipeline_glue(options.interface, options.linear_light);
+    let (glue_prelude, glue_setup) = build_owned_glue(options.vertex_inputs);
+    let glue = Glue {
+        inputs: options.vertex_inputs,
+        prelude: &glue_prelude,
+        setup: &glue_setup,
+        finish: "",
+        vertex_id: "int(gl_VertexIndex)",
+        fragment_finish: options.linear_light.then_some(LINEAR_FRAGMENT_FINISH),
+        interface: options.interface,
+    };
 
     let provided = |name: &str| extra_samplers.contains(&name);
     let translated = sunrise_glsl::translate(&stages, &inputs, &glue, &provided).map_err(|e| {
@@ -439,7 +657,16 @@ pub fn translate_linear_fragment(
             defines: &defines,
             includes: &includes,
         };
-        let glue = pipeline_glue(options.interface, true);
+        let (glue_prelude, glue_setup) = build_owned_glue(options.vertex_inputs);
+        let glue = Glue {
+            inputs: options.vertex_inputs,
+            prelude: &glue_prelude,
+            setup: &glue_setup,
+            finish: "",
+            vertex_id: "int(gl_VertexIndex)",
+            fragment_finish: Some(LINEAR_FRAGMENT_FINISH),
+            interface: options.interface,
+        };
         let stages = Stages {
             dir: "",
             vertex: vertex_expanded,
@@ -839,6 +1066,82 @@ void main() {
         assert!(
             err[0].message.contains("OIT depth_bounds"),
             "expected depth_bounds refusal, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn custom_integer_and_unorm_vertex_inputs_translate_and_refuse_undeclared_in() {
+        let custom_vsh = "\
+#version 330
+#include <minecraft:projection.glsl>
+#include <minecraft:dynamictransforms.glsl>
+in uvec4 PackedPos;
+in vec4 PackedColor;
+in ivec2 CellOffset;
+out vec4 vertexColor;
+void main() {
+    vec3 pos = vec3(PackedPos.xyz) + vec3(float(CellOffset.x), 0.0, float(CellOffset.y));
+    gl_Position = ProjMat * ModelViewMat * vec4(pos, 1.0);
+    vertexColor = PackedColor;
+}
+";
+        let custom_fsh = "\
+#version 330
+in vec4 vertexColor;
+out vec4 fragColor;
+void main() {
+    fragColor = vertexColor;
+}
+";
+        let custom_inputs = [
+            ("PackedPos", "uvec4"),
+            ("PackedColor", "vec4"),
+            ("CellOffset", "ivec2"),
+        ];
+        let opts = Options {
+            vertex_inputs: &custom_inputs,
+            check_backends: true,
+            ..Default::default()
+        };
+        let built = translate(&sources(custom_vsh, custom_fsh), &opts, &stub_include)
+            .expect("custom integer+unorm vertex shader must translate on all backends");
+        assert_eq!(built.translated.vertex.entry_points.len(), 1);
+
+        // Undeclared vertex `in` is refused naming the attribute.
+        let undeclared_vsh = "\
+#version 330
+#include <minecraft:projection.glsl>
+in uvec4 PackedPos;
+in vec3 UndeclaredAttr;
+out vec4 vertexColor;
+void main() {
+    gl_Position = ProjMat * vec4(vec3(PackedPos.xyz) + UndeclaredAttr, 1.0);
+    vertexColor = vec4(1.0);
+}
+";
+        let err = translate(&sources(undeclared_vsh, custom_fsh), &opts, &stub_include)
+            .expect_err("undeclared vertex input must be refused");
+        assert!(
+            err[0].message.contains("UndeclaredAttr"),
+            "expected UndeclaredAttr in error, got: {err:?}"
+        );
+
+        // Type mismatch between VertexFormat and shader `in` is refused.
+        let wrong_type_vsh = "\
+#version 330
+#include <minecraft:projection.glsl>
+in vec4 PackedPos;
+out vec4 vertexColor;
+void main() {
+    gl_Position = ProjMat * PackedPos;
+    vertexColor = vec4(1.0);
+}
+";
+        let err = translate(&sources(wrong_type_vsh, custom_fsh), &opts, &stub_include)
+            .expect_err("mismatched vertex input type must be refused");
+        assert!(
+            err[0].message.contains("PackedPos") && err[0].message.contains("uvec4"),
+            "expected type mismatch in error, got: {err:?}"
         );
     }
 }

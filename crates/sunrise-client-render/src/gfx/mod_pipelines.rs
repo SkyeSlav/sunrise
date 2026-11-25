@@ -12,12 +12,14 @@
 //! stages actually read.
 
 use super::expression_blocks::{VANILLA_OFFSETS, VANILLA_SIZES, block_entry};
+use super::mod_meshes::{ResolvedMeshDraw, wgpu_index_format};
 use super::world_primitives::{Upload, VertexPages};
 use crate::mod_pipelines::{Built, BuiltTexture, ModifierStacks, Pipelines};
 use glam::Mat4;
 use mod_api::{
-    BlendFactor, BlendOp, ColorTargetState, ColorWrite, DepthCompare, Identifier, PipelineBlend,
-    PipelineState, PolygonMode, PrimitiveTopology,
+    BlendFactor, BlendOp, ColorTargetState, ColorWrite, DepthCompare, DrawRange, Identifier,
+    IndexFormat, MeshDraw, PipelineBlend, PipelineState, PolygonMode, PrimitiveTopology,
+    VertexAttributeFormat, VertexFormat, VertexStepMode,
 };
 use sunrise_mod_pipeline::{
     ENTRY, OIT_STAGE_SAMPLERS, Options as PipelineOptions, SPRITE_RECT_BINDING,
@@ -61,20 +63,65 @@ pub struct PipelineRun {
     pub modifier_stack: u32,
 }
 
-/// A frame's pipeline quads, as the game queued them: 4 vertices a quad, in the runs' order.
+/// Source of vertex and optional index buffers for one unified [`PipelineDraw`].
+#[derive(Clone, Debug)]
+pub enum PipelineDrawSource {
+    /// Transient per-frame byte ranges inside `Batch::transient_vertices` and
+    /// `Batch::transient_indices` (used by `draw_vertices` and the `pipeline_quads` shorthand).
+    Transient {
+        /// `(binding_index, byte_range_in_transient_vertices)`
+        vertex_ranges: Vec<(u32, std::ops::Range<u64>)>,
+        /// Optional `(index_format, byte_range_in_transient_indices)`
+        index_range: Option<(IndexFormat, std::ops::Range<u64>)>,
+    },
+    /// Zero-copy retained GPU buffers resolved from a [`mod_api::MeshRef`].
+    Retained(ResolvedMeshDraw),
+}
+
+/// One unified mod-pipeline draw command (`draw_mesh`, `draw_vertices`, or `pipeline_quads`).
+#[derive(Clone, Debug)]
+pub struct PipelineDraw {
+    /// The pipeline's slot in the frame's [`Pipelines`].
+    pub slot: u32,
+    /// The stage it draws at (`STAGE_AFTER_OPAQUE_BLOCKS..=STAGE_CUSTOM_GEOMETRY`, or OIT
+    /// stage `0..=2` for `Batch::oit_draws`).
+    pub stage: u32,
+    /// Interned modifier stack id (`0` = no active modifier).
+    pub modifier_stack: u32,
+    /// Vertex/index range and instance range.
+    pub draw: MeshDraw,
+    /// Transient byte ranges or zero-copy retained GPU buffers.
+    pub source: PipelineDrawSource,
+}
+
+/// A frame's pipeline draws, as the game queued them: legacy quad runs plus unified
+/// `draw_vertices` / `draw_mesh` commands.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Batch<'a> {
     /// The pipelines of the resources the frame draws with; `None` draws nothing.
     pub set: Option<&'a Pipelines>,
     pub vertices: &'a [PipelineVertex],
     pub runs: &'a [PipelineRun],
-    /// Interned modifier stacks referenced by `runs[*].modifier_stack`; `None` means empty.
+    /// Unified `draw_vertices` / `draw_mesh` / `pipeline_quads` commands for standard stages.
+    pub draws: &'a [PipelineDraw],
+    /// Transient per-frame vertex byte pool referenced by `draws`.
+    pub transient_vertices: &'a [u8],
+    /// Transient per-frame index byte pool referenced by `draws`.
+    pub transient_indices: &'a [u8],
+    /// Interned modifier stacks referenced by `runs[*].modifier_stack` and
+    /// `draws[*].modifier_stack`; `None` means empty.
     pub modifiers: Option<&'a ModifierStacks>,
     /// Modifier definitions for `modifiers`; `None` reads `registered_modifiers()`.
     pub modifier_defs: Option<&'a [mod_api::PipelineModifier]>,
     /// Order-independent transparency pipeline quad vertices and runs (`OitTranslucent`).
     pub oit_vertices: &'a [PipelineVertex],
     pub oit_runs: &'a [PipelineRun],
+    /// Unified `draw_vertices` / `draw_mesh` / `pipeline_quads` commands for OIT stages.
+    pub oit_draws: &'a [PipelineDraw],
+    /// Transient per-frame vertex byte pool referenced by `oit_draws`.
+    pub oit_transient_vertices: &'a [u8],
+    /// Transient per-frame index byte pool referenced by `oit_draws`.
+    pub oit_transient_indices: &'a [u8],
     /// Seconds of game time (fallback `Globals.GameTime` when no full vanilla block is supplied).
     pub time: f32,
 }
@@ -85,6 +132,16 @@ struct Run {
     stage: usize,
     quads: std::ops::Range<u32>,
     modifier_stack: u32,
+}
+
+/// A unified draw command as prepared for the GPU render pass (zero-copy for retained meshes).
+struct PreparedDraw {
+    slot: usize,
+    stage: usize,
+    modifier_stack: u32,
+    topology: PrimitiveTopology,
+    draw: MeshDraw,
+    source: PipelineDrawSource,
 }
 
 /// Where textured pipelines' textures come from when the renderer builds them
@@ -226,6 +283,112 @@ fn wgpu_color_writes(write: ColorWrite) -> wgpu::ColorWrites {
     mask
 }
 
+fn wgpu_vertex_format(fmt: VertexAttributeFormat) -> wgpu::VertexFormat {
+    match fmt {
+        VertexAttributeFormat::Float32 => wgpu::VertexFormat::Float32,
+        VertexAttributeFormat::Float32x2 => wgpu::VertexFormat::Float32x2,
+        VertexAttributeFormat::Float32x3 => wgpu::VertexFormat::Float32x3,
+        VertexAttributeFormat::Float32x4 => wgpu::VertexFormat::Float32x4,
+        VertexAttributeFormat::Float16x2 => wgpu::VertexFormat::Float16x2,
+        VertexAttributeFormat::Float16x4 => wgpu::VertexFormat::Float16x4,
+        VertexAttributeFormat::Unorm8x2 => wgpu::VertexFormat::Unorm8x2,
+        VertexAttributeFormat::Unorm8x4 => wgpu::VertexFormat::Unorm8x4,
+        VertexAttributeFormat::Snorm8x2 => wgpu::VertexFormat::Snorm8x2,
+        VertexAttributeFormat::Snorm8x4 => wgpu::VertexFormat::Snorm8x4,
+        VertexAttributeFormat::Uint8x2 => wgpu::VertexFormat::Uint8x2,
+        VertexAttributeFormat::Uint8x4 => wgpu::VertexFormat::Uint8x4,
+        VertexAttributeFormat::Sint8x2 => wgpu::VertexFormat::Sint8x2,
+        VertexAttributeFormat::Sint8x4 => wgpu::VertexFormat::Sint8x4,
+        VertexAttributeFormat::Unorm16x2 => wgpu::VertexFormat::Unorm16x2,
+        VertexAttributeFormat::Unorm16x4 => wgpu::VertexFormat::Unorm16x4,
+        VertexAttributeFormat::Snorm16x2 => wgpu::VertexFormat::Snorm16x2,
+        VertexAttributeFormat::Snorm16x4 => wgpu::VertexFormat::Snorm16x4,
+        VertexAttributeFormat::Uint16x2 => wgpu::VertexFormat::Uint16x2,
+        VertexAttributeFormat::Uint16x4 => wgpu::VertexFormat::Uint16x4,
+        VertexAttributeFormat::Sint16x2 => wgpu::VertexFormat::Sint16x2,
+        VertexAttributeFormat::Sint16x4 => wgpu::VertexFormat::Sint16x4,
+        VertexAttributeFormat::Uint32 => wgpu::VertexFormat::Uint32,
+        VertexAttributeFormat::Uint32x2 => wgpu::VertexFormat::Uint32x2,
+        VertexAttributeFormat::Uint32x3 => wgpu::VertexFormat::Uint32x3,
+        VertexAttributeFormat::Uint32x4 => wgpu::VertexFormat::Uint32x4,
+        VertexAttributeFormat::Sint32 => wgpu::VertexFormat::Sint32,
+        VertexAttributeFormat::Sint32x2 => wgpu::VertexFormat::Sint32x2,
+        VertexAttributeFormat::Sint32x3 => wgpu::VertexFormat::Sint32x3,
+        VertexAttributeFormat::Sint32x4 => wgpu::VertexFormat::Sint32x4,
+        VertexAttributeFormat::Unorm10_10_10_2 => wgpu::VertexFormat::Unorm10_10_10_2,
+        _ => wgpu::VertexFormat::Float32,
+    }
+}
+
+fn wgpu_step_mode(mode: VertexStepMode) -> wgpu::VertexStepMode {
+    match mode {
+        VertexStepMode::Vertex => wgpu::VertexStepMode::Vertex,
+        VertexStepMode::Instance => wgpu::VertexStepMode::Instance,
+        _ => wgpu::VertexStepMode::Vertex,
+    }
+}
+
+/// Owned vertex buffer layout for one binding slot of a compiled mod pipeline.
+struct OwnedVertexBufferLayout {
+    binding: u8,
+    stride: u64,
+    step_mode: wgpu::VertexStepMode,
+    attributes: Vec<wgpu::VertexAttribute>,
+}
+
+/// Convert a pipeline's sorted `(binding, VertexFormat)` pairs into owned wgpu vertex buffer
+/// layouts with deterministic sequential locations `0..N`, refusing binding indices that exceed
+/// `device.limits().max_vertex_buffers`.
+fn build_vertex_layouts(
+    bindings: &[(u8, VertexFormat)],
+    max_vertex_buffers: u32,
+) -> Result<Vec<OwnedVertexBufferLayout>, String> {
+    let mut out = Vec::with_capacity(bindings.len());
+    let mut next_location = 0u32;
+    for (binding, fmt) in bindings {
+        if u32::from(*binding) >= max_vertex_buffers {
+            return Err(format!(
+                "vertex binding {binding} exceeds adapter limit max_vertex_buffers ({max_vertex_buffers})"
+            ));
+        }
+        let mut attributes = Vec::with_capacity(fmt.attributes.len());
+        for attr in &fmt.attributes {
+            attributes.push(wgpu::VertexAttribute {
+                format: wgpu_vertex_format(attr.format),
+                offset: u64::from(attr.offset),
+                shader_location: next_location,
+            });
+            next_location += 1;
+        }
+        out.push(OwnedVertexBufferLayout {
+            binding: *binding,
+            stride: u64::from(fmt.stride),
+            step_mode: wgpu_step_mode(fmt.step_mode),
+            attributes,
+        });
+    }
+    Ok(out)
+}
+
+fn wgpu_buffer_layouts(
+    owned: &[OwnedVertexBufferLayout],
+) -> Vec<Option<wgpu::VertexBufferLayout<'_>>> {
+    let slot_count = owned
+        .iter()
+        .map(|l| usize::from(l.binding) + 1)
+        .max()
+        .unwrap_or(0);
+    let mut layouts = vec![None; slot_count];
+    for layout in owned {
+        layouts[usize::from(layout.binding)] = Some(wgpu::VertexBufferLayout {
+            array_stride: layout.stride,
+            step_mode: layout.step_mode,
+            attributes: &layout.attributes,
+        });
+    }
+    layouts
+}
+
 fn wgpu_topology(topology: PrimitiveTopology) -> wgpu::PrimitiveTopology {
     match topology {
         PrimitiveTopology::Quads
@@ -270,6 +433,20 @@ impl FanIndices {
         queue: &wgpu::Queue,
         vertex_count: u32,
     ) -> &wgpu::Buffer {
+        self.ensure_with_upload(
+            device,
+            &mut |buf, bytes| queue.write_buffer(buf, 0, bytes),
+            vertex_count,
+        )
+    }
+
+    /// Ensure the GPU fan index buffer covers at least `vertex_count` vertices using `upload`.
+    pub(crate) fn ensure_with_upload(
+        &mut self,
+        device: &wgpu::Device,
+        upload: Upload<'_>,
+        vertex_count: u32,
+    ) -> &wgpu::Buffer {
         let needed = vertex_count.max(3);
         if self.buffer.is_none() || needed > self.vertex_capacity {
             let capacity = needed.next_power_of_two().max(64);
@@ -281,11 +458,51 @@ impl FanIndices {
                 usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            queue.write_buffer(&buffer, 0, bytes);
+            upload(&buffer, bytes);
             self.buffer = Some(buffer);
             self.vertex_capacity = capacity;
         }
         self.buffer.as_ref().expect("fan index buffer created")
+    }
+
+    pub(crate) fn buffer(&self) -> Option<&wgpu::Buffer> {
+        self.buffer.as_ref()
+    }
+}
+
+/// Ensure a resizable transient GPU byte buffer holds at least `bytes.len()` bytes (capped at
+/// `legal_buffer_limit(device)`) and upload `bytes` to it.
+fn upload_transient_bytes(
+    slot: &mut Option<wgpu::Buffer>,
+    device: &wgpu::Device,
+    upload: Upload<'_>,
+    label: &'static str,
+    usage: wgpu::BufferUsages,
+    bytes: &[u8],
+) {
+    if bytes.is_empty() {
+        return;
+    }
+    let limit = super::upload::legal_buffer_limit(device);
+    let needed = (bytes.len() as u64).min(limit);
+    let needs_alloc = slot
+        .as_ref()
+        .is_none_or(|b| b.size() < needed || b.size() > limit);
+    if needs_alloc {
+        let size = needed.next_power_of_two().clamp(4096, limit.max(4096));
+        *slot = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size,
+            usage: usage | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+    }
+    if let Some(buf) = slot.as_ref() {
+        let len = (bytes.len() as u64).min(buf.size()) as usize;
+        let aligned = len & !3;
+        if aligned > 0 {
+            upload(buf, &bytes[..aligned]);
+        }
     }
 }
 
@@ -341,6 +558,7 @@ struct Compiled {
     pack_fragment_shader: Option<wgpu::ShaderModule>,
     state: PipelineState,
     color_targets: Vec<Option<ColorTargetState>>,
+    vertex_layouts: Vec<OwnedVertexBufferLayout>,
     /// Lazy modifier variants indexed by interned `modifier_stack` id (`0` unused; base is used).
     variants: Vec<Option<CachedVariant>>,
     /// Compiled OIT variants (`DepthBounds`, `Transmittance`, `Accumulate`) when opted in and
@@ -364,7 +582,10 @@ pub struct ModPipelines {
     pack_vanilla: wgpu::Buffer,
     vertices: VertexPages,
     oit_vertices: VertexPages,
-    #[allow(dead_code)]
+    transient_vbuf: Option<wgpu::Buffer>,
+    transient_ibuf: Option<wgpu::Buffer>,
+    oit_transient_vbuf: Option<wgpu::Buffer>,
+    oit_transient_ibuf: Option<wgpu::Buffer>,
     fan_indices: FanIndices,
     /// The load `pipelines` was built from; 0 before any.
     generation: u64,
@@ -379,6 +600,8 @@ pub struct ModPipelines {
     )>,
     runs: Vec<Run>,
     oit_runs: Vec<Run>,
+    draws: Vec<PreparedDraw>,
+    oit_draws: Vec<PreparedDraw>,
 }
 
 impl ModPipelines {
@@ -415,6 +638,10 @@ impl ModPipelines {
             pack_vanilla,
             vertices: VertexPages::default(),
             oit_vertices: VertexPages::default(),
+            transient_vbuf: None,
+            transient_ibuf: None,
+            oit_transient_vbuf: None,
+            oit_transient_ibuf: None,
             fan_indices: FanIndices::default(),
             generation: 0,
             oit_generation: 0,
@@ -422,6 +649,8 @@ impl ModPipelines {
             pack_pipelines: None,
             runs: Vec::new(),
             oit_runs: Vec::new(),
+            draws: Vec::new(),
+            oit_draws: Vec::new(),
         }
     }
 
@@ -431,6 +660,7 @@ impl ModPipelines {
         pipeline_layout: &wgpu::PipelineLayout,
         vertex_shader: &wgpu::ShaderModule,
         fragment_shader: &wgpu::ShaderModule,
+        vertex_layouts: &[OwnedVertexBufferLayout],
         state: PipelineState,
         color_targets: &[Option<ColorTargetState>],
         target: TargetState<'_>,
@@ -503,6 +733,7 @@ impl ModPipelines {
             }
         });
 
+        let buffers = wgpu_buffer_layouts(vertex_layouts);
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -512,7 +743,7 @@ impl ModPipelines {
                 module: vertex_shader,
                 entry_point: Some(ENTRY),
                 compilation_options: Default::default(),
-                buffers: &[Some(PipelineVertex::buffer_layout())],
+                buffers: &buffers,
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu_topology(state.topology),
@@ -548,6 +779,7 @@ impl ModPipelines {
         pipeline_layout: &wgpu::PipelineLayout,
         vertex_shader: &wgpu::ShaderModule,
         fragment_shader: &wgpu::ShaderModule,
+        vertex_layouts: &[OwnedVertexBufferLayout],
         state: PipelineState,
         stage: super::oit::Stage,
     ) -> Result<wgpu::RenderPipeline, String> {
@@ -570,6 +802,7 @@ impl ModPipelines {
             ),
             None => (wgpu::CompareFunction::GreaterEqual, Default::default()),
         };
+        let buffers = wgpu_buffer_layouts(vertex_layouts);
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -579,7 +812,7 @@ impl ModPipelines {
                 module: vertex_shader,
                 entry_point: Some(ENTRY),
                 compilation_options: Default::default(),
-                buffers: &[Some(PipelineVertex::buffer_layout())],
+                buffers: &buffers,
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu_topology(state.topology),
@@ -619,6 +852,7 @@ impl ModPipelines {
     fn build_oit_stages(
         device: &wgpu::Device,
         id: &Identifier,
+        vertex_layouts: &[OwnedVertexBufferLayout],
         state: PipelineState,
         variants: &[sunrise_glsl::Translated; 3],
         sprite_binding: Option<&(wgpu::TextureView, [f32; 4])>,
@@ -732,6 +966,7 @@ impl ModPipelines {
                 &pipeline_layout,
                 &vertex_shader,
                 &fragment_shader,
+                vertex_layouts,
                 state,
                 stage,
             )
@@ -782,11 +1017,27 @@ impl ModPipelines {
             }
         };
 
+        let vertex_layouts =
+            build_vertex_layouts(&built.vertex_bindings, device.limits().max_vertex_buffers)?;
         let linear_fragment_module = if self.linear_light {
             let define_refs: Vec<&str> = built.defines.iter().map(String::as_str).collect();
+            let vertex_inputs_owned: Vec<(String, &'static str)> = built
+                .vertex_bindings
+                .iter()
+                .flat_map(|(_, fmt)| {
+                    fmt.attributes
+                        .iter()
+                        .map(|a| (a.name.clone(), a.format.glsl_type()))
+                })
+                .collect();
+            let vertex_input_refs: Vec<(&str, &str)> = vertex_inputs_owned
+                .iter()
+                .map(|(n, t)| (n.as_str(), *t))
+                .collect();
             let options = PipelineOptions {
                 textured: built.texture.is_some(),
                 defines: &define_refs,
+                vertex_inputs: &vertex_input_refs,
                 linear_light: true,
                 check_backends: false,
                 interface: crate::core_shader::interface_limits(&device.limits()),
@@ -930,6 +1181,7 @@ impl ModPipelines {
             &pipeline_layout,
             &vertex_shader,
             &fragment_shader,
+            &vertex_layouts,
             built.state,
             &built.color_targets,
             TargetState {
@@ -944,6 +1196,7 @@ impl ModPipelines {
             Some(Self::build_oit_stages(
                 device,
                 &built.id,
+                &vertex_layouts,
                 built.state,
                 variants,
                 sprite_binding.as_ref(),
@@ -962,6 +1215,7 @@ impl ModPipelines {
             pack_fragment_shader,
             state: built.state,
             color_targets: built.color_targets.clone(),
+            vertex_layouts,
             variants: Vec::new(),
             oit,
             #[cfg(test)]
@@ -1011,6 +1265,7 @@ impl ModPipelines {
                     &c.pipeline_layout,
                     &c.vertex_shader,
                     frag,
+                    &c.vertex_layouts,
                     c.state,
                     &c.color_targets,
                     target,
@@ -1189,6 +1444,7 @@ impl ModPipelines {
             &compiled.pipeline_layout,
             &compiled.vertex_shader,
             &compiled.fragment_shader,
+            &compiled.vertex_layouts,
             modified,
             &compiled.color_targets,
             TargetState {
@@ -1258,6 +1514,7 @@ impl ModPipelines {
             &oit_stage.pipeline_layout,
             &oit_stage.vertex_shader,
             &oit_stage.fragment_shader,
+            &compiled.vertex_layouts,
             modified,
             super::oit::Stage::ALL[stage_idx],
         ) {
@@ -1283,6 +1540,8 @@ impl ModPipelines {
     ) -> u32 {
         self.runs.clear();
         self.oit_runs.clear();
+        self.draws.clear();
+        self.oit_draws.clear();
         if batch
             .set
             .is_none_or(|set| set.generation() != self.generation)
@@ -1354,10 +1613,105 @@ impl ModPipelines {
                 modifier_stack: run.modifier_stack,
             });
         }
-        if self.runs.is_empty() && self.oit_runs.is_empty() {
+        let mut max_index_quads = 0u32;
+        let mut max_fan_verts = 0u32;
+        for cmd in batch.draws {
+            let Some(Some(compiled)) = self.pipelines.get_mut(cmd.slot as usize) else {
+                continue;
+            };
+            let topology = if cmd.modifier_stack != ModifierStacks::EMPTY
+                && let Some(stacks) = batch.modifiers
+            {
+                Self::ensure_modifier_variant(
+                    device,
+                    self.color_format,
+                    compiled,
+                    cmd.modifier_stack,
+                    stacks,
+                    modifier_defs,
+                );
+                stacks
+                    .apply(cmd.modifier_stack, compiled.state, modifier_defs)
+                    .topology
+            } else {
+                compiled.state.topology
+            };
+            if let DrawRange::Vertices(ref range) = cmd.draw.range {
+                let count = range.end.saturating_sub(range.start);
+                match topology {
+                    PrimitiveTopology::Quads | PrimitiveTopology::Lines => {
+                        max_index_quads = max_index_quads.max(count / 4);
+                    }
+                    PrimitiveTopology::TriangleFan => {
+                        max_fan_verts = max_fan_verts.max(count);
+                    }
+                    _ => {}
+                }
+            }
+            self.draws.push(PreparedDraw {
+                slot: cmd.slot as usize,
+                stage: cmd.stage as usize,
+                modifier_stack: cmd.modifier_stack,
+                topology,
+                draw: cmd.draw.clone(),
+                source: cmd.source.clone(),
+            });
+        }
+        for cmd in batch.oit_draws {
+            if cmd.stage >= 3 {
+                continue;
+            }
+            let Some(Some(compiled)) = self.pipelines.get_mut(cmd.slot as usize) else {
+                continue;
+            };
+            if compiled.oit.is_none() {
+                continue;
+            }
+            let topology = if cmd.modifier_stack != ModifierStacks::EMPTY
+                && let Some(stacks) = batch.modifiers
+            {
+                Self::ensure_oit_modifier_variant(
+                    device,
+                    compiled,
+                    cmd.stage as usize,
+                    cmd.modifier_stack,
+                    stacks,
+                    modifier_defs,
+                );
+                stacks
+                    .apply(cmd.modifier_stack, compiled.state, modifier_defs)
+                    .topology
+            } else {
+                compiled.state.topology
+            };
+            if let DrawRange::Vertices(ref range) = cmd.draw.range {
+                let count = range.end.saturating_sub(range.start);
+                match topology {
+                    PrimitiveTopology::Quads | PrimitiveTopology::Lines => {
+                        max_index_quads = max_index_quads.max(count / 4);
+                    }
+                    PrimitiveTopology::TriangleFan => {
+                        max_fan_verts = max_fan_verts.max(count);
+                    }
+                    _ => {}
+                }
+            }
+            self.oit_draws.push(PreparedDraw {
+                slot: cmd.slot as usize,
+                stage: cmd.stage as usize,
+                modifier_stack: cmd.modifier_stack,
+                topology,
+                draw: cmd.draw.clone(),
+                source: cmd.source.clone(),
+            });
+        }
+        if self.runs.is_empty()
+            && self.oit_runs.is_empty()
+            && self.draws.is_empty()
+            && self.oit_draws.is_empty()
+        {
             return 0;
         }
-        let mut max_index_quads = 0u32;
         if let Some(last) = self.runs.last() {
             let quads = last.quads.end;
             self.vertices.upload(
@@ -1382,6 +1736,42 @@ impl ModPipelines {
             );
             max_index_quads = max_index_quads.max(self.oit_vertices.index_quads(quads));
         }
+        upload_transient_bytes(
+            &mut self.transient_vbuf,
+            device,
+            upload,
+            "Mod pipeline transient vertices",
+            wgpu::BufferUsages::VERTEX,
+            batch.transient_vertices,
+        );
+        upload_transient_bytes(
+            &mut self.transient_ibuf,
+            device,
+            upload,
+            "Mod pipeline transient indices",
+            wgpu::BufferUsages::INDEX,
+            batch.transient_indices,
+        );
+        upload_transient_bytes(
+            &mut self.oit_transient_vbuf,
+            device,
+            upload,
+            "Mod pipeline OIT transient vertices",
+            wgpu::BufferUsages::VERTEX,
+            batch.oit_transient_vertices,
+        );
+        upload_transient_bytes(
+            &mut self.oit_transient_ibuf,
+            device,
+            upload,
+            "Mod pipeline OIT transient indices",
+            wgpu::BufferUsages::INDEX,
+            batch.oit_transient_indices,
+        );
+        if max_fan_verts >= 3 {
+            self.fan_indices
+                .ensure_with_upload(device, upload, max_fan_verts);
+        }
         let fallback;
         let blocks = match vanilla_blocks {
             Some(b) => b,
@@ -1396,29 +1786,37 @@ impl ModPipelines {
         max_index_quads
     }
 
-    /// Whether any prepared runs fall in stages `first..=last`.
+    /// Whether any prepared runs or unified draws fall in stages `first..=last`.
     pub fn has_runs(&self, first: usize, last: usize) -> bool {
         self.runs
             .iter()
             .any(|run| first <= run.stage && run.stage <= last)
+            || self
+                .draws
+                .iter()
+                .any(|draw| first <= draw.stage && draw.stage <= last)
     }
 
-    /// Whether any prepared runs fall in stages `first..=last` for slots not in `bound_slots`.
+    /// Whether any prepared runs or unified draws fall in stages `first..=last` for slots not
+    /// in `bound_slots`.
     pub fn has_unbound_runs(&self, first: usize, last: usize, bound_slots: &[usize]) -> bool {
         self.runs
             .iter()
             .any(|run| first <= run.stage && run.stage <= last && !bound_slots.contains(&run.slot))
+            || self.draws.iter().any(|draw| {
+                first <= draw.stage && draw.stage <= last && !bound_slots.contains(&draw.slot)
+            })
     }
 
-    /// Append uploaded vertex chunks for prepared runs whose slot is bound to `PackPost` into
-    /// `out`, reusing `out`'s existing allocation.
+    /// Append uploaded vertex chunks (for both transient draws and retained `MeshRef` draws)
+    /// whose slot is bound to `PackPost` into `out`, reusing `out`'s existing allocation.
     pub fn pack_bound_chunks_into(
         &self,
         indices: &wgpu::Buffer,
         bound_slots: &[usize],
         out: &mut Vec<super::pack_post::ModDrawChunk>,
     ) {
-        if self.runs.is_empty() || bound_slots.is_empty() {
+        if (self.runs.is_empty() && self.draws.is_empty()) || bound_slots.is_empty() {
             return;
         }
         for run in &self.runs {
@@ -1426,19 +1824,121 @@ impl ModPipelines {
                 continue;
             }
             for (buffer, quads) in self.vertices.ranges(0, run.quads.clone()) {
-                out.push(super::pack_post::ModDrawChunk {
-                    slot: run.slot,
-                    vertices: buffer.clone(),
-                    indices: indices.clone(),
+                out.push(super::pack_post::ModDrawChunk::quads(
+                    run.slot,
+                    buffer.clone(),
+                    indices.clone(),
                     quads,
-                });
+                ));
             }
+        }
+        for cmd in &self.draws {
+            if !bound_slots.contains(&cmd.slot) || cmd.draw.instances.is_empty() {
+                continue;
+            }
+            let (vertex_buffers, explicit_index) = match &cmd.source {
+                PipelineDrawSource::Transient {
+                    vertex_ranges,
+                    index_range,
+                } => {
+                    let Some(vbuf) = &self.transient_vbuf else {
+                        continue;
+                    };
+                    let vbs = vertex_ranges
+                        .iter()
+                        .map(|(binding, range)| (*binding, vbuf.clone(), range.clone()))
+                        .collect();
+                    let ib = index_range.as_ref().and_then(|(fmt, range)| {
+                        self.transient_ibuf
+                            .as_ref()
+                            .map(|buf| (buf.clone(), wgpu_index_format(*fmt), range.clone()))
+                    });
+                    (vbs, ib)
+                }
+                PipelineDrawSource::Retained(resolved) => {
+                    let vbs = resolved
+                        .vertex_buffers
+                        .iter()
+                        .map(|(binding, buf, len)| (*binding, buf.clone(), 0..*len))
+                        .collect();
+                    let ib = resolved
+                        .index_buffer
+                        .as_ref()
+                        .map(|(buf, fmt)| (buf.clone(), *fmt, 0..buf.size()));
+                    (vbs, ib)
+                }
+            };
+            let kind = match &cmd.draw.range {
+                DrawRange::Vertices(range) => {
+                    let count = range.end.saturating_sub(range.start);
+                    if count == 0 {
+                        continue;
+                    }
+                    match cmd.topology {
+                        PrimitiveTopology::Quads | PrimitiveTopology::Lines => {
+                            let quads = count / 4;
+                            if quads == 0 {
+                                continue;
+                            }
+                            super::pack_post::ModDrawKind::Indexed {
+                                buffer: indices.clone(),
+                                format: wgpu::IndexFormat::Uint32,
+                                indices: 0..quads * 6,
+                                base_vertex: range.start as i32,
+                            }
+                        }
+                        PrimitiveTopology::TriangleFan => {
+                            let Some(fan_buf) = self.fan_indices.buffer() else {
+                                continue;
+                            };
+                            let idx_count = cmd.topology.index_count(count);
+                            if idx_count == 0 {
+                                continue;
+                            }
+                            super::pack_post::ModDrawKind::Indexed {
+                                buffer: fan_buf.clone(),
+                                format: wgpu::IndexFormat::Uint32,
+                                indices: 0..idx_count,
+                                base_vertex: range.start as i32,
+                            }
+                        }
+                        _ => super::pack_post::ModDrawKind::Vertices {
+                            vertices: range.clone(),
+                        },
+                    }
+                }
+                DrawRange::Indexed {
+                    indices: idx_range,
+                    base_vertex,
+                } => {
+                    let Some((buf, format, _byte_range)) = explicit_index else {
+                        continue;
+                    };
+                    if idx_range.is_empty() {
+                        continue;
+                    }
+                    super::pack_post::ModDrawKind::Indexed {
+                        buffer: buf,
+                        format,
+                        indices: idx_range.clone(),
+                        base_vertex: *base_vertex,
+                    }
+                }
+                _ => continue,
+            };
+            out.push(super::pack_post::ModDrawChunk {
+                slot: cmd.slot,
+                vertex_buffers,
+                kind,
+                instances: cmd.draw.instances.clone(),
+            });
         }
     }
 
-    /// Draws the prepared runs of stages `first..=last` in the order queued, with `indices`
-    /// (6 a quad, `u32`), skipping slots in `skip_slots` (e.g. slots bound to a shader pack's
-    /// translated mod pass). Leaves the pass with its own pipeline, bind group 0 and buffers.
+    /// Draws the prepared runs and unified draws of stages `first..=last` in the order queued,
+    /// with `indices` (6 a quad, `u32`), skipping slots in `skip_slots` (e.g. slots bound to a
+    /// shader pack's translated mod pass). Leaves the pass with its own pipeline, bind group 0
+    /// and buffers.
     pub fn draw_excluding(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -1457,6 +1957,14 @@ impl ModPipelines {
                     first <= run.stage && run.stage <= last && !skip_slots.contains(&run.slot)
                 })
                 .map(|run| (run, run.quads.clone())),
+        );
+        self.draw_prepared_cmds(
+            pass,
+            indices,
+            false,
+            self.draws.iter().filter(|cmd| {
+                first <= cmd.stage && cmd.stage <= last && !skip_slots.contains(&cmd.slot)
+            }),
         );
     }
 
@@ -1482,6 +1990,14 @@ impl ModPipelines {
                 })
                 .map(|run| (run, run.quads.clone())),
         );
+        self.draw_prepared_cmds(
+            pass,
+            indices,
+            true,
+            self.draws.iter().filter(|cmd| {
+                first <= cmd.stage && cmd.stage <= last && !bound_slots.contains(&cmd.slot)
+            }),
+        );
     }
 
     /// Draw prepared standard-pass pipeline runs for the given run-index ranges.
@@ -1505,7 +2021,27 @@ impl ModPipelines {
         );
     }
 
-    /// Draw all OIT mod-pipeline runs for `stage` into the active OIT pass.
+    /// Draw prepared standard-pass unified pipeline draws (`draw_mesh`, `draw_vertices`,
+    /// `pipeline_quads`) for the given draw-index ranges.
+    pub fn draw_prepared_draws(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        indices: &wgpu::Buffer,
+        ranges: &[std::ops::Range<u32>],
+    ) {
+        self.draw_prepared_cmds(
+            pass,
+            indices,
+            false,
+            ranges.iter().flat_map(|r| {
+                let start = (r.start as usize).min(self.draws.len());
+                let end = (r.end as usize).min(self.draws.len());
+                self.draws[start..end].iter()
+            }),
+        );
+    }
+
+    /// Draw all OIT mod-pipeline runs and unified draws for `stage` into the active OIT pass.
     pub(super) fn draw_oit(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -1518,6 +2054,12 @@ impl ModPipelines {
             stage_idx,
             indices,
             self.oit_runs.iter().filter(|run| run.stage == stage_idx),
+        );
+        self.draw_oit_cmds(
+            pass,
+            stage_idx,
+            indices,
+            self.oit_draws.iter().filter(|cmd| cmd.stage == stage_idx),
         );
     }
 
@@ -1542,6 +2084,263 @@ impl ModPipelines {
                     .filter(move |run| run.stage == stage_idx)
             }),
         );
+    }
+
+    /// Draw prepared OIT unified pipeline draws for `stage` and the given draw-index ranges.
+    pub(super) fn draw_prepared_oit_draws(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        stage: super::oit::Stage,
+        indices: &wgpu::Buffer,
+        ranges: &[std::ops::Range<u32>],
+    ) {
+        let stage_idx = stage as usize;
+        self.draw_oit_cmds(
+            pass,
+            stage_idx,
+            indices,
+            ranges.iter().flat_map(|r| {
+                let start = (r.start as usize).min(self.oit_draws.len());
+                let end = (r.end as usize).min(self.oit_draws.len());
+                self.oit_draws[start..end]
+                    .iter()
+                    .filter(move |cmd| cmd.stage == stage_idx)
+            }),
+        );
+    }
+
+    fn issue_prepared_draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        quad_indices: &wgpu::Buffer,
+        transient_vbuf: Option<&wgpu::Buffer>,
+        transient_ibuf: Option<&wgpu::Buffer>,
+        cmd: &PreparedDraw,
+    ) {
+        if cmd.draw.instances.is_empty() {
+            return;
+        }
+        match &cmd.source {
+            PipelineDrawSource::Transient {
+                vertex_ranges,
+                index_range,
+            } => {
+                let Some(vbuf) = transient_vbuf else {
+                    return;
+                };
+                for (binding, range) in vertex_ranges {
+                    if range.end > vbuf.size() {
+                        return;
+                    }
+                    pass.set_vertex_buffer(*binding, vbuf.slice(range.clone()));
+                }
+                match &cmd.draw.range {
+                    DrawRange::Vertices(range) => {
+                        self.issue_non_indexed_draw(
+                            pass,
+                            quad_indices,
+                            cmd.topology,
+                            range.clone(),
+                            cmd.draw.instances.clone(),
+                        );
+                    }
+                    DrawRange::Indexed {
+                        indices,
+                        base_vertex,
+                    } => {
+                        let Some((fmt, ib_range)) = index_range else {
+                            return;
+                        };
+                        let Some(ibuf) = transient_ibuf else {
+                            return;
+                        };
+                        if ib_range.end > ibuf.size() || indices.is_empty() {
+                            return;
+                        }
+                        pass.set_index_buffer(
+                            ibuf.slice(ib_range.clone()),
+                            wgpu_index_format(*fmt),
+                        );
+                        pass.draw_indexed(
+                            indices.clone(),
+                            *base_vertex,
+                            cmd.draw.instances.clone(),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            PipelineDrawSource::Retained(resolved) => {
+                for (binding, buf, len) in &resolved.vertex_buffers {
+                    pass.set_vertex_buffer(*binding, buf.slice(0..*len));
+                }
+                match &cmd.draw.range {
+                    DrawRange::Vertices(range) => {
+                        self.issue_non_indexed_draw(
+                            pass,
+                            quad_indices,
+                            cmd.topology,
+                            range.clone(),
+                            cmd.draw.instances.clone(),
+                        );
+                    }
+                    DrawRange::Indexed {
+                        indices,
+                        base_vertex,
+                    } => {
+                        let Some((ibuf, fmt)) = &resolved.index_buffer else {
+                            return;
+                        };
+                        if indices.is_empty() {
+                            return;
+                        }
+                        pass.set_index_buffer(ibuf.slice(..), *fmt);
+                        pass.draw_indexed(
+                            indices.clone(),
+                            *base_vertex,
+                            cmd.draw.instances.clone(),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn issue_non_indexed_draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        quad_indices: &wgpu::Buffer,
+        topology: PrimitiveTopology,
+        range: std::ops::Range<u32>,
+        instances: std::ops::Range<u32>,
+    ) {
+        let count = range.end.saturating_sub(range.start);
+        if count == 0 || instances.is_empty() {
+            return;
+        }
+        match topology {
+            PrimitiveTopology::Quads | PrimitiveTopology::Lines => {
+                let quads = count / 4;
+                if quads == 0 {
+                    return;
+                }
+                pass.set_index_buffer(quad_indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..quads * 6, range.start as i32, instances);
+            }
+            PrimitiveTopology::TriangleFan => {
+                let Some(fan_buf) = self.fan_indices.buffer() else {
+                    return;
+                };
+                let idx_count = topology.index_count(count);
+                if idx_count == 0 {
+                    return;
+                }
+                pass.set_index_buffer(fan_buf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..idx_count, range.start as i32, instances);
+            }
+            _ => {
+                pass.draw(range, instances);
+            }
+        }
+    }
+
+    fn draw_prepared_cmds<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'_>,
+        indices: &wgpu::Buffer,
+        pack: bool,
+        cmds: impl Iterator<Item = &'a PreparedDraw>,
+    ) {
+        let pack_list = if pack {
+            let Some((_, list)) = &self.pack_pipelines else {
+                return;
+            };
+            Some(list)
+        } else {
+            None
+        };
+        for cmd in cmds {
+            let Some(Some(compiled)) = self.pipelines.get(cmd.slot) else {
+                continue;
+            };
+            if compiled.state.depth_stencil.is_none() {
+                continue;
+            }
+            let pipeline = match pack_list {
+                Some(list) => match list.get(cmd.slot) {
+                    Some(Some(p)) => p,
+                    _ => continue,
+                },
+                None => {
+                    if cmd.modifier_stack == ModifierStacks::EMPTY {
+                        &compiled.pipeline
+                    } else {
+                        match compiled.variants.get(cmd.modifier_stack as usize) {
+                            Some(Some(CachedVariant::Base)) => &compiled.pipeline,
+                            Some(Some(CachedVariant::Compiled(p))) => p,
+                            _ => continue,
+                        }
+                    }
+                }
+            };
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(
+                0,
+                if pack {
+                    &compiled.pack_group
+                } else {
+                    &compiled.group
+                },
+                &[],
+            );
+            self.issue_prepared_draw(
+                pass,
+                indices,
+                self.transient_vbuf.as_ref(),
+                self.transient_ibuf.as_ref(),
+                cmd,
+            );
+        }
+    }
+
+    fn draw_oit_cmds<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'_>,
+        stage_idx: usize,
+        indices: &wgpu::Buffer,
+        cmds: impl Iterator<Item = &'a PreparedDraw>,
+    ) {
+        for cmd in cmds {
+            let Some(Some(compiled)) = self.pipelines.get(cmd.slot) else {
+                continue;
+            };
+            let Some(oit) = &compiled.oit else {
+                continue;
+            };
+            let oit_stage = &oit.stages[stage_idx];
+            let Some(group) = &oit_stage.group else {
+                continue;
+            };
+            let pipeline = if cmd.modifier_stack == ModifierStacks::EMPTY {
+                &oit_stage.pipeline
+            } else {
+                match oit_stage.variants.get(cmd.modifier_stack as usize) {
+                    Some(Some(CachedVariant::Base)) => &oit_stage.pipeline,
+                    Some(Some(CachedVariant::Compiled(p))) => p,
+                    _ => continue,
+                }
+            };
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, group, &[]);
+            self.issue_prepared_draw(
+                pass,
+                indices,
+                self.oit_transient_vbuf.as_ref(),
+                self.oit_transient_ibuf.as_ref(),
+                cmd,
+            );
+        }
     }
 
     fn draw_oit_runs<'a>(
@@ -3080,6 +3879,299 @@ void main() {
             [0.0, 0.0, 255.0, 255.0],
             1.0,
             "depthless DebugLines draws horizontal blue line",
+        );
+    }
+
+    /// Retained GPU `MeshRef` with a compact 8-byte vertex format (`Uint8x4` + `Unorm8x4`) and
+    /// `Uint16` index buffer draws identically across two frames without re-uploading, and
+    /// returns `MeshError::Stale` after `destroy` (#1159).
+    #[test]
+    #[ignore = "daily"]
+    fn retained_compact_8byte_mesh_draws_two_frames_and_destroy_returns_stale() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let vsh = "\
+#version 330
+in uvec4 PackedPos;
+in vec4 PackedColor;
+out vec4 vertexColor;
+void main() {
+    vec2 ndc = vec2(float(PackedPos.x) / 32.0 - 1.0, 1.0 - float(PackedPos.y) / 32.0);
+    gl_Position = vec4(ndc, 0.5, 1.0);
+    vertexColor = PackedColor;
+}
+";
+        let fsh = "\
+#version 330
+in vec4 vertexColor;
+out vec4 fragColor;
+void main() {
+    fragColor = vertexColor;
+}
+";
+        let compact_fmt = VertexFormat::builder(VertexStepMode::Vertex)
+            .attribute("PackedPos", VertexAttributeFormat::Uint8x4)
+            .attribute("PackedColor", VertexAttributeFormat::Unorm8x4)
+            .build()
+            .unwrap();
+        assert_eq!(compact_fmt.stride, 8);
+        let id = Identifier::parse("example:compact_mesh").unwrap();
+        let reg = [RenderPipeline::new(
+            id.clone(),
+            id,
+            PipelineBlend::Opaque,
+            WorldDepth::ThroughWalls,
+        )
+        .topology(PrimitiveTopology::Triangles)
+        .vertex_binding(0, compact_fmt)];
+        let set = Pipelines::build(&reg, 1, |file| {
+            if file.ends_with(".vsh") {
+                Ok(Some(vsh.to_owned()))
+            } else if file.ends_with(".fsh") {
+                Ok(Some(fsh.to_owned()))
+            } else {
+                Ok(sunrise_mod_pipeline::stubs::read(
+                    file.strip_prefix("assets/")
+                        .and_then(|r| r.split_once('/'))
+                        .map(|(ns, p)| format!("{ns}:{p}"))
+                        .as_deref()
+                        .unwrap_or(""),
+                )
+                .map(str::to_owned))
+            }
+        })
+        .unwrap();
+
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct CompactVertex {
+            pos: [u8; 4],
+            color: [u8; 4],
+        }
+        let verts = [
+            CompactVertex {
+                pos: [0, 0, 0, 0],
+                color: [20, 220, 40, 255],
+            },
+            CompactVertex {
+                pos: [0, 64, 0, 0],
+                color: [20, 220, 40, 255],
+            },
+            CompactVertex {
+                pos: [64, 64, 0, 0],
+                color: [20, 220, 40, 255],
+            },
+            CompactVertex {
+                pos: [64, 0, 0, 0],
+                color: [20, 220, 40, 255],
+            },
+        ];
+        let indices: [u16; 6] = [0, 1, 2, 0, 2, 3];
+        let vb_inits = [mod_api::MeshBufferInit::from_bytes(
+            8,
+            bytemuck::cast_slice(&verts),
+        )];
+        let desc = mod_api::MeshDescriptor::new(&vb_inits).with_indices(
+            mod_api::MeshIndexInit::from_bytes(IndexFormat::Uint16, bytemuck::cast_slice(&indices)),
+        );
+        let mut meshes = crate::gfx::mod_meshes::ModMeshes::default();
+        let mesh = meshes.create_mesh(&device, &queue, None, &desc).unwrap();
+        let mesh_draw = MeshDraw::indexed(0..6, 0);
+        let resolved = meshes
+            .resolve_draw(
+                None,
+                mesh,
+                set.vertex_bindings(0).unwrap(),
+                PrimitiveTopology::Triangles,
+                &mesh_draw,
+            )
+            .unwrap();
+
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut primitives = WorldPrimitives::new(&device, (format, false));
+        let draw_cmd = PipelineDraw {
+            slot: 0,
+            stage: 4,
+            modifier_stack: 0,
+            draw: mesh_draw.clone(),
+            source: PipelineDrawSource::Retained(resolved),
+        };
+        let gpu = (device, queue);
+        for frame in 0..2 {
+            let batch = Batch {
+                set: Some(&set),
+                draws: std::slice::from_ref(&draw_cmd),
+                time: 0.0,
+                ..Default::default()
+            };
+            let px = render(&gpu, &mut primitives, format, batch, STAGES - 1)(32, 32);
+            assert_near(
+                px,
+                [20.0, 220.0, 40.0, 255.0],
+                1.0,
+                &format!("retained compact 8-byte mesh frame {frame}"),
+            );
+        }
+
+        meshes.destroy(None, mesh).unwrap();
+        assert_eq!(
+            meshes
+                .resolve_draw(
+                    None,
+                    mesh,
+                    set.vertex_bindings(0).unwrap(),
+                    PrimitiveTopology::Triangles,
+                    &mesh_draw,
+                )
+                .unwrap_err(),
+            mod_api::PipelineDrawError::Mesh(mod_api::MeshError::Stale)
+        );
+    }
+
+    /// Multi-binding vertex format with `VertexStepMode::Instance` draws 4 offset coloured
+    /// quads in a single instanced draw call (#1159).
+    #[test]
+    #[ignore = "daily"]
+    fn instanced_vertex_binding_draws_four_offset_quads_in_one_draw_call() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let vsh = "\
+#version 330
+in vec2 LocalPos;
+in vec2 InstOffset;
+in vec4 InstColor;
+out vec4 vertexColor;
+void main() {
+    vec2 p = LocalPos + InstOffset;
+    vec2 ndc = vec2(p.x / 32.0 - 1.0, 1.0 - p.y / 32.0);
+    gl_Position = vec4(ndc, 0.5, 1.0);
+    vertexColor = InstColor;
+}
+";
+        let fsh = "\
+#version 330
+in vec4 vertexColor;
+out vec4 fragColor;
+void main() {
+    fragColor = vertexColor;
+}
+";
+        let vert_fmt = VertexFormat::builder(VertexStepMode::Vertex)
+            .attribute("LocalPos", VertexAttributeFormat::Float32x2)
+            .build()
+            .unwrap();
+        let inst_fmt = VertexFormat::builder(VertexStepMode::Instance)
+            .attribute("InstOffset", VertexAttributeFormat::Float32x2)
+            .attribute("InstColor", VertexAttributeFormat::Unorm8x4)
+            .build()
+            .unwrap();
+        let id = Identifier::parse("example:instanced").unwrap();
+        let reg = [RenderPipeline::new(
+            id.clone(),
+            id,
+            PipelineBlend::Opaque,
+            WorldDepth::ThroughWalls,
+        )
+        .topology(PrimitiveTopology::Quads)
+        .vertex_binding(0, vert_fmt)
+        .vertex_binding(1, inst_fmt)];
+        let set = Pipelines::build(&reg, 1, |file| {
+            if file.ends_with(".vsh") {
+                Ok(Some(vsh.to_owned()))
+            } else if file.ends_with(".fsh") {
+                Ok(Some(fsh.to_owned()))
+            } else {
+                Ok(sunrise_mod_pipeline::stubs::read(
+                    file.strip_prefix("assets/")
+                        .and_then(|r| r.split_once('/'))
+                        .map(|(ns, p)| format!("{ns}:{p}"))
+                        .as_deref()
+                        .unwrap_or(""),
+                )
+                .map(str::to_owned))
+            }
+        })
+        .unwrap();
+
+        let unit_quad: [[f32; 2]; 4] = [[0.0, 0.0], [0.0, 32.0], [32.0, 32.0], [32.0, 0.0]];
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct InstanceRec {
+            offset: [f32; 2],
+            color: [u8; 4],
+        }
+        let instances = [
+            InstanceRec {
+                offset: [0.0, 0.0],
+                color: [255, 0, 0, 255],
+            },
+            InstanceRec {
+                offset: [32.0, 0.0],
+                color: [0, 255, 0, 255],
+            },
+            InstanceRec {
+                offset: [0.0, 32.0],
+                color: [0, 0, 255, 255],
+            },
+            InstanceRec {
+                offset: [32.0, 32.0],
+                color: [255, 255, 0, 255],
+            },
+        ];
+        let vb_inits = [
+            mod_api::MeshBufferInit::from_bytes(8, bytemuck::cast_slice(&unit_quad)),
+            mod_api::MeshBufferInit::from_bytes(12, bytemuck::cast_slice(&instances)),
+        ];
+        let desc = mod_api::MeshDescriptor::new(&vb_inits);
+        let mut meshes = crate::gfx::mod_meshes::ModMeshes::default();
+        let mesh = meshes.create_mesh(&device, &queue, None, &desc).unwrap();
+        let mesh_draw = MeshDraw::vertices(0..4).with_instances(0..4);
+        let resolved = meshes
+            .resolve_draw(
+                None,
+                mesh,
+                set.vertex_bindings(0).unwrap(),
+                PrimitiveTopology::Quads,
+                &mesh_draw,
+            )
+            .unwrap();
+
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut primitives = WorldPrimitives::new(&device, (format, false));
+        let draw_cmd = PipelineDraw {
+            slot: 0,
+            stage: 4,
+            modifier_stack: 0,
+            draw: mesh_draw,
+            source: PipelineDrawSource::Retained(resolved),
+        };
+        let gpu = (device, queue);
+        let batch = Batch {
+            set: Some(&set),
+            draws: std::slice::from_ref(&draw_cmd),
+            time: 0.0,
+            ..Default::default()
+        };
+        let at = render(&gpu, &mut primitives, format, batch, STAGES - 1);
+        assert_near(at(16, 16), [255.0, 0.0, 0.0, 255.0], 1.0, "instance 0 red");
+        assert_near(
+            at(48, 16),
+            [0.0, 255.0, 0.0, 255.0],
+            1.0,
+            "instance 1 green",
+        );
+        assert_near(at(16, 48), [0.0, 0.0, 255.0, 255.0], 1.0, "instance 2 blue");
+        assert_near(
+            at(48, 48),
+            [255.0, 255.0, 0.0, 255.0],
+            1.0,
+            "instance 3 yellow",
         );
     }
 }

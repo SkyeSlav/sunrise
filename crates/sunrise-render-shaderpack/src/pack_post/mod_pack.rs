@@ -201,13 +201,64 @@ pub struct ModPackPass {
     pub pass: Pass,
 }
 
-/// One vertex-buffer chunk of quad draws submitted for a mod pipeline slot.
+/// How a [`ModDrawChunk`] issues its GPU draw call inside `PackPost::draw_mod_slot`.
+#[derive(Clone, Debug)]
+pub enum ModDrawKind {
+    /// Non-indexed draw over `vertices`.
+    Vertices { vertices: std::ops::Range<u32> },
+    /// Indexed draw using `buffer` (`Uint16` or `Uint32`), `indices`, and `base_vertex`.
+    Indexed {
+        buffer: wgpu::Buffer,
+        format: wgpu::IndexFormat,
+        indices: std::ops::Range<u32>,
+        base_vertex: i32,
+    },
+}
+
+/// One vertex-buffer draw chunk submitted for a mod pipeline slot (covers both transient
+/// quads/vertices and retained `MeshRef` multi-binding / instanced draws).
 #[derive(Clone)]
 pub struct ModDrawChunk {
     pub slot: usize,
-    pub vertices: wgpu::Buffer,
-    pub indices: wgpu::Buffer,
-    pub quads: std::ops::Range<u32>,
+    /// Bound vertex/instance buffers: `(binding_index, buffer, byte_range)`.
+    pub vertex_buffers: Vec<(u32, wgpu::Buffer, std::ops::Range<u64>)>,
+    pub kind: ModDrawKind,
+    pub instances: std::ops::Range<u32>,
+}
+
+impl ModDrawChunk {
+    /// Convenience constructor for a single-binding quad draw backed by a shared `u32` quad
+    /// index buffer (6 indices per quad, 1 instance).
+    pub fn quads(
+        slot: usize,
+        vertices: wgpu::Buffer,
+        indices: wgpu::Buffer,
+        quads: std::ops::Range<u32>,
+    ) -> Self {
+        let byte_len = vertices.size();
+        Self {
+            slot,
+            vertex_buffers: vec![(0, vertices, 0..byte_len)],
+            kind: ModDrawKind::Indexed {
+                buffer: indices,
+                format: wgpu::IndexFormat::Uint32,
+                indices: quads.start * 6..quads.end * 6,
+                base_vertex: 0,
+            },
+            instances: 0..1,
+        }
+    }
+
+    /// Whether this chunk draws zero vertices/indices or zero instances.
+    pub fn is_empty(&self) -> bool {
+        if self.instances.is_empty() {
+            return true;
+        }
+        match &self.kind {
+            ModDrawKind::Vertices { vertices } => vertices.is_empty(),
+            ModDrawKind::Indexed { indices, .. } => indices.is_empty(),
+        }
+    }
 }
 
 /// Result of matching a pack program's declared GLSL uniform against mod-declared uniforms.

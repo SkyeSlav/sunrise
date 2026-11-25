@@ -409,8 +409,29 @@ pub fn pipeline_shaders(
                 fragment_dir: &dir,
                 fragment: dummy_fsh,
             };
+            let extracted = match sunrise_mod_pipeline::extract_vertex_inputs(&vsh_text) {
+                Ok(v) => v,
+                Err(e) => {
+                    refused.push(format!("{vsh_file}: {e}"));
+                    continue;
+                }
+            };
+            let is_default = extracted.iter().all(|(n, t)| {
+                sunrise_mod_pipeline::DEFAULT_VERTEX_INPUTS
+                    .iter()
+                    .any(|(dn, dt)| dn == n && dt == t)
+            });
+            let custom_refs: Vec<(&str, &str)> = extracted
+                .iter()
+                .map(|(n, t)| (n.as_str(), t.as_str()))
+                .collect();
             let options = sunrise_mod_pipeline::Options {
                 textured,
+                vertex_inputs: if is_default {
+                    &sunrise_mod_pipeline::DEFAULT_VERTEX_INPUTS
+                } else {
+                    &custom_refs
+                },
                 check_backends: true,
                 ..Default::default()
             };
@@ -483,8 +504,29 @@ pub fn pipeline_shaders(
             fragment_dir: &fragment_dir,
             fragment: &fsh_text,
         };
+        let extracted = match sunrise_mod_pipeline::extract_vertex_inputs(&vsh_text) {
+            Ok(v) => v,
+            Err(e) => {
+                refused.push(format!("{vertex_file}: {e}"));
+                continue;
+            }
+        };
+        let is_default = extracted.iter().all(|(n, t)| {
+            sunrise_mod_pipeline::DEFAULT_VERTEX_INPUTS
+                .iter()
+                .any(|(dn, dt)| dn == n && dt == t)
+        });
+        let custom_refs: Vec<(&str, &str)> = extracted
+            .iter()
+            .map(|(n, t)| (n.as_str(), t.as_str()))
+            .collect();
         let options = sunrise_mod_pipeline::Options {
             textured,
+            vertex_inputs: if is_default {
+                &sunrise_mod_pipeline::DEFAULT_VERTEX_INPUTS
+            } else {
+                &custom_refs
+            },
             check_backends: true,
             ..Default::default()
         };

@@ -174,9 +174,15 @@ pub trait ClientRenderClientHost {
     /// For a client mod: changes each time the resources load (a resource pack turned on or off can move every
     /// sprite): ask `native_block_sprites` again then. API 380.
     fn block_sprites_version(&self) -> u64;
+    /// Side: client.
+    /// Allocate retained GPU vertex buffer(s) and an optional index buffer (`GpuBuffer`),
+    /// returning an owner-checked generational [`MeshRef`] handle. Buffer sizes must be non-zero,
+    /// stride/index/4-byte aligned, and at most `device.limits().max_buffer_size`. Handles are
+    /// retired automatically on mod disable, world close, resource reload, or [`MeshRef::destroy`].
+    fn create_mesh(&self, desc: &MeshDescriptor<'_>) -> Result<MeshRef, MeshError>;
 }
 
-/// The retained instance-group operations behind [`InstanceGroupRef`].
+/// The retained instance-group and mesh operations behind [`InstanceGroupRef`] and [`MeshRef`].
 // hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
 #[doc(hidden)]
 #[sunrise_mod_api_macros::host_area]
@@ -202,4 +208,30 @@ pub trait ClientRenderClientBackend {
     /// Retire retained model copies; called through [`InstanceGroupRef::destroy`].
     #[manual_handle]
     fn instance_group_destroy(&self, group: InstanceGroupRef) -> Result<(), GroupError>;
+    /// Partially or fully update a retained mesh's vertex buffer; called through
+    /// [`MeshRef::write_vertices`].
+    #[manual_handle]
+    fn mesh_write_vertices(
+        &self,
+        mesh: MeshRef,
+        binding: u8,
+        byte_offset: u64,
+        data: &[u8],
+    ) -> Result<(), MeshError>;
+    /// Partially or fully update a retained mesh's index buffer; called through
+    /// [`MeshRef::write_indices`].
+    #[manual_handle]
+    fn mesh_write_indices(
+        &self,
+        mesh: MeshRef,
+        byte_offset: u64,
+        data: &[u8],
+    ) -> Result<(), MeshError>;
+    /// Reallocate a retained mesh's GPU buffers in place; called through [`MeshRef::replace`].
+    #[manual_handle]
+    fn mesh_replace(&self, mesh: MeshRef, desc: &MeshDescriptor<'_>) -> Result<(), MeshError>;
+    /// Free a retained mesh's GPU buffers and retire the handle; called through
+    /// [`MeshRef::destroy`].
+    #[manual_handle]
+    fn mesh_destroy(&self, mesh: MeshRef) -> Result<(), MeshError>;
 }

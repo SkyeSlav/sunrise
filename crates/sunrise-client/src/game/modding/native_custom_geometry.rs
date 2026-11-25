@@ -392,11 +392,79 @@ impl Game<'_> {
     ) -> Result<(), DrawError> {
         draw.quads(quads)
     }
-    /// Submit quads drawn by a mod pipeline: the handle is checked against the published
-    /// pipelines once, non-[`mod_api::PrimitiveTopology::Quads`] pipelines are refused with
-    /// [`PipelineDrawError::TopologyMismatch`], non-finite quads are skipped individually without
-    /// rejecting valid quads in the same slice, and quad storage grows dynamically into the GPU
-    /// buffers.
+    /// Allocate a retained GPU [`mod_api::MeshRef`] on the active renderer.
+    pub(super) fn create_mesh(
+        &self,
+        desc: &mod_api::MeshDescriptor<'_>,
+    ) -> Result<mod_api::MeshRef, mod_api::MeshError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(mod_api::MeshError::Unavailable)?;
+        renderer.create_mesh(mod_api::content::crash::current_native_mod(), desc)
+    }
+    /// Update vertex buffer `binding` of retained `mesh`.
+    pub(super) fn mesh_write_vertices(
+        &self,
+        mesh: mod_api::MeshRef,
+        binding: u8,
+        byte_offset: u64,
+        data: &[u8],
+    ) -> Result<(), mod_api::MeshError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(mod_api::MeshError::Unavailable)?;
+        renderer.mesh_write_vertices(
+            mod_api::content::crash::current_native_mod(),
+            mesh,
+            binding,
+            byte_offset,
+            data,
+        )
+    }
+    /// Update the index buffer of retained `mesh`.
+    pub(super) fn mesh_write_indices(
+        &self,
+        mesh: mod_api::MeshRef,
+        byte_offset: u64,
+        data: &[u8],
+    ) -> Result<(), mod_api::MeshError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(mod_api::MeshError::Unavailable)?;
+        renderer.mesh_write_indices(
+            mod_api::content::crash::current_native_mod(),
+            mesh,
+            byte_offset,
+            data,
+        )
+    }
+    /// Reallocate backing GPU buffers of retained `mesh` in place.
+    pub(super) fn mesh_replace(
+        &self,
+        mesh: mod_api::MeshRef,
+        desc: &mod_api::MeshDescriptor<'_>,
+    ) -> Result<(), mod_api::MeshError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(mod_api::MeshError::Unavailable)?;
+        renderer.mesh_replace(mod_api::content::crash::current_native_mod(), mesh, desc)
+    }
+    /// Free retained `mesh`'s GPU buffers and retire the handle.
+    pub(super) fn mesh_destroy(&self, mesh: mod_api::MeshRef) -> Result<(), mod_api::MeshError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(mod_api::MeshError::Unavailable)?;
+        renderer.mesh_destroy(mod_api::content::crash::current_native_mod(), mesh)
+    }
+    /// Submit quads drawn by a mod pipeline: shorthand over [`Self::native_world_draw_vertices`]
+    /// for pipelines using the default `PositionTexColor` vertex format and
+    /// [`mod_api::PrimitiveTopology::Quads`]. Non-finite quads are skipped individually without
+    /// rejecting valid quads in the same slice.
     pub(super) fn native_world_draw_pipeline_quads(
         &self,
         draw: &mut WorldGeometry,
@@ -418,7 +486,191 @@ impl Game<'_> {
         if draw.effective_topology(base_topology) != mod_api::PrimitiveTopology::Quads {
             return Err(PipelineDrawError::TopologyMismatch);
         }
-        draw.pipeline_quads(slot, quads);
+        if !self
+            .pack
+            .render
+            .mod_pipelines
+            .uses_default_vertex_format(slot)
+        {
+            return Err(PipelineDrawError::VertexFormatMismatch);
+        }
+        let camera = draw.camera();
+        let mut vertices = Vec::with_capacity(quads.len() * 4);
+        for q in quads {
+            let corners_finite = q.corners.iter().all(|corner| {
+                corner
+                    .iter()
+                    .zip(camera)
+                    .all(|(&p, cam)| p.is_finite() && ((p - cam) as f32).is_finite())
+            });
+            if !corners_finite || q.uv.iter().flatten().any(|c| !c.is_finite()) {
+                continue;
+            }
+            let color = sunrise_client::world_primitives::vertex_color(q.color, 255);
+            vertices.extend((0..4).map(|corner| {
+                sunrise_client::gfx::mod_pipelines::PipelineVertex {
+                    pos: std::array::from_fn(|i| (q.corners[corner][i] - camera[i]) as f32),
+                    uv: q.uv[corner],
+                    color,
+                }
+            }));
+        }
+        if vertices.is_empty() {
+            return Ok(());
+        }
+        self.native_world_draw_vertices(
+            draw,
+            pipeline,
+            &[bytemuck::cast_slice(&vertices)],
+            None,
+            mod_api::MeshDraw::vertices(0..vertices.len() as u32),
+            &mod_api::DrawBindings::EMPTY,
+        )
+    }
+    /// Record a zero-copy retained GPU [`mod_api::MeshRef`] draw call after validating pipeline
+    /// liveness, mesh ownership/liveness, vertex-binding strides, and draw/instance bounds.
+    pub(super) fn native_world_draw_mesh(
+        &self,
+        draw: &mut WorldGeometry,
+        pipeline: RenderPipelineRef,
+        mesh: mod_api::MeshRef,
+        mesh_draw: mod_api::MeshDraw,
+        _bindings: &mod_api::DrawBindings<'_>,
+    ) -> Result<(), PipelineDrawError> {
+        let slot = self
+            .pack
+            .render
+            .mod_pipelines
+            .slot(pipeline)
+            .map_err(PipelineDrawError::Pipeline)?;
+        let vertex_bindings = self.pack.render.mod_pipelines.vertex_bindings(slot).ok_or(
+            PipelineDrawError::Pipeline(mod_api::RenderPipelineError::Invalid),
+        )?;
+        let base_topology = self
+            .pack
+            .render
+            .mod_pipelines
+            .topology(slot)
+            .unwrap_or(mod_api::PrimitiveTopology::Quads);
+        let topology = draw.effective_topology(base_topology);
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(PipelineDrawError::Mesh(mod_api::MeshError::Unavailable))?;
+        let resolved = renderer.resolve_mod_mesh_draw(
+            mod_api::content::crash::current_native_mod(),
+            mesh,
+            vertex_bindings,
+            topology,
+            &mesh_draw,
+        )?;
+        let empty = mesh_draw.instances.is_empty()
+            || match &mesh_draw.range {
+                mod_api::DrawRange::Vertices(r) => r.is_empty(),
+                mod_api::DrawRange::Indexed { indices, .. } => indices.is_empty(),
+                _ => true,
+            };
+        if !empty {
+            draw.draw_mesh_slot(slot, resolved, mesh_draw);
+        }
+        Ok(())
+    }
+    /// Validate and queue a transient per-frame vertex/index draw call.
+    pub(super) fn native_world_draw_vertices(
+        &self,
+        draw: &mut WorldGeometry,
+        pipeline: RenderPipelineRef,
+        vertices: &[&[u8]],
+        indices: Option<(mod_api::IndexFormat, &[u8])>,
+        mesh_draw: mod_api::MeshDraw,
+        _bindings: &mod_api::DrawBindings<'_>,
+    ) -> Result<(), PipelineDrawError> {
+        let slot = self
+            .pack
+            .render
+            .mod_pipelines
+            .slot(pipeline)
+            .map_err(PipelineDrawError::Pipeline)?;
+        let vertex_bindings = self.pack.render.mod_pipelines.vertex_bindings(slot).ok_or(
+            PipelineDrawError::Pipeline(mod_api::RenderPipelineError::Invalid),
+        )?;
+        let base_topology = self
+            .pack
+            .render
+            .mod_pipelines
+            .topology(slot)
+            .unwrap_or(mod_api::PrimitiveTopology::Quads);
+        let topology = draw.effective_topology(base_topology);
+        if mesh_draw.instances.start > mesh_draw.instances.end {
+            return Err(PipelineDrawError::InvalidRange);
+        }
+        if vertices.len() != vertex_bindings.len() {
+            return Err(PipelineDrawError::VertexFormatMismatch);
+        }
+        let mut bound_slices = Vec::with_capacity(vertices.len());
+        for ((binding_idx, fmt), &slice) in vertex_bindings.iter().zip(vertices.iter()) {
+            let stride = fmt.stride as usize;
+            if slice.len() % 4 != 0 || slice.len() % stride != 0 {
+                return Err(PipelineDrawError::InvalidAlignment);
+            }
+            let record_count = slice.len() / stride;
+            match fmt.step_mode {
+                mod_api::VertexStepMode::Vertex => {
+                    if let mod_api::DrawRange::Vertices(ref range) = mesh_draw.range
+                        && (range.start > range.end || (range.end as usize) > record_count)
+                    {
+                        return Err(PipelineDrawError::InvalidRange);
+                    }
+                }
+                mod_api::VertexStepMode::Instance => {
+                    if (mesh_draw.instances.end as usize) > record_count {
+                        return Err(PipelineDrawError::InvalidRange);
+                    }
+                }
+                _ => return Err(PipelineDrawError::VertexFormatMismatch),
+            }
+            bound_slices.push((u32::from(*binding_idx), slice));
+        }
+        match &mesh_draw.range {
+            mod_api::DrawRange::Vertices(range) => {
+                if range.start > range.end {
+                    return Err(PipelineDrawError::InvalidRange);
+                }
+                let count = range.end - range.start;
+                if matches!(
+                    topology,
+                    mod_api::PrimitiveTopology::Quads | mod_api::PrimitiveTopology::Lines
+                ) && count % 4 != 0
+                {
+                    return Err(PipelineDrawError::InvalidRange);
+                }
+            }
+            mod_api::DrawRange::Indexed {
+                indices: idx_range, ..
+            } => {
+                let Some((fmt, idx_bytes)) = indices else {
+                    return Err(PipelineDrawError::MissingIndexBuffer);
+                };
+                let elem = fmt.byte_size() as usize;
+                if idx_bytes.len() % elem != 0 || idx_bytes.len() % 4 != 0 {
+                    return Err(PipelineDrawError::InvalidAlignment);
+                }
+                let idx_count = idx_bytes.len() / elem;
+                if idx_range.start > idx_range.end || (idx_range.end as usize) > idx_count {
+                    return Err(PipelineDrawError::InvalidRange);
+                }
+            }
+            _ => return Err(PipelineDrawError::InvalidRange),
+        }
+        let empty = mesh_draw.instances.is_empty()
+            || match &mesh_draw.range {
+                mod_api::DrawRange::Vertices(r) => r.is_empty(),
+                mod_api::DrawRange::Indexed { indices, .. } => indices.is_empty(),
+                _ => true,
+            };
+        if !empty {
+            draw.draw_vertices_slot(slot, &bound_slices, indices, mesh_draw);
+        }
         Ok(())
     }
     /// Resolve `model` once, cull copies against the frustum first, and skip any individual
