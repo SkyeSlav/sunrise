@@ -137,6 +137,23 @@ cap them. It doesn't load chunks or write to the world. A stale handle or unavai
 or state refuses the query. A nested enchanting-power query for an active provider state
 is also refused, even at another level or position; it can still ask a different state.
 
+## Where an enchanting table finds its bookshelves
+
+A table scans vanilla's 32 positions (the ring two blocks out, two blocks high). A mod adds
+positions with `registrar.add_enchanting_table_offsets(&[[3, 0, 0], ...])` in `register`; they
+follow vanilla's in mod load order, and one already scanned is dropped. The list is fixed at
+startup, so a mod whose offsets come from its settings needs a restart to change them; `/reload`
+doesn't re-run registration. Each added position adds one `nextInt(16)` draw to every table's
+particle tick on the client, and nothing to the server's offers.
+
+At each scanned position, `is_valid_book_shelf(level, table_pos, offset, valid)` decides whether
+it counts (`EnchantingTableBlock.isValidBookShelf`). `valid` starts at vanilla's answer: the block
+there has a nonzero enchanting power and the block halfway to the table (x and z halved, rounded
+toward zero) is in `#minecraft:enchantment_power_transmitter`. A position set to valid adds its
+block's enchanting power to the offers, so a block with none still adds 0. The client's
+glyphs ask it too, only where vanilla does (after that position's `nextInt(16)` draw is 0), so a
+mod that changes it belongs on both sides.
+
 ## Block classes
 
 `block_class(state, class)` answers what a mod would ask with `instanceof StairBlock`, `EntityBlock`,
