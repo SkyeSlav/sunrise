@@ -437,7 +437,11 @@ fn apply_registry_data(
                     Some(sunrise_client::lan::data::RegistryRef::new(*id as u32));
                 continue;
             }
-            (Species::Frog, 18, Value::Id(_)) => "minecraft:frog_variant",
+            (Species::Frog, 18, Value::Id(id)) => {
+                m.extra.frog_variant =
+                    Some(sunrise_client::lan::data::RegistryRef::new(*id as u32));
+                continue;
+            }
             (Species::Pig, 19, Value::Id(id)) => {
                 m.extra.pig_variant = Some(sunrise_client::lan::data::RegistryRef::new(*id as u32));
                 continue;
