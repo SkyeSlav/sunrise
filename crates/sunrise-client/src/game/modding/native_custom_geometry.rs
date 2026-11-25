@@ -510,6 +510,76 @@ impl Game<'_> {
         bindings: &mod_api::DrawBindings<'_>,
     ) -> Result<Option<sunrise_client::gfx::mod_pipelines::ResolvedDrawBindings>, PipelineDrawError>
     {
+        let writes_depth = self.pack.render.mod_pipelines.writes_depth(slot);
+        self.resolve_draw_bindings_with(slot, bindings, writes_depth, |is_texel, bytes| {
+            if is_texel {
+                draw.push_texel_data(bytes)
+            } else {
+                draw.push_inline_uniform(bytes)
+            }
+        })
+    }
+
+    /// Validate a custom [`RenderPipelineRef`] and resolve its set-1 [`mod_api::DrawBindings`]
+    /// for a GUI canvas draw (`#5430`), appending inline uniforms and texel data into `batch`.
+    pub(in crate::game) fn resolve_gui_pipeline_draw(
+        &self,
+        batch: &mut sunrise_client::hud::HudBatch,
+        pipeline: RenderPipelineRef,
+        bindings: &mod_api::DrawBindings<'_>,
+    ) -> Result<
+        (
+            u32,
+            Option<sunrise_client::gfx::mod_pipelines::ResolvedDrawBindings>,
+        ),
+        PipelineDrawError,
+    > {
+        let slot = self
+            .pack
+            .render
+            .mod_pipelines
+            .slot(pipeline)
+            .map_err(PipelineDrawError::Pipeline)?;
+        let topology = self
+            .pack
+            .render
+            .mod_pipelines
+            .topology(slot)
+            .unwrap_or(mod_api::PrimitiveTopology::Quads);
+        if !matches!(
+            topology,
+            mod_api::PrimitiveTopology::Quads | mod_api::PrimitiveTopology::Triangles
+        ) {
+            return Err(PipelineDrawError::TopologyMismatch);
+        }
+        if !self
+            .pack
+            .render
+            .mod_pipelines
+            .uses_default_vertex_format(slot)
+        {
+            return Err(PipelineDrawError::VertexFormatMismatch);
+        }
+        // GUI passes execute with depth writing off, so sampling `WorldDepth` is safe.
+        let resolved =
+            self.resolve_draw_bindings_with(slot, bindings, false, |is_texel, bytes| {
+                if is_texel {
+                    batch.push_mod_texel_data(bytes)
+                } else {
+                    batch.push_mod_inline_uniform(bytes)
+                }
+            })?;
+        Ok((slot, resolved))
+    }
+
+    fn resolve_draw_bindings_with(
+        &self,
+        slot: u32,
+        bindings: &mod_api::DrawBindings<'_>,
+        writes_depth: bool,
+        mut push_pool: impl FnMut(bool, &[u8]) -> std::ops::Range<usize>,
+    ) -> Result<Option<sunrise_client::gfx::mod_pipelines::ResolvedDrawBindings>, PipelineDrawError>
+    {
         let (layout, pc_size) = self
             .pack
             .render
@@ -533,9 +603,8 @@ impl Game<'_> {
             .as_ref()
             .ok_or(PipelineDrawError::Buffer(mod_api::BufferError::Unavailable))?;
         let owner = mod_api::content::crash::current_native_mod();
-        let writes_depth = self.pack.render.mod_pipelines.writes_depth(slot);
 
-        // Validate every declared entry before appending to `draw`'s byte pools so a refused
+        // Validate every declared entry before appending to the byte pools so a refused
         // draw appends nothing.
         enum StagedEntry<'a> {
             UniformBuffer {
@@ -697,7 +766,7 @@ impl Game<'_> {
                     );
                 }
                 StagedEntry::InlineUniform(bytes) => {
-                    let byte_range = draw.push_inline_uniform(bytes);
+                    let byte_range = push_pool(false, bytes);
                     resolved_entries.push(
                         sunrise_client::gfx::mod_pipelines::ResolvedSet1Entry::InlineUniform {
                             byte_range,
@@ -713,7 +782,7 @@ impl Game<'_> {
                     );
                 }
                 StagedEntry::TexelBytes(bytes) => {
-                    let byte_range = draw.push_texel_data(&bytes);
+                    let byte_range = push_pool(true, &bytes);
                     resolved_entries.push(
                         sunrise_client::gfx::mod_pipelines::ResolvedSet1Entry::TexelBuffer {
                             byte_range,
@@ -722,7 +791,7 @@ impl Game<'_> {
                 }
             }
         }
-        let push_constants = pc_slice.map(|bytes| draw.push_inline_uniform(bytes));
+        let push_constants = pc_slice.map(|bytes| push_pool(false, bytes));
         Ok(Some(
             sunrise_client::gfx::mod_pipelines::ResolvedDrawBindings {
                 entries: resolved_entries,

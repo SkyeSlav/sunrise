@@ -2323,9 +2323,10 @@ pub enum BindingValue<'a> {
     TexelBuffer(&'a [u8]),
 }
 
-/// Per-draw set-1 resource bindings passed to [`crate::WorldDrawContext::draw_mesh`] and
-/// [`crate::WorldDrawContext::draw_vertices`]. Pass `&DrawBindings::EMPTY` for pipelines with no
-/// custom bind-group entries or push constants.
+/// Per-draw set-1 resource bindings passed to [`crate::WorldDrawContext::draw_mesh`],
+/// [`crate::WorldDrawContext::draw_vertices`], [`crate::GuiCanvas::fill_with_pipeline`],
+/// [`crate::GuiCanvas::blit_with_pipeline`], and [`crate::GuiCanvas::blit_sprite_with_pipeline`].
+/// Pass `&DrawBindings::EMPTY` for pipelines with no custom bind-group entries or push constants.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 // no wire: local client per-draw resource bindings.

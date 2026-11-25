@@ -6,6 +6,7 @@ use crate::{
 };
 
 use super::hud_layout::{Blend, PoseOp};
+use super::render_pipeline::{DrawBindings, PipelineDrawError, RenderPipelineRef};
 
 /// A partial `blitSprite`, in the sprite's logical pixel units.
 // no wire: arguments to an in-process GUI draw
@@ -73,6 +74,8 @@ pub enum GuiDrawError {
     UnknownTexture,
     /// A texture-axis divisor was zero.
     BadBlitRegion,
+    /// The custom render pipeline or its bindings could not be used for this GUI draw.
+    Pipeline(PipelineDrawError),
 }
 
 impl std::fmt::Display for GuiDrawError {
@@ -89,6 +92,7 @@ impl std::fmt::Display for GuiDrawError {
             Self::BadSpriteRegion => "GUI sprite size must be positive",
             Self::UnknownTexture => "unknown GUI draw texture",
             Self::BadBlitRegion => "GUI blit texture-axis divisors must be nonzero",
+            Self::Pipeline(error) => return write!(f, "GUI draw pipeline: {error:?}"),
         })
     }
 }
@@ -241,5 +245,58 @@ pub trait GuiCanvas {
         hat: bool,
         flip: bool,
         argb: u32,
+    ) -> Result<(), GuiDrawError>;
+
+    /// Fill `rect = [x, y, w, h]` in the current pose and scissor with a custom
+    /// [`RenderPipelineRef`] and set-1 [`DrawBindings`]
+    /// (`GuiGraphicsExtractor.fill(RenderPipeline, x0, y0, x1, y1, color)`).
+    ///
+    /// Corners are sorted on both axes as in [`Self::fill`], `UV0` spans `[0.0, 0.0]` to
+    /// `[1.0, 1.0]`, and `Color` carries `argb`. The pipeline must use the default
+    /// `PositionTexColor` vertex format and [`crate::PrimitiveTopology::Quads`] or
+    /// [`crate::PrimitiveTopology::Triangles`]. Draws execute in exact painter's order alongside
+    /// standard GUI primitives, obeying active pose transforms, scissor clips, and both SDR and
+    /// HDR UI target formats.
+    fn fill_with_pipeline(
+        &mut self,
+        pipeline: RenderPipelineRef,
+        rect: [f32; 4],
+        argb: u32,
+        bindings: &DrawBindings<'_>,
+    ) -> Result<(), GuiDrawError>;
+
+    /// Draw a quad at `rect = [x, y, w, h]` with normalized UVs `uv = [u0, v0, u1, v1]` and
+    /// ARGB tint `argb`, using a custom [`RenderPipelineRef`] and set-1 [`DrawBindings`]
+    /// (`GuiGraphicsExtractor.blit(RenderPipeline, ...)`).
+    ///
+    /// Pass [`DrawBindings::EMPTY`] when `pipeline` declares no set-1 layout or push constants,
+    /// or bind textures (such as [`crate::TextureSource::DynamicTexture`],
+    /// [`crate::TextureSource::StandaloneTexture`], or a render target colour attachment) and
+    /// uniforms via `bindings`. Non-finite `rect` or `uv` values are refused with
+    /// [`GuiDrawError::NotFinite`].
+    fn blit_with_pipeline(
+        &mut self,
+        pipeline: RenderPipelineRef,
+        rect: [f32; 4],
+        uv: [f32; 4],
+        argb: u32,
+        bindings: &DrawBindings<'_>,
+    ) -> Result<(), GuiDrawError>;
+
+    /// Draw a present GUI sprite identified by `sprite` at `rect = [x, y, w, h]` with ARGB tint
+    /// `argb`, using a custom [`RenderPipelineRef`] and set-1 [`DrawBindings`]
+    /// (`GuiGraphicsExtractor.blitSprite(RenderPipeline, Identifier, ...)`).
+    ///
+    /// Resolves `sprite` in the GUI sprite atlas (accepting `"minecraft:<path>"` or
+    /// `"<ns>:<path>"`, refusing absent or removed sprites with [`GuiDrawError::UnknownSprite`]),
+    /// applies the sprite's `gui.scaling` (stretch, tile, or nine-slice), and emits its atlas UVs
+    /// to `pipeline` in exact painter's order.
+    fn blit_sprite_with_pipeline(
+        &mut self,
+        pipeline: RenderPipelineRef,
+        sprite: &Identifier,
+        rect: [f32; 4],
+        argb: u32,
+        bindings: &DrawBindings<'_>,
     ) -> Result<(), GuiDrawError>;
 }

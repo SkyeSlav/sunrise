@@ -342,6 +342,14 @@ impl HudRenderer {
             zoom: 1.0,
         })
     }
+    /// The colour target format this HUD renderer targets.
+    pub(crate) fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+    /// Whether this HUD renderer compiles and uses HDR coverage pipelines (`hud_coverage`).
+    pub(crate) fn coverage(&self) -> bool {
+        self.coverage
+    }
     /// Draw the CIT glint layers of `textures` (the pack's enchantment rules); `None` or no
     /// textures draws none.
     pub fn set_cit_glints(
@@ -525,7 +533,26 @@ impl HudRenderer {
         batch: &HudBatch,
         size: [u32; 2],
         vertices: std::ops::Range<u32>,
+        timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
+    ) {
+        self.draw_range_with_mod_pipelines(
+            encoder, target, coverage, depth, batch, size, vertices, timing, None,
+        );
+    }
+    /// Draw part of the prepared batch, preserving its blend/depth runs and executing any
+    /// custom mod-pipeline spans (`Blend::ModPipeline`) in exact painter's order (`#5430`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_range_with_mod_pipelines(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        coverage: Option<&wgpu::TextureView>,
+        depth: &wgpu::TextureView,
+        batch: &HudBatch,
+        size: [u32; 2],
+        vertices: std::ops::Range<u32>,
         mut timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
+        mod_pipelines: Option<&crate::gfx::mod_pipelines::ModPipelines>,
     ) {
         if vertices.is_empty() || size.contains(&0) {
             return;
@@ -641,6 +668,19 @@ impl HudRenderer {
                         Blend::CitGlint(blend) => {
                             if let Some(cit) = &self.cit_glint {
                                 cit.draw(&mut pass, *blend, range, coverage.is_some());
+                            }
+                            continue;
+                        }
+                        Blend::ModPipeline(draw_idx) => {
+                            if let Some(mod_pipelines) = mod_pipelines {
+                                mod_pipelines.draw_gui(
+                                    &mut pass,
+                                    *draw_idx,
+                                    range,
+                                    coverage.is_some(),
+                                );
+                                pass.set_bind_group(0, &self.group, &[]);
+                                pass.set_vertex_buffer(0, self.buffer.slice(..));
                             }
                             continue;
                         }

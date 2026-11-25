@@ -6,8 +6,8 @@ use crate::game::{
     api_values::{TryIntoEngine, stack_value},
 };
 use mod_api::{
-    GuiBlitRegion, GuiCanvas, GuiDrawError, GuiSpriteRegion, ItemStack, Text, TextLayoutSize,
-    TextLayoutSpec,
+    DrawBindings, GuiBlitRegion, GuiCanvas, GuiDrawError, GuiSpriteRegion, Identifier, ItemStack,
+    RenderPipelineRef, Text, TextLayoutSize, TextLayoutSpec,
 };
 use sunrise_client::{
     hud::{GuiSprite, HudAtlas, HudBatch},
@@ -477,6 +477,95 @@ impl GuiCanvas for GameGuiCanvas<'_, '_> {
             self.paint(|batch, atlas| {
                 paint_player_face(batch, atlas, skin, dst, hat, flip, argb);
             })
+        })
+    }
+
+    fn fill_with_pipeline(
+        &mut self,
+        pipeline: RenderPipelineRef,
+        rect @ [x, y, ..]: [f32; 4],
+        argb: u32,
+        bindings: &DrawBindings<'_>,
+    ) -> Result<(), GuiDrawError> {
+        let [x1, y1] = rect_end(rect)?;
+        let (left, right) = (x.min(x1), x.max(x1));
+        let (top, bottom) = (y.min(y1), y.max(y1));
+        let game = self.game.ok_or(GuiDrawError::Unavailable)?;
+        self.paint_in_pose(self.pose, |batch, _| {
+            let (slot, resolved) = game
+                .resolve_gui_pipeline_draw(batch, pipeline, bindings)
+                .map_err(GuiDrawError::Pipeline)?;
+            let start = batch.vertices.len();
+            batch.quad(
+                [[left, top], [right, top], [right, bottom], [left, bottom]],
+                [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                abgr(argb),
+            );
+            batch.mod_pipeline_since(start, slot, resolved);
+            Ok(())
+        })
+    }
+
+    fn blit_with_pipeline(
+        &mut self,
+        pipeline: RenderPipelineRef,
+        rect @ [x, y, w, h]: [f32; 4],
+        uv @ [u0, v0, u1, v1]: [f32; 4],
+        argb: u32,
+        bindings: &DrawBindings<'_>,
+    ) -> Result<(), GuiDrawError> {
+        rect_end(rect)?;
+        if !uv.into_iter().all(f32::is_finite) {
+            return Err(GuiDrawError::NotFinite);
+        }
+        let game = self.game.ok_or(GuiDrawError::Unavailable)?;
+        self.paint_in_pose(self.pose, |batch, _| {
+            let (slot, resolved) = game
+                .resolve_gui_pipeline_draw(batch, pipeline, bindings)
+                .map_err(GuiDrawError::Pipeline)?;
+            let start = batch.vertices.len();
+            batch.quad(
+                [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+                [[u0, v0], [u1, v0], [u1, v1], [u0, v1]],
+                abgr(argb),
+            );
+            batch.mod_pipeline_since(start, slot, resolved);
+            Ok(())
+        })
+    }
+
+    fn blit_sprite_with_pipeline(
+        &mut self,
+        pipeline: RenderPipelineRef,
+        sprite: &Identifier,
+        rect: [f32; 4],
+        argb: u32,
+        bindings: &DrawBindings<'_>,
+    ) -> Result<(), GuiDrawError> {
+        rect_end(rect)?;
+        let sprite_name = sprite.to_string();
+        let Some(GuiSprite::Present {
+            rect: sprite_rect, ..
+        }) = self.atlas.gui_lookup(&sprite_name)
+        else {
+            return Err(GuiDrawError::UnknownSprite);
+        };
+        let game = self.game.ok_or(GuiDrawError::Unavailable)?;
+        self.paint_in_pose(self.pose, |batch, atlas| {
+            let (slot, resolved) = game
+                .resolve_gui_pipeline_draw(batch, pipeline, bindings)
+                .map_err(GuiDrawError::Pipeline)?;
+            let start = batch.vertices.len();
+            sunrise_client::ui::draw_whole_sprite(
+                batch,
+                atlas,
+                &sprite_name,
+                sprite_rect,
+                rect,
+                abgr(argb),
+            );
+            batch.mod_pipeline_since(start, slot, resolved);
+            Ok(())
         })
     }
 }
@@ -978,5 +1067,93 @@ mod tests {
         })
         .unwrap();
         assert!(batch.vertices.is_empty());
+    }
+
+    #[test]
+    fn pipeline_gui_draws_reject_non_finite_unknown_sprite_and_missing_game() {
+        let mut atlas = HudAtlas::build(&ResourceSource::directory(
+            "/nonexistent/sunrise-test-assets".into(),
+        ))
+        .unwrap();
+        atlas.live.insert(
+            "test:panel".into(),
+            Rect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 0.5,
+                v1: 0.5,
+                w: 16,
+                h: 16,
+            },
+        );
+        let mut batch = HudBatch::scratch([320, 240]);
+        let handle = mod_api::__private::built::render_pipeline_ref(1, 0);
+        let present = Identifier::parse("test:panel").unwrap();
+        let absent = Identifier::parse("test:missing").unwrap();
+        GameGuiCanvas::draw(&mut batch, &atlas, None, None, &mut |root| {
+            assert_eq!(
+                root.fill_with_pipeline(
+                    handle,
+                    [f32::NAN, 0.0, 10.0, 10.0],
+                    0xFFFF_FFFF,
+                    &DrawBindings::EMPTY,
+                ),
+                Err(GuiDrawError::NotFinite)
+            );
+            assert_eq!(
+                root.fill_with_pipeline(
+                    handle,
+                    [0.0, 0.0, 10.0, 10.0],
+                    0xFFFF_FFFF,
+                    &DrawBindings::EMPTY,
+                ),
+                Err(GuiDrawError::Unavailable)
+            );
+            assert_eq!(
+                root.blit_with_pipeline(
+                    handle,
+                    [0.0, 0.0, 10.0, 10.0],
+                    [0.0, f32::INFINITY, 1.0, 1.0],
+                    0xFFFF_FFFF,
+                    &DrawBindings::EMPTY,
+                ),
+                Err(GuiDrawError::NotFinite)
+            );
+            assert_eq!(
+                root.blit_with_pipeline(
+                    handle,
+                    [0.0, 0.0, 10.0, 10.0],
+                    [0.0, 0.0, 1.0, 1.0],
+                    0xFFFF_FFFF,
+                    &DrawBindings::EMPTY,
+                ),
+                Err(GuiDrawError::Unavailable)
+            );
+            assert_eq!(
+                root.blit_sprite_with_pipeline(
+                    handle,
+                    &absent,
+                    [0.0, 0.0, 16.0, 16.0],
+                    0xFFFF_FFFF,
+                    &DrawBindings::EMPTY,
+                ),
+                Err(GuiDrawError::UnknownSprite)
+            );
+            assert_eq!(
+                root.blit_sprite_with_pipeline(
+                    handle,
+                    &present,
+                    [0.0, 0.0, 16.0, 16.0],
+                    0xFFFF_FFFF,
+                    &DrawBindings::EMPTY,
+                ),
+                Err(GuiDrawError::Unavailable)
+            );
+            Ok(())
+        })
+        .unwrap();
+        assert!(batch.vertices.is_empty());
+        assert!(batch.blends.is_empty());
+        assert!(batch.mod_pipeline_draws.is_empty());
     }
 }

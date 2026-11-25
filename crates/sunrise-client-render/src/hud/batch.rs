@@ -118,7 +118,24 @@ pub struct HudBatch {
     pub blur_at: u32,
     /// Player object profiles encountered while painting text this frame.
     pub inline_profiles: Vec<std::sync::Arc<serde_json::Value>>,
+    /// Custom mod-pipeline draw metadata referenced by `Blend::ModPipeline(index)` (`#5430`).
+    pub mod_pipeline_draws: Vec<GuiPipelineDraw>,
+    /// Per-frame inline uniform & push-constant byte pool referenced by `mod_pipeline_draws`.
+    pub mod_inline_uniforms: Vec<u8>,
+    /// Per-frame expanded texel-buffer byte pool referenced by `mod_pipeline_draws`.
+    pub mod_texel_data: Vec<u8>,
 }
+
+/// One custom mod-pipeline draw command recorded in a [`HudBatch`] (`#5430`).
+#[derive(Clone, Debug)]
+pub struct GuiPipelineDraw {
+    /// Pipeline slot in the active [`crate::mod_pipelines::Pipelines`].
+    pub slot: u32,
+    /// Optional resolved set-1 bindings (`None` when the pipeline declares no set-1 layout or
+    /// push constants).
+    pub bindings: Option<crate::gfx::mod_pipelines::ResolvedDrawBindings>,
+}
+
 struct HudTail {
     vertices: usize,
     pictures: usize,
@@ -130,6 +147,9 @@ struct HudTail {
     end_portal: EndPortalFill,
     glint_alpha: f32,
     blur_at: u32,
+    mod_pipeline_draws: usize,
+    mod_inline_uniforms: usize,
+    mod_texel_data: usize,
 }
 
 struct HudDrawRollback<'a> {
@@ -153,6 +173,13 @@ impl Drop for HudDrawRollback<'_> {
         self.batch.end_portal = tail.end_portal;
         self.batch.glint_alpha = tail.glint_alpha;
         self.batch.blur_at = tail.blur_at;
+        self.batch
+            .mod_pipeline_draws
+            .truncate(tail.mod_pipeline_draws);
+        self.batch
+            .mod_inline_uniforms
+            .truncate(tail.mod_inline_uniforms);
+        self.batch.mod_texel_data.truncate(tail.mod_texel_data);
     }
 }
 
@@ -161,6 +188,9 @@ pub struct HudPaintCheckpoint {
     start: usize,
     pictures: usize,
     profiles: usize,
+    mod_pipeline_draws: usize,
+    mod_inline_uniforms: usize,
+    mod_texel_data: usize,
 }
 
 impl HudPaintCheckpoint {
@@ -182,6 +212,9 @@ impl HudPaintCheckpoint {
         // Glyph atlas uploads are reusable by other painters.
         batch.pictures.truncate(self.pictures);
         batch.inline_profiles.truncate(self.profiles);
+        batch.mod_pipeline_draws.truncate(self.mod_pipeline_draws);
+        batch.mod_inline_uniforms.truncate(self.mod_inline_uniforms);
+        batch.mod_texel_data.truncate(self.mod_texel_data);
     }
 }
 
@@ -212,6 +245,9 @@ pub enum Blend {
     /// An OptiFine CIT glint layer (`cit_glint`), blended as entry `n` of
     /// `GlintTextures::blends` says.
     CitGlint(u8),
+    /// A custom mod `RenderPipeline` draw (`GuiCanvas::{fill,blit,blit_sprite}_with_pipeline`),
+    /// indexing [`HudBatch::mod_pipeline_draws`].
+    ModPipeline(usize),
 }
 impl Blend {
     pub(super) fn scissor(self) -> Option<[u32; 4]> {
@@ -272,6 +308,9 @@ impl HudBatch {
             game_time: 0.0,
             blur_at: 0,
             inline_profiles: Vec::new(),
+            mod_pipeline_draws: Vec::new(),
+            mod_inline_uniforms: Vec::new(),
+            mod_texel_data: Vec::new(),
         }
     }
     /// An offscreen or test batch, independent of the active view's settings.
@@ -290,6 +329,9 @@ impl HudBatch {
             start: self.vertices.len(),
             pictures: self.pictures.len(),
             profiles: self.inline_profiles.len(),
+            mod_pipeline_draws: self.mod_pipeline_draws.len(),
+            mod_inline_uniforms: self.mod_inline_uniforms.len(),
+            mod_texel_data: self.mod_texel_data.len(),
         }
     }
 
@@ -312,6 +354,9 @@ impl HudBatch {
             end_portal: self.end_portal,
             glint_alpha: self.glint_alpha,
             blur_at: self.blur_at,
+            mod_pipeline_draws: self.mod_pipeline_draws.len(),
+            mod_inline_uniforms: self.mod_inline_uniforms.len(),
+            mod_texel_data: self.mod_texel_data.len(),
         };
         let mut rollback = HudDrawRollback {
             batch: self,
@@ -338,6 +383,34 @@ impl HudBatch {
             Some((last, b)) if last.end == range.start && *b == blend => last.end = range.end,
             _ => self.blends.push((range, blend)),
         }
+    }
+    /// Append inline std140 uniform or push-constant bytes for a GUI custom-pipeline draw.
+    pub fn push_mod_inline_uniform(&mut self, bytes: &[u8]) -> std::ops::Range<usize> {
+        let start = self.mod_inline_uniforms.len();
+        self.mod_inline_uniforms.extend_from_slice(bytes);
+        start..self.mod_inline_uniforms.len()
+    }
+    /// Append expanded `i32`/`u32` texel-buffer bytes for a GUI custom-pipeline draw.
+    pub fn push_mod_texel_data(&mut self, bytes: &[u8]) -> std::ops::Range<usize> {
+        let start = self.mod_texel_data.len();
+        self.mod_texel_data.extend_from_slice(bytes);
+        start..self.mod_texel_data.len()
+    }
+    /// Draw the vertices added since `start` with custom mod pipeline `slot` and resolved set-1
+    /// `bindings` (`#5430`). Empty vertex ranges are skipped.
+    pub fn mod_pipeline_since(
+        &mut self,
+        start: usize,
+        slot: u32,
+        bindings: Option<crate::gfx::mod_pipelines::ResolvedDrawBindings>,
+    ) {
+        if self.vertices.len() <= start {
+            return;
+        }
+        let index = self.mod_pipeline_draws.len();
+        self.mod_pipeline_draws
+            .push(GuiPipelineDraw { slot, bindings });
+        self.blend_since(start, Blend::ModPipeline(index));
     }
     /// Make an ordinary GUI sprite draw use its registered atlas page, if it has one.
     pub fn bind_gui_atlas(&mut self, start: usize, atlas: &HudAtlas, name: &str) {
@@ -1060,5 +1133,72 @@ mod bounds_tests {
             batch.visible_vertex_bounds(ordinary),
             Some([319.0, 1.0, 1.5, 2.0])
         );
+    }
+
+    #[test]
+    fn mod_pipeline_draws_preserve_painters_order_and_roll_back_on_scope_or_checkpoint() {
+        let atlas = HudAtlas::build(&crate::resource_source::ResourceSource::directory(
+            "/nonexistent/sunrise-test-assets".into(),
+        ))
+        .unwrap();
+        let mut batch = HudBatch::scratch([320, 240]);
+        let uv = Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 1,
+            h: 1,
+        };
+        batch.rect_uv(0.0, 0.0, 10.0, 10.0, uv, u32::MAX);
+        let start = batch.vertices.len();
+        let ubo = batch.push_mod_inline_uniform(&[1u8; 16]);
+        batch.rect_uv(10.0, 0.0, 10.0, 10.0, uv, u32::MAX);
+        batch.mod_pipeline_since(
+            start,
+            2,
+            Some(crate::gfx::mod_pipelines::ResolvedDrawBindings {
+                entries: vec![
+                    crate::gfx::mod_pipelines::ResolvedSet1Entry::InlineUniform { byte_range: ubo },
+                ],
+                push_constants: None,
+            }),
+        );
+        batch.rect_uv(20.0, 0.0, 10.0, 10.0, uv, u32::MAX);
+        assert_eq!(
+            batch.runs(),
+            vec![
+                (0..6, Blend::Alpha),
+                (6..12, Blend::ModPipeline(0)),
+                (12..18, Blend::Alpha),
+            ]
+        );
+        assert_eq!(batch.mod_pipeline_draws.len(), 1);
+        assert_eq!(batch.mod_inline_uniforms.len(), 16);
+
+        let aborted: Result<(), ()> = batch.draw_scope(&atlas.font, |batch| {
+            let s = batch.vertices.len();
+            let _ = batch.push_mod_inline_uniform(&[2u8; 16]);
+            let _ = batch.push_mod_texel_data(&[3u8; 8]);
+            batch.rect_uv(30.0, 0.0, 10.0, 10.0, uv, u32::MAX);
+            batch.mod_pipeline_since(s, 3, None);
+            Err(())
+        });
+        assert!(aborted.is_err());
+        assert_eq!(batch.vertices.len(), 18);
+        assert_eq!(batch.mod_pipeline_draws.len(), 1);
+        assert_eq!(batch.mod_inline_uniforms.len(), 16);
+        assert!(batch.mod_texel_data.is_empty());
+
+        let cp = batch.paint_checkpoint();
+        let s = batch.vertices.len();
+        let _ = batch.push_mod_inline_uniform(&[4u8; 16]);
+        batch.rect_uv(40.0, 0.0, 10.0, 10.0, uv, u32::MAX);
+        batch.mod_pipeline_since(s, 4, None);
+        assert_eq!(batch.mod_pipeline_draws.len(), 2);
+        cp.discard(&mut batch);
+        assert_eq!(batch.vertices.len(), 18);
+        assert_eq!(batch.mod_pipeline_draws.len(), 1);
+        assert_eq!(batch.mod_inline_uniforms.len(), 16);
     }
 }

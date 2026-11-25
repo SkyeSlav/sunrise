@@ -186,6 +186,18 @@ struct PreparedDraw {
     set1_bind_group: Option<(wgpu::BindGroup, Vec<u32>)>,
 }
 
+/// A GUI custom-pipeline draw prepared for [`ModPipelines::draw_gui`] (`#5430`).
+struct PreparedGuiDraw {
+    slot: usize,
+    /// First vertex index of this draw's run in `HudBatch::vertices`.
+    hud_start: u32,
+    /// First vertex index of this draw's converted `PipelineVertex` slice in `gui_vbuf`.
+    gui_vbase: u32,
+    /// Number of vertices in this draw.
+    vertex_count: u32,
+    set1_bind_group: Option<(wgpu::BindGroup, Vec<u32>)>,
+}
+
 /// Where textured pipelines' textures come from when the renderer builds them
 /// ([`mod_api::RenderPipeline::textured`]).
 #[derive(Clone, Copy)]
@@ -237,6 +249,46 @@ pub(crate) fn fallback_vanilla_blocks(
     data[64..80].copy_from_slice(&view_proj.to_cols_array());
     // DynamicTransforms (offset 512 -> float 128): ModelViewMat, TextureMat, ColorModulator, ModelOffset.
     data[128..144].copy_from_slice(&Mat4::IDENTITY.to_cols_array());
+    data[144..160].copy_from_slice(&Mat4::IDENTITY.to_cols_array());
+    data[160..164].fill(1.0);
+    let mut bytes = [0u8; 1024];
+    bytes.copy_from_slice(bytemuck::cast_slice(&data));
+    bytes
+}
+
+/// Construct the 1024-byte vanilla uniform blocks for GUI custom-pipeline draws (`#5430`),
+/// matching vanilla 26.3's `GuiRenderer` (`Projection.setupOrtho(1000, 11000, width, height,
+/// true)` with `zZeroToOne = true` and `DynamicTransforms.ModelViewMat` placed inside the
+/// orthographic depth range so `Position.z == 0` stays strictly inside wgpu's `[0, 1]` clip depth).
+pub(crate) fn gui_vanilla_blocks(
+    batch: &crate::hud::HudBatch,
+    viewport: [u32; 2],
+    scale: f32,
+) -> [u8; 1024] {
+    let mut data = [0f32; 256];
+    // Globals (offset 0): GlintAlpha(3), GameTime(7), ScreenSize(8..10).
+    data[3] = batch.glint_alpha;
+    data[7] = batch.game_time;
+    data[8] = viewport[0] as f32;
+    data[9] = viewport[1] as f32;
+    // Projection (offset 256 -> float 64): JOML setOrtho(0, w, h, 0, near=11000, far=1000, zZeroToOne=true).
+    let scale = scale.max(1.0);
+    let w = (viewport[0] as f32 / scale).max(1.0);
+    let h = (viewport[1] as f32 / scale).max(1.0);
+    let (near, far) = (11000.0f32, 1000.0f32);
+    data[64] = 2.0 / w;
+    data[64 + 5] = -2.0 / h;
+    data[64 + 10] = -1.0 / (far - near);
+    data[64 + 12] = -1.0;
+    data[64 + 13] = 1.0;
+    data[64 + 14] = -near / (far - near);
+    data[64 + 15] = 1.0;
+    // DynamicTransforms (offset 512 -> float 128): ModelViewMat (translate z by -10000 so z=0
+    // maps to clip z = 0.1, safely inside [0, 1] without floating-point boundary clipping),
+    // TextureMat (identity), ColorModulator (white).
+    data[128..144].copy_from_slice(
+        &Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -10000.0)).to_cols_array(),
+    );
     data[144..160].copy_from_slice(&Mat4::IDENTITY.to_cols_array());
     data[160..164].fill(1.0);
     let mut bytes = [0u8; 1024];
@@ -619,6 +671,7 @@ struct Compiled {
     pipeline_layout: wgpu::PipelineLayout,
     group: wgpu::BindGroup,
     pack_group: wgpu::BindGroup,
+    gui_group: wgpu::BindGroup,
     set1_layout: Option<wgpu::BindGroupLayout>,
     set1_entries: Vec<CompiledSet1Entry>,
     push_constant_slot: Option<(u32, u32)>,
@@ -628,6 +681,14 @@ struct Compiled {
     /// Vanilla-gamma fragment shader for shader-pack `colortex0` targets (when `linear_light`
     /// differs from the pack's gamma encoding, `pack_fragment_shader` holds the undecoded stage).
     pack_fragment_shader: Option<wgpu::ShaderModule>,
+    /// Vanilla-gamma fragment naga module kept for lazy GUI `hud_coverage` wrapping (`#5430`).
+    gamma_fragment_naga: naga::Module,
+    /// Lazily compiled GUI render pipeline (with optional HDR coverage variant) for
+    /// `(overlay_format, coverage)`.
+    gui_pipeline: Option<(
+        (wgpu::TextureFormat, bool),
+        Option<super::hud_coverage::Pipeline>,
+    )>,
     state: PipelineState,
     color_targets: Vec<Option<ColorTargetState>>,
     vertex_layouts: Vec<OwnedVertexBufferLayout>,
@@ -654,6 +715,8 @@ pub struct ModPipelines {
     vanilla: wgpu::Buffer,
     /// Same blocks with `Projection` adapted to shader-pack GL coordinates (`pack_clip_matrix`).
     pack_vanilla: wgpu::Buffer,
+    /// Same blocks populated with GUI orthographic projection for `GuiCanvas` draws (`#5430`).
+    gui_vanilla: wgpu::Buffer,
     vertices: VertexPages,
     oit_vertices: VertexPages,
     transient_vbuf: Option<wgpu::Buffer>,
@@ -668,6 +731,16 @@ pub struct ModPipelines {
     texel_staging: Vec<u8>,
     /// Steady-state cache of set-1 `wgpu::BindGroup`s (cleared on reload or ring reallocation).
     set1_bind_group_cache: HashMap<Set1CacheKey, wgpu::BindGroup>,
+    /// Dedicated per-frame GUI custom-pipeline vertex/uniform/texel buffers (lazily allocated
+    /// only when a frame submits GUI custom-pipeline draws, keeping zero-draw frames free and
+    /// preventing buffer aliasing with world passes staged on the same command encoder).
+    gui_vbuf: Option<wgpu::Buffer>,
+    gui_inline_uniform_buf: Option<wgpu::Buffer>,
+    gui_inline_uniform_staging: Vec<u8>,
+    gui_texel_storage_buf: Option<wgpu::Buffer>,
+    gui_texel_staging: Vec<u8>,
+    gui_set1_bind_group_cache: HashMap<Set1CacheKey, wgpu::BindGroup>,
+    gui_draws: Vec<Option<PreparedGuiDraw>>,
     fan_indices: FanIndices,
     /// The load `pipelines` was built from; 0 before any.
     generation: u64,
@@ -925,6 +998,7 @@ impl ModPipelines {
         };
         let vanilla = buffer("Mod pipeline vanilla uniforms");
         let pack_vanilla = buffer("Mod pipeline pack vanilla uniforms");
+        let gui_vanilla = buffer("Mod pipeline GUI vanilla uniforms");
         Self {
             color_format,
             linear_light,
@@ -933,6 +1007,7 @@ impl ModPipelines {
             mod_samplers,
             vanilla,
             pack_vanilla,
+            gui_vanilla,
             vertices: VertexPages::default(),
             oit_vertices: VertexPages::default(),
             transient_vbuf: None,
@@ -944,6 +1019,13 @@ impl ModPipelines {
             texel_storage_buf: None,
             texel_staging: Vec::new(),
             set1_bind_group_cache: HashMap::new(),
+            gui_vbuf: None,
+            gui_inline_uniform_buf: None,
+            gui_inline_uniform_staging: Vec::new(),
+            gui_texel_storage_buf: None,
+            gui_texel_staging: Vec::new(),
+            gui_set1_bind_group_cache: HashMap::new(),
+            gui_draws: Vec::new(),
             fan_indices: FanIndices::default(),
             generation: 0,
             oit_generation: 0,
@@ -1474,6 +1556,7 @@ impl ModPipelines {
         };
         let group = make_group("Mod pipeline", &self.vanilla);
         let pack_group = make_group("Mod pipeline (pack)", &self.pack_vanilla);
+        let gui_group = make_group("Mod pipeline (gui)", &self.gui_vanilla);
         let (set1_layout, set1_entries, push_constant_slot) = build_set1_layout(device, built)?;
         let mut bind_group_layouts = vec![Some(&group_layout)];
         if let Some(ref set1) = set1_layout {
@@ -1526,12 +1609,15 @@ impl ModPipelines {
             pipeline_layout,
             group,
             pack_group,
+            gui_group,
             set1_layout,
             set1_entries,
             push_constant_slot,
             vertex_shader,
             fragment_shader,
             pack_fragment_shader,
+            gamma_fragment_naga: built.program.fragment.clone(),
+            gui_pipeline: None,
             state: built.state,
             color_targets: built.color_targets.clone(),
             vertex_layouts,
@@ -1658,6 +1744,8 @@ impl ModPipelines {
         self.pipelines = pipelines;
         self.pack_pipelines = None;
         self.set1_bind_group_cache.clear();
+        self.gui_set1_bind_group_cache.clear();
+        self.gui_draws.clear();
         Ok(())
     }
 
@@ -3155,6 +3243,547 @@ impl ModPipelines {
                 pass.draw_indexed(range.start * 6..range.end * 6, 0, 0..1);
             }
         }
+    }
+
+    /// Lazily compile the GUI variant (depth off, vanilla-gamma fragment shader, optional HDR
+    /// `hud_coverage` wrapper) for `compiled` targeting `(format, coverage)`.
+    fn ensure_gui_pipeline(
+        device: &wgpu::Device,
+        compiled: &mut Compiled,
+        format: wgpu::TextureFormat,
+        coverage: bool,
+    ) {
+        if let Some(((cached_fmt, cached_cov), _)) = &compiled.gui_pipeline
+            && *cached_fmt == format
+            && *cached_cov == coverage
+        {
+            return;
+        }
+        if compiled.state.polygon == PolygonMode::Line
+            && !device
+                .features()
+                .contains(wgpu::Features::POLYGON_MODE_LINE)
+        {
+            log::warn!(
+                "Sunrise: GUI pipeline {} refused: PolygonMode::Line requires POLYGON_MODE_LINE",
+                compiled.id
+            );
+            compiled.gui_pipeline = Some(((format, coverage), None));
+            return;
+        }
+        let fragment_shader = compiled
+            .pack_fragment_shader
+            .as_ref()
+            .unwrap_or(&compiled.fragment_shader);
+        let buffers = [Some(PipelineVertex::buffer_layout())];
+        let targets = [Some(wgpu::ColorTargetState {
+            format,
+            blend: wgpu_blend_state(compiled.state.blend),
+            write_mask: wgpu_color_writes(compiled.state.color_write),
+        })];
+        let label = format!("{}/gui", compiled.id);
+        let desc = wgpu::RenderPipelineDescriptor {
+            label: Some(&label),
+            layout: Some(&compiled.pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &compiled.vertex_shader,
+                entry_point: Some(ENTRY),
+                compilation_options: Default::default(),
+                buffers: &buffers,
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: compiled.state.cull.then_some(wgpu::Face::Back),
+                polygon_mode: match compiled.state.polygon {
+                    PolygonMode::Line => wgpu::PolygonMode::Line,
+                    _ => wgpu::PolygonMode::Fill,
+                },
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: fragment_shader,
+                entry_point: Some(ENTRY),
+                compilation_options: Default::default(),
+                targets: &targets,
+            }),
+            multiview_mask: None,
+            cache: None,
+        };
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let source = wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(
+            compiled.gamma_fragment_naga.clone(),
+        ));
+        let built = super::hud_coverage::Pipeline::new(device, &desc, source, coverage);
+        let internal = pollster::block_on(internal.pop());
+        let validation = pollster::block_on(validation.pop());
+        match (internal.or(validation), built) {
+            (None, Some(pipeline)) => {
+                compiled.gui_pipeline = Some(((format, coverage), Some(pipeline)));
+            }
+            (Some(error), _) => {
+                log::warn!("Sunrise: GUI pipeline {label} refused: {error}");
+                compiled.gui_pipeline = Some(((format, coverage), None));
+            }
+            (None, None) => {
+                log::warn!(
+                    "Sunrise: GUI pipeline {label} refused: fragment shader has no colour output"
+                );
+                compiled.gui_pipeline = Some(((format, coverage), None));
+            }
+        }
+    }
+
+    /// Stage GUI custom-pipeline draws (`#5430`) recorded in `batch` before the frame's passes.
+    /// Zero work when `batch.mod_pipeline_draws` is empty.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_gui(
+        &mut self,
+        device: &wgpu::Device,
+        upload: Upload<'_>,
+        batch: &crate::hud::HudBatch,
+        size: [u32; 2],
+        scale: f32,
+        format: wgpu::TextureFormat,
+        coverage: bool,
+    ) {
+        self.gui_draws.clear();
+        if batch.mod_pipeline_draws.is_empty() || size.contains(&0) {
+            return;
+        }
+        let blocks = gui_vanilla_blocks(batch, size, scale);
+        upload(&self.gui_vanilla, &blocks);
+
+        self.gui_draws
+            .resize_with(batch.mod_pipeline_draws.len(), || None);
+        self.gui_inline_uniform_staging.clear();
+        self.gui_texel_staging.clear();
+
+        let limits = device.limits();
+        let ubo_align = (limits.min_uniform_buffer_offset_alignment as usize).max(16);
+        let storage_align = (limits.min_storage_buffer_offset_alignment as usize).max(16);
+
+        struct StagedGuiSet1<'a> {
+            draw_idx: usize,
+            slot: usize,
+            inline_spans: Vec<(u32, u64)>,
+            texel_spans: Vec<(u64, u64)>,
+            bindings: &'a ResolvedDrawBindings,
+        }
+
+        let mut gui_vertices: Vec<PipelineVertex> = Vec::new();
+        let mut staged: Vec<StagedGuiSet1<'_>> = Vec::new();
+        let to_pv = |v: crate::hud::HudVertex| PipelineVertex {
+            pos: [v.pos[0], v.pos[1], 0.0],
+            uv: v.uv,
+            color: v.color,
+        };
+
+        for (run_range, blend) in batch.runs() {
+            let crate::hud::Blend::ModPipeline(draw_idx) = blend else {
+                continue;
+            };
+            let Some(draw) = batch.mod_pipeline_draws.get(draw_idx) else {
+                continue;
+            };
+            let slot = draw.slot as usize;
+            let Some(Some(compiled)) = self.pipelines.get_mut(slot) else {
+                continue;
+            };
+            Self::ensure_gui_pipeline(device, compiled, format, coverage);
+            if !compiled
+                .gui_pipeline
+                .as_ref()
+                .is_some_and(|(_, p)| p.is_some())
+            {
+                continue;
+            }
+            let Some(verts) = batch
+                .vertices
+                .get(run_range.start as usize..run_range.end as usize)
+            else {
+                continue;
+            };
+            let gui_vbase = gui_vertices.len() as u32;
+            // `HudBatch::quad` winds triangles CW in clip space (Y-down -> Y-up); swap indices
+            // 1 and 2 per triangle to match vanilla `GuiRenderer`'s CCW front-face winding.
+            for tri in verts.chunks_exact(3) {
+                gui_vertices.push(to_pv(tri[0]));
+                gui_vertices.push(to_pv(tri[2]));
+                gui_vertices.push(to_pv(tri[1]));
+            }
+            let vertex_count = gui_vertices.len() as u32 - gui_vbase;
+            if vertex_count == 0 {
+                continue;
+            }
+            self.gui_draws[draw_idx] = Some(PreparedGuiDraw {
+                slot,
+                hud_start: run_range.start,
+                gui_vbase,
+                vertex_count,
+                set1_bind_group: None,
+            });
+
+            if compiled.set1_layout.is_none() {
+                continue;
+            }
+            let Some(bindings) = &draw.bindings else {
+                continue;
+            };
+            if bindings.entries.len() != compiled.set1_entries.len() {
+                continue;
+            }
+            let mut inline_spans = Vec::new();
+            let mut texel_spans = Vec::new();
+            let mut ok = true;
+            for (entry, spec) in bindings.entries.iter().zip(&compiled.set1_entries) {
+                match (entry, spec.kind) {
+                    (
+                        ResolvedSet1Entry::InlineUniform { byte_range },
+                        BindingKind::UniformBuffer { min_size },
+                    ) => {
+                        let Some(slice) = batch.mod_inline_uniforms.get(byte_range.clone()) else {
+                            ok = false;
+                            break;
+                        };
+                        let start =
+                            align_up_usize(self.gui_inline_uniform_staging.len(), ubo_align);
+                        self.gui_inline_uniform_staging.resize(start, 0);
+                        let padded_len = align_up_usize(slice.len().max(min_size as usize), 16);
+                        self.gui_inline_uniform_staging.extend_from_slice(slice);
+                        self.gui_inline_uniform_staging
+                            .resize(start + padded_len, 0);
+                        inline_spans.push((start as u32, padded_len as u64));
+                    }
+                    (
+                        ResolvedSet1Entry::TexelBuffer { byte_range },
+                        BindingKind::TexelBuffer { .. },
+                    ) => {
+                        let Some(slice) = batch.mod_texel_data.get(byte_range.clone()) else {
+                            ok = false;
+                            break;
+                        };
+                        if slice.is_empty() || !slice.len().is_multiple_of(4) {
+                            ok = false;
+                            break;
+                        }
+                        let start = align_up_usize(self.gui_texel_staging.len(), storage_align);
+                        self.gui_texel_staging.resize(start, 0);
+                        self.gui_texel_staging.extend_from_slice(slice);
+                        texel_spans.push((start as u64, slice.len() as u64));
+                    }
+                    _ => {}
+                }
+            }
+            if ok && let Some((_, pc_size)) = compiled.push_constant_slot {
+                if let Some(ref pc_range) = bindings.push_constants
+                    && let Some(slice) = batch.mod_inline_uniforms.get(pc_range.clone())
+                {
+                    let start = align_up_usize(self.gui_inline_uniform_staging.len(), ubo_align);
+                    self.gui_inline_uniform_staging.resize(start, 0);
+                    let padded_len = align_up_usize(slice.len().max(pc_size as usize), 16);
+                    self.gui_inline_uniform_staging.extend_from_slice(slice);
+                    self.gui_inline_uniform_staging
+                        .resize(start + padded_len, 0);
+                    inline_spans.push((start as u32, padded_len as u64));
+                } else {
+                    ok = false;
+                }
+            }
+            if ok {
+                staged.push(StagedGuiSet1 {
+                    draw_idx,
+                    slot,
+                    inline_spans,
+                    texel_spans,
+                    bindings,
+                });
+            }
+        }
+
+        if !gui_vertices.is_empty() {
+            let bytes = bytemuck::cast_slice(&gui_vertices);
+            let need = bytes.len() as u64;
+            if self.gui_vbuf.as_ref().is_none_or(|b| b.size() < need) {
+                let cap = need.next_power_of_two().max(4096);
+                self.gui_vbuf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Mod pipeline GUI vertices"),
+                    size: cap,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+            }
+            if let Some(buf) = &self.gui_vbuf {
+                upload(buf, bytes);
+            }
+        }
+
+        if !self.gui_inline_uniform_staging.is_empty() {
+            let need = self.gui_inline_uniform_staging.len() as u64;
+            if self
+                .gui_inline_uniform_buf
+                .as_ref()
+                .is_none_or(|b| b.size() < need)
+            {
+                let cap = need.next_power_of_two().max(4096);
+                self.gui_inline_uniform_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Mod pipeline GUI inline uniforms"),
+                    size: cap,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+                self.gui_set1_bind_group_cache.clear();
+            }
+            if let Some(buf) = &self.gui_inline_uniform_buf {
+                upload(buf, &self.gui_inline_uniform_staging);
+            }
+        }
+
+        if !self.gui_texel_staging.is_empty() {
+            let need = self.gui_texel_staging.len() as u64;
+            if self
+                .gui_texel_storage_buf
+                .as_ref()
+                .is_none_or(|b| b.size() < need)
+            {
+                let cap = need.next_power_of_two().max(4096);
+                self.gui_texel_storage_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Mod pipeline GUI texel buffers"),
+                    size: cap,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+                self.gui_set1_bind_group_cache.clear();
+            }
+            if let Some(buf) = &self.gui_texel_storage_buf {
+                upload(buf, &self.gui_texel_staging);
+            }
+        }
+
+        for sd in staged {
+            let Some(Some(compiled)) = self.pipelines.get(sd.slot) else {
+                continue;
+            };
+            let Some(ref set1_layout) = compiled.set1_layout else {
+                continue;
+            };
+            let mut key_resources = Vec::with_capacity(
+                compiled.set1_entries.len() + usize::from(compiled.push_constant_slot.is_some()),
+            );
+            let mut dynamic_offsets: Vec<u32> = Vec::new();
+            let mut inline_cursor = 0usize;
+            let mut texel_cursor = 0usize;
+            let mut valid = true;
+            for (entry, spec) in sd.bindings.entries.iter().zip(&compiled.set1_entries) {
+                match (entry, spec.kind) {
+                    (
+                        ResolvedSet1Entry::UniformBuffer { id, byte_len, .. },
+                        BindingKind::UniformBuffer { .. },
+                    ) => {
+                        key_resources.push(Set1ResourceKey::RetainedUniform(*id, *byte_len));
+                        dynamic_offsets.push(0);
+                    }
+                    (
+                        ResolvedSet1Entry::InlineUniform { .. },
+                        BindingKind::UniformBuffer { .. },
+                    ) => {
+                        let (offset, size) = sd.inline_spans[inline_cursor];
+                        inline_cursor += 1;
+                        key_resources.push(Set1ResourceKey::InlineUniform(size));
+                        dynamic_offsets.push(offset);
+                    }
+                    (
+                        ResolvedSet1Entry::Texture { view_id, .. },
+                        BindingKind::CombinedImageSampler { .. },
+                    ) => {
+                        key_resources.push(Set1ResourceKey::Texture(*view_id));
+                    }
+                    (ResolvedSet1Entry::TexelBuffer { .. }, BindingKind::TexelBuffer { .. }) => {
+                        let (offset, size) = sd.texel_spans[texel_cursor];
+                        texel_cursor += 1;
+                        key_resources.push(Set1ResourceKey::TexelBuffer(offset, size));
+                    }
+                    _ => {
+                        valid = false;
+                        break;
+                    }
+                }
+            }
+            if !valid {
+                continue;
+            }
+            if compiled.push_constant_slot.is_some() {
+                let (offset, size) = sd.inline_spans[inline_cursor];
+                key_resources.push(Set1ResourceKey::InlineUniform(size));
+                dynamic_offsets.push(offset);
+            }
+            let cache_key = Set1CacheKey {
+                slot: sd.slot,
+                generation: self.generation,
+                resources: key_resources,
+            };
+            let bind_group = if let Some(cached) = self.gui_set1_bind_group_cache.get(&cache_key) {
+                cached.clone()
+            } else {
+                let mut bg_entries: Vec<wgpu::BindGroupEntry<'_>> = Vec::new();
+                let mut inline_i = 0usize;
+                let mut texel_i = 0usize;
+                for (entry, spec) in sd.bindings.entries.iter().zip(&compiled.set1_entries) {
+                    match (entry, spec.kind) {
+                        (
+                            ResolvedSet1Entry::UniformBuffer {
+                                buffer, byte_len, ..
+                            },
+                            BindingKind::UniformBuffer { .. },
+                        ) => {
+                            bg_entries.push(wgpu::BindGroupEntry {
+                                binding: spec.binding,
+                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                    buffer,
+                                    offset: 0,
+                                    size: wgpu::BufferSize::new(*byte_len),
+                                }),
+                            });
+                        }
+                        (
+                            ResolvedSet1Entry::InlineUniform { .. },
+                            BindingKind::UniformBuffer { .. },
+                        ) => {
+                            let (_, size) = sd.inline_spans[inline_i];
+                            inline_i += 1;
+                            let Some(buf) = self.gui_inline_uniform_buf.as_ref() else {
+                                valid = false;
+                                break;
+                            };
+                            bg_entries.push(wgpu::BindGroupEntry {
+                                binding: spec.binding,
+                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                    buffer: buf,
+                                    offset: 0,
+                                    size: wgpu::BufferSize::new(size),
+                                }),
+                            });
+                        }
+                        (
+                            ResolvedSet1Entry::Texture { view, .. },
+                            BindingKind::CombinedImageSampler { filter, address },
+                        ) => {
+                            let sampler = &self.mod_samplers[sampler_filter_idx(filter)]
+                                [sampler_address_idx(address)];
+                            bg_entries.push(wgpu::BindGroupEntry {
+                                binding: spec.binding,
+                                resource: wgpu::BindingResource::TextureView(view),
+                            });
+                            bg_entries.push(wgpu::BindGroupEntry {
+                                binding: spec.binding + 1,
+                                resource: wgpu::BindingResource::Sampler(sampler),
+                            });
+                        }
+                        (
+                            ResolvedSet1Entry::TexelBuffer { .. },
+                            BindingKind::TexelBuffer { .. },
+                        ) => {
+                            let (offset, size) = sd.texel_spans[texel_i];
+                            texel_i += 1;
+                            let Some(buf) = self.gui_texel_storage_buf.as_ref() else {
+                                valid = false;
+                                break;
+                            };
+                            bg_entries.push(wgpu::BindGroupEntry {
+                                binding: spec.binding,
+                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                    buffer: buf,
+                                    offset,
+                                    size: wgpu::BufferSize::new(size),
+                                }),
+                            });
+                        }
+                        _ => {
+                            valid = false;
+                            break;
+                        }
+                    }
+                }
+                if valid && let Some((pc_binding, _)) = compiled.push_constant_slot {
+                    let (_, size) = sd.inline_spans[inline_i];
+                    if let Some(buf) = self.gui_inline_uniform_buf.as_ref() {
+                        bg_entries.push(wgpu::BindGroupEntry {
+                            binding: pc_binding,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: buf,
+                                offset: 0,
+                                size: wgpu::BufferSize::new(size),
+                            }),
+                        });
+                    } else {
+                        valid = false;
+                    }
+                }
+                if !valid {
+                    continue;
+                }
+                let created = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Mod pipeline GUI set-1"),
+                    layout: set1_layout,
+                    entries: &bg_entries,
+                });
+                self.gui_set1_bind_group_cache
+                    .insert(cache_key, created.clone());
+                created
+            };
+            if let Some(Some(prepared)) = self.gui_draws.get_mut(sd.draw_idx) {
+                prepared.set1_bind_group = Some((bind_group, dynamic_offsets));
+            }
+        }
+    }
+
+    /// Execute one prepared GUI custom-pipeline draw span (`#5430`) inside an active HUD render
+    /// pass (with its scissor rect already applied). Caller restores HUD's set-0 bind group and
+    /// vertex buffer 0 afterwards.
+    pub fn draw_gui(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        draw_idx: usize,
+        hud_range: std::ops::Range<u32>,
+        coverage: bool,
+    ) {
+        let Some(Some(prepared)) = self.gui_draws.get(draw_idx) else {
+            return;
+        };
+        let Some(vbuf) = &self.gui_vbuf else {
+            return;
+        };
+        let Some(Some(compiled)) = self.pipelines.get(prepared.slot) else {
+            return;
+        };
+        let Some(((_, cached_cov), Some(gui_pipeline))) = &compiled.gui_pipeline else {
+            return;
+        };
+        if coverage && !*cached_cov {
+            return;
+        }
+        if hud_range.start < prepared.hud_start
+            || hud_range.end > prepared.hud_start + prepared.vertex_count
+        {
+            return;
+        }
+        let start = prepared.gui_vbase + (hud_range.start - prepared.hud_start);
+        let end = prepared.gui_vbase + (hud_range.end - prepared.hud_start);
+        if start >= end {
+            return;
+        }
+        if compiled.set1_layout.is_some() && prepared.set1_bind_group.is_none() {
+            return;
+        }
+        pass.set_pipeline(gui_pipeline.get(coverage));
+        pass.set_bind_group(0, &compiled.gui_group, &[]);
+        if let Some((group, offsets)) = &prepared.set1_bind_group {
+            pass.set_bind_group(1, group, offsets);
+        }
+        pass.set_vertex_buffer(0, vbuf.slice(..));
+        pass.draw(start..end, 0..1);
     }
 }
 
@@ -5155,5 +5784,304 @@ void main() {
         assert_near(at(24, 32), [0.0, 0.0, 255.0, 255.0], 1.0, "repeat 0 blue");
         assert_near(at(40, 32), [255.0, 0.0, 0.0, 255.0], 1.0, "repeat 1 red");
         assert_near(at(56, 32), [0.0, 0.0, 255.0, 255.0], 1.0, "repeat 1 blue");
+    }
+
+    /// Custom `RenderPipeline` draws on `GuiCanvas` (`#5430`): verifies scissor clipping,
+    /// painter's order between standard `HudBatch::fill` calls before and after the custom
+    /// pipeline, set-1 inline uniform binding, and both SDR (`coverage = false`) and HDR
+    /// layered (`hud_coverage::HUD_FORMAT` + `R8Unorm` coverage target) UI formats.
+    #[test]
+    #[ignore = "daily"]
+    fn gui_custom_pipeline_clips_with_scissor_preserves_painters_order_and_hdr_coverage() {
+        use wgpu::util::DeviceExt;
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let vsh = "\
+#version 330
+#include <minecraft:projection.glsl>
+#include <minecraft:dynamictransforms.glsl>
+in vec3 Position;
+in vec2 UV0;
+in vec4 Color;
+out vec2 texCoord0;
+out vec4 vertexColor;
+void main() {
+    gl_Position = ProjMat * ModelViewMat * vec4(Position, 1.0);
+    texCoord0 = UV0;
+    vertexColor = Color;
+}
+";
+        let fsh = "\
+#version 330
+layout(std140) uniform GuiTint {
+    vec4 Tint;
+};
+in vec2 texCoord0;
+in vec4 vertexColor;
+out vec4 fragColor;
+void main() {
+    fragColor = vertexColor * Tint;
+}
+";
+        let id = Identifier::parse("example:gui_tint").unwrap();
+        let reg = [RenderPipeline::new(
+            id.clone(),
+            id,
+            PipelineBlend::Translucent,
+            WorldDepth::ThroughWalls,
+        )
+        .uniform_buffer("GuiTint", 16)
+        .unwrap()];
+        let set = Pipelines::build(&reg, 1, |file| {
+            if file.ends_with(".vsh") {
+                Ok(Some(vsh.to_owned()))
+            } else if file.ends_with(".fsh") {
+                Ok(Some(fsh.to_owned()))
+            } else {
+                Ok(sunrise_mod_pipeline::stubs::read(
+                    file.strip_prefix("assets/")
+                        .and_then(|r| r.split_once('/'))
+                        .map(|(ns, p)| format!("{ns}:{p}"))
+                        .as_deref()
+                        .unwrap_or(""),
+                )
+                .map(str::to_owned))
+            }
+        })
+        .unwrap();
+
+        let format = crate::gfx::hud_coverage::HUD_FORMAT;
+        let mut mod_pipelines = ModPipelines::new(&device, (format, false));
+        mod_pipelines.build(&device, &set, None).unwrap();
+
+        let white_tex = device.create_texture_with_data(
+            &queue,
+            &wgpu::TextureDescriptor {
+                label: Some("GUI test atlas"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &[255, 255, 255, 255],
+        );
+        let white_view = white_tex.create_view(&Default::default());
+        let sampler = device.create_sampler(&Default::default());
+        let mut hud = crate::hud::HudRenderer::new(
+            &device,
+            format,
+            &white_view,
+            &white_view,
+            &white_view,
+            &sampler,
+            true,
+            Vec::new(),
+        )
+        .unwrap();
+
+        let mut batch = crate::hud::HudBatch::new(
+            [SIZE, SIZE],
+            crate::hud::GuiScale {
+                requested: 1,
+                unicode: false,
+            },
+        );
+        let white = crate::hud::Rect {
+            u0: 0.5,
+            v0: 0.5,
+            u1: 0.5,
+            v1: 0.5,
+            w: 1,
+            h: 1,
+        };
+        // 1) Standard red fill across [0, 0, 64, 64].
+        batch.rect_uv(
+            0.0,
+            0.0,
+            SIZE as f32,
+            SIZE as f32,
+            white,
+            crate::hud::rgba(255, 0, 0, 255),
+        );
+        // 2) Custom pipeline quad across [0, 0, 64, 64] tinted green by set-1 GuiTint,
+        //    clipped by a [16, 16, 48, 48] scissor.
+        let custom_start = batch.vertices.len();
+        let tint_bytes: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+        let tint_range = batch.push_mod_inline_uniform(bytemuck::cast_slice(&tint_bytes));
+        batch.quad(
+            [
+                [0.0, 0.0],
+                [SIZE as f32, 0.0],
+                [SIZE as f32, SIZE as f32],
+                [0.0, SIZE as f32],
+            ],
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            crate::hud::rgba(255, 255, 255, 255),
+        );
+        batch.mod_pipeline_since(
+            custom_start,
+            0,
+            Some(ResolvedDrawBindings {
+                entries: vec![ResolvedSet1Entry::InlineUniform {
+                    byte_range: tint_range,
+                }],
+                push_constants: None,
+            }),
+        );
+        batch.clip_since(custom_start, 16.0, 16.0, 48.0, 48.0);
+        // 3) Standard blue fill on top across [24, 24, 16, 16].
+        batch.rect_uv(
+            24.0,
+            24.0,
+            16.0,
+            16.0,
+            white,
+            crate::hud::rgba(0, 0, 255, 255),
+        );
+
+        let make_target = |fmt: wgpu::TextureFormat| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: SIZE,
+                    height: SIZE,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: fmt,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        };
+        let depth_tex = make_target(wgpu::TextureFormat::Depth32Float);
+        let depth_view = depth_tex.create_view(&Default::default());
+        let mut uploads = crate::gfx::upload::Uploads::with_chunk(&device, 65536);
+
+        for use_coverage in [false, true] {
+            let color_tex = make_target(format);
+            let color_view = color_tex.create_view(&Default::default());
+            let cov_tex = make_target(crate::gfx::hud_coverage::FORMAT);
+            let cov_view = cov_tex.create_view(&Default::default());
+            let mut encoder = device.create_command_encoder(&Default::default());
+            hud.prepare(&device, &mut uploads, &mut encoder, &batch, [SIZE, SIZE]);
+            mod_pipelines.prepare_gui(
+                &device,
+                &mut |buf, bytes| uploads.buffer(&mut encoder, buf, 0, bytes),
+                &batch,
+                [SIZE, SIZE],
+                batch.scale,
+                format,
+                use_coverage,
+            );
+            uploads.finish(&encoder);
+            {
+                let mut clear_color = crate::gfx::hud_coverage::attachment(&color_view);
+                clear_color.ops.load = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
+                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("GUI test clear"),
+                    color_attachments: &[Some(clear_color)],
+                    ..Default::default()
+                });
+            }
+            if use_coverage {
+                crate::gfx::hud_coverage::clear(&mut encoder, &cov_view);
+            }
+            hud.draw_range_with_mod_pipelines(
+                &mut encoder,
+                &color_view,
+                use_coverage.then_some(&cov_view),
+                &depth_view,
+                &batch,
+                [SIZE, SIZE],
+                0..batch.vertices.len() as u32,
+                None,
+                Some(&mod_pipelines),
+            );
+            let color_rb = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("GUI color readback"),
+                size: u64::from(SIZE * SIZE * 4),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            encoder.copy_texture_to_buffer(
+                color_tex.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &color_rb,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(SIZE * 4),
+                        rows_per_image: None,
+                    },
+                },
+                color_tex.size(),
+            );
+            let cov_stride = 256u32;
+            let cov_rb = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("GUI coverage readback"),
+                size: u64::from(cov_stride * SIZE),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            if use_coverage {
+                encoder.copy_texture_to_buffer(
+                    cov_tex.as_image_copy(),
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &cov_rb,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(cov_stride),
+                            rows_per_image: None,
+                        },
+                    },
+                    cov_tex.size(),
+                );
+            }
+            queue.submit([encoder.finish()]);
+            let color_slice = color_rb.slice(..);
+            color_slice.map_async(wgpu::MapMode::Read, |_| {});
+            if use_coverage {
+                cov_rb.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+            }
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+            let pixels = color_slice.get_mapped_range();
+            let px = |x: u32, y: u32| -> [f32; 4] {
+                let i = ((y * SIZE + x) * 4) as usize;
+                [
+                    pixels[i] as f32,
+                    pixels[i + 1] as f32,
+                    pixels[i + 2] as f32,
+                    pixels[i + 3] as f32,
+                ]
+            };
+            assert_near(px(8, 8), [255.0, 0.0, 0.0, 255.0], 1.0, "outside scissor");
+            assert_near(px(20, 20), [0.0, 255.0, 0.0, 255.0], 1.0, "custom pipeline");
+            assert_near(
+                px(32, 32),
+                [0.0, 0.0, 255.0, 255.0],
+                1.0,
+                "blue over custom",
+            );
+            drop(pixels);
+            color_rb.unmap();
+            if use_coverage {
+                let cov = cov_rb.slice(..).get_mapped_range();
+                assert_eq!(cov[(20 * cov_stride + 20) as usize], 255, "HDR coverage");
+                drop(cov);
+                cov_rb.unmap();
+            }
+        }
     }
 }

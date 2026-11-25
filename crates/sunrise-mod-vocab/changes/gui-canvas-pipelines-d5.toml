@@ -1,0 +1,8 @@
+ids = [
+    "type:GuiDrawError",
+    "method:GuiCanvas::fill_with_pipeline",
+    "method:GuiCanvas::blit_with_pipeline",
+    "method:GuiCanvas::blit_sprite_with_pipeline",
+]
+why = "Add custom RenderPipeline drawing on GuiCanvas (#5430): fill_with_pipeline, blit_with_pipeline, and blit_sprite_with_pipeline taking C3 DrawBindings (folding render-target blits into blit_with_pipeline + TextureSource rather than a separate method). Draws execute in exact painter's order alongside standard GUI primitives, obeying active GuiCanvas pose transforms, scissor clips, and both SDR and HDR layered UI target formats. Add GuiDrawError::Pipeline(PipelineDrawError) for pipeline and set-1 binding refusals."
+migrate = "Additive API on GuiCanvas and GuiDrawError. Call canvas.fill_with_pipeline(pipeline, rect, argb, &bindings), canvas.blit_with_pipeline(pipeline, rect, uv, argb, &bindings), or canvas.blit_sprite_with_pipeline(pipeline, &sprite, rect, argb, &bindings) inside DrawContext::draw_gui. Pass &DrawBindings::EMPTY when the pipeline has no set-1 layout or push constants."

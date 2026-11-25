@@ -2217,6 +2217,21 @@ impl Renderer {
             frame.hud,
             [self.config.width, self.config.height],
         );
+        if !frame.hud.mod_pipeline_draws.is_empty()
+            && let Some(wp) = self.world_primitives.as_mut()
+        {
+            let uploads = &mut self.uploads;
+            let encoder = &mut encoder;
+            wp.pipelines.prepare_gui(
+                &self.device,
+                &mut |buf, bytes| uploads.buffer(encoder, buf, 0, bytes),
+                frame.hud,
+                [self.config.width, self.config.height],
+                frame.hud.scale * self.hud.zoom,
+                self.hud.format(),
+                self.hud.coverage(),
+            );
+        }
         if !self.hook_geometry.text_patches.is_empty() {
             self.hud.upload_glyph_patches(
                 &mut self.uploads,

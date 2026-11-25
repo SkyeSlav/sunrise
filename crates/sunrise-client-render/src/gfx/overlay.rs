@@ -370,7 +370,7 @@ impl Renderer {
             .menu_blur
             .filter(|_| self.config.usage.contains(wgpu::TextureUsages::COPY_SRC));
         let blur_at = menu_blur.map_or(0, |_| frame.hud.blur_at);
-        self.hud.draw_range(
+        self.hud.draw_range_with_mod_pipelines(
             encoder,
             hud_target,
             coverage.as_ref(),
@@ -379,6 +379,7 @@ impl Renderer {
             [self.config.width, self.config.height],
             0..blur_at,
             timing.as_mut(),
+            self.world_primitives.as_ref().map(|wp| &wp.pipelines),
         );
         if let Some(radius) = menu_blur {
             let format = self.output.frame.overlay_format;
@@ -422,7 +423,7 @@ impl Renderer {
         } else if let Some(blur) = &mut self.menu_blur {
             blur.release();
         }
-        self.hud.draw_range(
+        self.hud.draw_range_with_mod_pipelines(
             encoder,
             hud_target,
             coverage.as_ref(),
@@ -431,6 +432,7 @@ impl Renderer {
             [self.config.width, self.config.height],
             blur_at..frame.hud.vertices.len() as u32,
             timing.as_mut(),
+            self.world_primitives.as_ref().map(|wp| &wp.pipelines),
         );
         if overlay.real {
             self.own_timing = timing;

@@ -8,4 +8,5 @@ sunrise-client-render gfx::mod_pipelines::tests::retained_compact_8byte_mesh_dra
 sunrise-client-render gfx::mod_pipelines::tests::instanced_vertex_binding_draws_four_offset_quads_in_one_draw_call lib daily gpu
 sunrise-client-render gfx::mod_pipelines::tests::set1_uniform_buffer_inline_uniform_push_constant_and_texel_buffer_draw_expected_pixels lib daily gpu
 sunrise-client-render gfx::mod_pipelines::tests::set1_dynamic_and_standalone_textures_sample_with_repeat_addressing lib daily gpu
+sunrise-client-render gfx::mod_pipelines::tests::gui_custom_pipeline_clips_with_scissor_preserves_painters_order_and_hdr_coverage lib daily gpu
 sunrise-client-render gfx::pack_post::mod_stage_tests::pack_composite_inverts_mod_glsl_quad_drawn_once_after_opaque_blocks lib daily gpu
