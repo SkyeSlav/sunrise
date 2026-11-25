@@ -288,13 +288,13 @@ impl Game<'_> {
         let definition = self.items().songs.get(song).cloned();
         self.play_song(pos, song, definition);
     }
-    /// `LevelRenderer.playJukeboxSong` for `song`, defined by `definition`.
+    /// `LevelEventHandler.playJukeboxSong` for `song`, defined by `definition`.
     fn play_song(&mut self, pos: [i32; 3], song: &str, definition: Option<Song>) {
         self.stop_sound(pos);
         let Some(s) = definition else {
             return;
         };
-        // LevelRenderer.playJukeboxSong: SimpleSoundInstance.forJukeboxSong.
+        // LevelEventHandler.playJukeboxSong: SimpleSoundInstance.forJukeboxSong.
         let id = self.play_audio_jukebox_song(&s.sound, pos);
         self.jukebox_sounds.insert((pos[0], pos[1], pos[2]), id);
         let description =
@@ -303,7 +303,6 @@ impl Game<'_> {
         let message = Text::translate("record.nowPlaying", &[description]);
         self.say_system_now(&message);
         self.titles.set_overlay(message, true);
-        self.update_song_volumes();
         self.notify_record_playing(pos, true);
         if self.audio.capture.is_some() {
             self.lan_songs.push((pos, Some(song.to_owned())));
