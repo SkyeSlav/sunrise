@@ -2858,13 +2858,12 @@ mod tests {
     fn datapack_enable_next_to_vanilla_and_the_existing_pack_is_checked_for_vanilla() {
         use crate::game::native_entity_refs::tests::with_game;
         let root = datapack_world("datapack-vanilla-neighbour", &["a", "b"]);
-        std::fs::write(
-            root.join("datapacks.json"),
-            r#"{"enabled":["file/a"],"disabled":["file/b"]}"#,
-        )
-        .unwrap();
         with_game(|game| {
-            open_datapack_world(game, &root);
+            open_datapack_world_with(
+                game,
+                &root,
+                Some((vec!["file/a".into()], vec!["file/b".into()])),
+            );
             assert!(game.run_command("datapack enable \"file/b\" after \"vanilla\""));
             assert_eq!(game.fns.enabled, ["file/b", "file/a"]);
             assert!(game.run_command("datapack disable \"file/b\""));
