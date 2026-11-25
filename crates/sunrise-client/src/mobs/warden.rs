@@ -772,6 +772,7 @@ pub fn hear_mob_events(
     events: &[MobEvent],
     from: usize,
     w: &MobWorld,
+    tags: &sculk::EventTags,
 ) {
     for e in &events[from..] {
         let MobEvent::GameEvent {
@@ -796,7 +797,7 @@ pub fn hear_mob_events(
         };
         for m in mobs.iter_mut().filter(|m| m.extra.warden.is_some()) {
             let ctx = heard_by(ctx, &w.teams, m.id);
-            listen(m, w.game_time, event, at, &ctx, |a, b| {
+            listen(m, w.game_time, event, at, &ctx, tags, |a, b| {
                 sculk::is_occluded(a, b, |p| {
                     let block = w.world.block(p.x, p.y, p.z);
                     w.has_tag(
