@@ -23,7 +23,6 @@ fn a_block_part_allows_replaces_or_denies_a_tool_action_and_a_preview_changes_no
     // campfire are left alone, and glass strips to a stripped oak log.
     mod_platform::__private::part_tests::tool_modified_state_game_thread();
     native_guest_turn_tests::with_guests(|game| {
-        game.install_root_block_transformers();
         game.world
             .chunks
             .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
