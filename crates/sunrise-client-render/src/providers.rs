@@ -67,14 +67,12 @@ const FLOAT_PROVIDER_TYPES: &[&str] = &[
     "weighted_list",
 ];
 
-/// `ContextIntProviders.CODEC` / `ContextFloatProviders.CODEC`: an inline number, a
-/// reference by id, or an object of a registered provider type.
+/// `ContextIntProviders.DIRECT_CODEC` / `ContextFloatProviders.DIRECT_CODEC`, the
+/// registry file codecs: an inline number, or an object of a registered provider
+/// type. A reference by id exists only in the holder `CODEC`.
 fn validate(value: &Value, types: &[&str]) -> Result<(), String> {
     match value {
         Value::Number(_) => Ok(()),
-        Value::String(id) => sunrise_core::identifier::Identifier::parse(id)
-            .map(|_| ())
-            .map_err(|error| format!("{id:?}: {error}")),
         Value::Object(fields) => {
             let kind = fields.get("type").and_then(Value::as_str).unwrap_or("");
             let name = kind.strip_prefix("minecraft:").unwrap_or(kind);
@@ -84,7 +82,7 @@ fn validate(value: &Value, types: &[&str]) -> Result<(), String> {
                 Err(format!("unknown provider type {kind:?}"))
             }
         }
-        _ => Err("expected a number, an id or a typed object".into()),
+        _ => Err("expected a number or a typed object".into()),
     }
 }
 
@@ -334,11 +332,22 @@ mod tests {
             r#"{"type":"minecraft:from_float"}"#,
         )
         .unwrap();
+        // A reference by id is only in the holder codec, not the file codec.
+        std::fs::write(ints.join("reference.json"), r#""example:ok""#).unwrap();
+        std::fs::write(floats.join("reference.json"), r#""example:ok""#).unwrap();
         let Err(error) = Providers::load_with(&root, &sunrise_world::loot::PackOverlay::NONE)
         else {
             panic!("unregistered provider types loaded")
         };
-        assert_eq!(error.lines().count(), 2, "{error}");
+        assert_eq!(error.lines().count(), 4, "{error}");
+        assert!(
+            error.contains("context_int_provider example:reference"),
+            "{error}"
+        );
+        assert!(
+            error.contains("context_float_provider example:reference"),
+            "{error}"
+        );
         assert!(
             error.contains("context_int_provider example:bad"),
             "{error}"

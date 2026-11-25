@@ -3827,6 +3827,7 @@ mod tests {
             "minecraft:t",
             &serde_json::json!({
                 "display": {
+                    "background": "minecraft:gui/advancements/backgrounds/stone",
                     "icon": {
                         "id": "minecraft:wooden_pickaxe",
                         "components": {"minecraft:enchantment_glint_override": true}
@@ -3855,6 +3856,28 @@ mod tests {
         assert!(parse("minecraft:t", &missing).is_none());
         let exact = serde_json::json!({"criteria": {"a": tick}, "requirements": [["a"]]});
         assert!(parse("minecraft:t", &exact).is_some());
+    }
+    /// `Advancement.validate`: a visible root needs a background, and only a root may have one.
+    #[test]
+    fn backgrounds_belong_to_visible_roots_only() {
+        let display = |background: Option<&str>| {
+            serde_json::json!({"icon": {"id": "minecraft:stone"}, "title": "t",
+                "description": "d", "background": background})
+        };
+        let criteria = serde_json::json!({"a": {"trigger": "minecraft:tick"}});
+        let stone = "minecraft:gui/advancements/backgrounds/stone";
+        let load = |parent: Option<&str>, display: serde_json::Value| {
+            parse(
+                "minecraft:t",
+                &serde_json::json!({"parent": parent, "display": display, "criteria": criteria}),
+            )
+        };
+        assert!(load(None, display(None)).is_none());
+        assert!(load(None, display(Some(stone))).is_some());
+        assert!(load(Some("minecraft:r"), display(Some(stone))).is_none());
+        assert!(load(Some("minecraft:r"), display(None)).is_some());
+        let hidden_root = serde_json::json!({"criteria": criteria});
+        assert!(parse("minecraft:t", &hidden_root).is_some());
     }
     #[test]
     fn layout_spreads_children_like_tree_node_position() {
@@ -4367,7 +4390,8 @@ mod tests {
                 &serde_json::json!({
                     "parent": parent,
                     "criteria": {"crit": {"trigger": "minecraft:tick"}},
-                    "display": {"icon": {"id": "minecraft:stone"}, "title": "t", "description": "d"}
+                    "display": {"icon": {"id": "minecraft:stone"}, "title": "t", "description": "d",
+                        "background": parent.is_none().then_some("minecraft:gui/advancements/backgrounds/stone")}
                 }),
             )
             .unwrap();
@@ -4380,7 +4404,8 @@ mod tests {
                 &id,
                 &serde_json::json!({
                     "criteria": {"crit": {"trigger": "minecraft:tick"}},
-                    "display": {"icon": {"id": "minecraft:stone"}, "title": "t", "description": "d"}
+                    "display": {"icon": {"id": "minecraft:stone"}, "title": "t", "description": "d",
+                        "background": "minecraft:gui/advancements/backgrounds/stone"}
                 }),
             )
             .unwrap();

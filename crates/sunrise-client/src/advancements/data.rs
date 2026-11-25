@@ -196,6 +196,15 @@ pub(super) fn parse_with(
         announce: d["announce_to_chat"].as_bool().unwrap_or(true),
         hidden: d["hidden"].as_bool().unwrap_or(false),
     });
+    // `Advancement.validate`.
+    let parent = v["parent"].as_str().map(|p| full(p).into_owned());
+    let has_background = display.as_ref().is_some_and(|d| d.background.is_some());
+    if parent.is_none() && display.is_some() && !has_background {
+        return Err("Visible advancement roots must have background".into());
+    }
+    if parent.is_some() && has_background {
+        return Err("Only advancement roots can have background".into());
+    }
     let r = &v["rewards"];
     let strings = |v: &Value| -> Vec<String> {
         v.as_array()
@@ -206,7 +215,7 @@ pub(super) fn parse_with(
     };
     Ok(Advancement {
         id: id.to_owned(),
-        parent: v["parent"].as_str().map(|p| full(p).into_owned()),
+        parent,
         display,
         criteria,
         requirements,

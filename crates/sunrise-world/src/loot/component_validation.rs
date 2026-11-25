@@ -206,24 +206,62 @@ pub(super) fn refuse(mut errors: Vec<String>) -> std::io::Result<()> {
     ))
 }
 
+/// `SlotSources.TYPED_CODEC`, the registry file codec: an object whose `type` is
+/// a registered `SLOT_SOURCE_TYPE`. A string reference and an inline group exist
+/// only in nested fields (`SlotSources.CODEC`).
+pub fn validate_slot_source(value: &Value) -> Result<(), String> {
+    if !value.is_object() {
+        return Err("expected a typed slot source object".into());
+    }
+    validate_nested_slot_source(value)
+}
+
 /// `SlotSources.CODEC`: a registered `SLOT_SOURCE_TYPE`, a reference by id or an
 /// inline group; only the stock filtered source owns an item predicate.
-pub fn validate_slot_source(value: &Value) -> Result<(), String> {
+fn validate_nested_slot_source(value: &Value) -> Result<(), String> {
     if let Some(values) = value.as_array() {
         for value in values {
-            validate_slot_source(value)?;
+            validate_nested_slot_source(value)?;
         }
         return Ok(());
     }
-    match kind(value) {
-        "group" => validate_slot_source(&value["terms"]),
-        "contents" | "limit_slots" => validate_slot_source(&value["slot_source"]),
+    if value.is_string() {
+        return Ok(());
+    }
+    let kind = value.get("type").and_then(Value::as_str).unwrap_or("");
+    match kind.strip_prefix("minecraft:").unwrap_or(kind) {
+        "group" => validate_nested_slot_source(&value["terms"]),
+        "contents" | "limit_slots" => validate_nested_slot_source(&value["slot_source"]),
         "filtered" => {
             validate_item_predicate(&value["item_filter"])?;
-            validate_slot_source(&value["slot_source"])
+            validate_nested_slot_source(&value["slot_source"])
         }
         "slot_range" | "empty" => Ok(()),
-        _ if value.is_string() => Ok(()),
-        other => Err(format!("unknown slot source type {other:?}")),
+        _ => Err(format!("unknown slot source type {kind:?}")),
+    }
+}
+
+#[cfg(test)]
+mod slot_source_tests {
+    use super::validate_slot_source;
+    use serde_json::json;
+
+    #[test]
+    fn a_registry_file_is_a_typed_object() {
+        for file in [
+            json!({"type": "minecraft:empty"}),
+            json!({"type": "minecraft:group", "terms": ["example:a", [{"type": "minecraft:empty"}]]}),
+        ] {
+            assert_eq!(validate_slot_source(&file), Ok(()), "{file}");
+        }
+        for file in [
+            json!("example:a"),
+            json!([{"type": "minecraft:empty"}]),
+            json!({"function": "minecraft:empty"}),
+            json!({"condition": "minecraft:empty"}),
+            json!({"type": "example:nope"}),
+        ] {
+            assert!(validate_slot_source(&file).is_err(), "{file}");
+        }
     }
 }
