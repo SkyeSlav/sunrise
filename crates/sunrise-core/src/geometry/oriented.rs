@@ -272,7 +272,7 @@ impl Frame {
 #[derive(Clone, Debug, Default)]
 pub struct ColliderBoxes {
     boxes: Vec<Aabb>,
-    cells: FxHashMap<[i32; 3], Vec<u32>>,
+    cells: FxHashMap<[i64; 3], Vec<u32>>,
     /// The side of a cell, from the boxes alone.
     cell: f64,
     oversized: Vec<u32>,
@@ -307,11 +307,20 @@ fn cell_range(b: Aabb, cell: f64) -> ([i64; 3], [i64; 3]) {
     ([f(lo.x), f(lo.y), f(lo.z)], [f(hi.x), f(hi.y), f(hi.z)])
 }
 
+/// How many cells `lo..=hi` spans. A box as far out as a finite `f32` reaches saturates
+/// [`cell_range`] to `i64::MIN..=i64::MAX` on an axis, so the count is taken in `i128` and
+/// saturates rather than overflowing.
+fn cell_count(lo: [i64; 3], hi: [i64; 3]) -> i128 {
+    (0..3).fold(1, |count: i128, i| {
+        count.saturating_mul(i128::from(hi[i]) - i128::from(lo[i]) + 1)
+    })
+}
+
 impl ColliderBoxes {
     /// Builds the grid. The boxes must be finite; callers refuse anything else first.
     pub fn new(boxes: Vec<Aabb>) -> Self {
         let cell = cell_side(&boxes);
-        let mut cells: FxHashMap<[i32; 3], Vec<u32>> = FxHashMap::default();
+        let mut cells: FxHashMap<[i64; 3], Vec<u32>> = FxHashMap::default();
         let mut oversized = Vec::new();
         let mut solid = Vec::new();
         let mut bounds: Option<Aabb> = None;
@@ -323,18 +332,14 @@ impl ColliderBoxes {
             solid.push(index as u32);
             bounds = Some(bounds.map_or(*b, |all| all.union_bounds(*b)));
             let (lo, hi) = cell_range(*b, cell);
-            let count = (0..3).map(|i| hi[i] - lo[i] + 1).product::<i64>();
-            if count > OVERSIZED_CELLS {
+            if cell_count(lo, hi) > i128::from(OVERSIZED_CELLS) {
                 oversized.push(index as u32);
                 continue;
             }
             for x in lo[0]..=hi[0] {
                 for y in lo[1]..=hi[1] {
                     for z in lo[2]..=hi[2] {
-                        cells
-                            .entry([x as i32, y as i32, z as i32])
-                            .or_default()
-                            .push(index as u32);
+                        cells.entry([x, y, z]).or_default().push(index as u32);
                     }
                 }
             }
@@ -373,15 +378,14 @@ impl ColliderBoxes {
             return;
         }
         let (lo, hi) = cell_range(local, self.cell);
-        let count = (0..3).map(|i| hi[i] - lo[i] + 1).product::<i64>();
-        if count > self.cells.len() as i64 {
+        if cell_count(lo, hi) > self.cells.len() as i128 {
             self.solid.iter().any(|&index| f(index));
             return;
         }
         for x in lo[0]..=hi[0] {
             for y in lo[1]..=hi[1] {
                 for z in lo[2]..=hi[2] {
-                    if let Some(list) = self.cells.get(&[x as i32, y as i32, z as i32])
+                    if let Some(list) = self.cells.get(&[x, y, z])
                         && list.iter().any(|&index| f(index))
                     {
                         return;
@@ -399,8 +403,7 @@ impl ColliderBoxes {
             return;
         }
         let (lo, hi) = cell_range(local, self.cell);
-        let count = (0..3).map(|i| hi[i] - lo[i] + 1).product::<i64>();
-        if count > self.cells.len() as i64 {
+        if cell_count(lo, hi) > self.cells.len() as i128 {
             // A query wider than the grid: every box is cheaper than every cell.
             out.extend_from_slice(&self.solid);
             return;
@@ -408,7 +411,7 @@ impl ColliderBoxes {
         for x in lo[0]..=hi[0] {
             for y in lo[1]..=hi[1] {
                 for z in lo[2]..=hi[2] {
-                    if let Some(list) = self.cells.get(&[x as i32, y as i32, z as i32]) {
+                    if let Some(list) = self.cells.get(&[x, y, z]) {
                         out.extend_from_slice(list);
                     }
                 }
@@ -1061,6 +1064,35 @@ mod tests {
             Vec3::new(min[0], min[1], min[2]),
             Vec3::new(max[0], max[1], max[2]),
         )
+    }
+
+    /// Boxes as far out as a finite `f32` reaches (a mod's collider has no reach limit) are
+    /// gridded without overflowing: one spanning every cell is oversized, and the far ones keep
+    /// cells of their own, so queries anywhere name exactly the boxes they may meet.
+    #[test]
+    fn boxes_at_the_edge_of_f32_grid_without_overflow() {
+        let far = 3.0e38;
+        let boxes = ColliderBoxes::new(vec![
+            b([0.0; 3], [1.0; 3]),
+            b([-far; 3], [far; 3]),
+            b([far - 1.0e32; 3], [far; 3]),
+            b([-far; 3], [-far + 1.0e32; 3]),
+        ]);
+        let mut out = Vec::new();
+        boxes.candidates(b([0.25; 3], [0.75; 3]), &mut out);
+        assert_eq!(out, [0, 1]);
+        boxes.candidates(b([far - 1.0e31; 3], [far; 3]), &mut out);
+        assert_eq!(out, [1, 2]);
+        boxes.candidates(b([-far; 3], [-far + 1.0e31; 3]), &mut out);
+        assert_eq!(out, [1, 3]);
+        let mut seen = Vec::new();
+        boxes.visit_candidates(b([-far; 3], [far; 3]), |index| {
+            seen.push(index);
+            false
+        });
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen, [0, 1, 2, 3]);
     }
 
     fn yaw(origin: Vec3, degrees: f64) -> Frame {
