@@ -1078,7 +1078,7 @@ pub(super) fn emit<'a>(
                 .as_ref()
                 .is_some_and(|(_, param)| param.ty == "LevelRandomSide");
         let filtered_subscribers = name == "add_pack_finders";
-        let movement_side_filter = matches!(name.as_str(), "entity_move" | "living_travel");
+        let movement_side_filter = matches!(name, "entity_move" | "living_travel");
         let allow_subscriber = fresh_name("allow", &mut used);
         let client_controlled = fresh_name("client_controlled", &mut used);
         let invoke_part = fresh_name("invoke_part", &mut used);
