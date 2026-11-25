@@ -327,13 +327,14 @@ fn builtin_command_registries(
 
 /// Static built-in registries whose tags are bound before `WORLD_REGISTRIES` /
 /// `DIMENSION_REGISTRIES` load (`WorldLoader.java.patch` lines 43, 51 `staticLayerTags`).
-const WORLDGEN_STATIC_TAG_REGISTRIES: [&str; 6] = [
+const WORLDGEN_STATIC_TAG_REGISTRIES: [&str; 7] = [
     "block",
     "item",
     "fluid",
     "entity_type",
     "game_event",
     "villager_profession",
+    "potion",
 ];
 
 /// Builds the `LoadConditions` used by worldgen and dimension pack loaders
@@ -343,16 +344,24 @@ const WORLDGEN_STATIC_TAG_REGISTRIES: [&str; 6] = [
 /// `ResourceManagerRegistryLoadTask.java.patch` (line 43):
 /// - Feature flags are `FeatureFlags.VANILLA_SET` (`["minecraft:vanilla"]`), matching
 ///   NeoForge's `ResourceManagerRegistryLoadTask` rather than world-specific enabled features.
-/// - Static built-in registry entries come from `command-registries.json` (`neoforge:registered`).
-/// - Static-layer tags (`block`, `item`, `fluid`, `entity_type`, `game_event`,
-///   `villager_profession`) are loaded from `resources` and `packs`, so `neoforge:tag_empty`
-///   works in worldgen and dimension files.
+/// - Static registry entries come from `command-registries.json` and frozen mod custom static
+///   registries (`custom_registry_directories`), for `neoforge:registered`.
+/// - Static-layer tags (`WORLDGEN_STATIC_TAG_REGISTRIES`, including built-in `c:` convention
+///   tags via `tag_layers::load`, plus mod custom static registries) are loaded from `resources`
+///   and `packs`, so `neoforge:tag_empty` works in worldgen and dimension files.
 pub(super) fn worldgen_load_conditions(
     base: &sunrise_world::conditions::LoadConditions,
     resources: &std::path::Path,
     packs: &[&sunrise_client::datapack::DataPack],
 ) -> sunrise_world::conditions::LoadConditions {
-    let registries = builtin_command_registries(resources);
+    let custom_dirs = mod_api::__private::custom_registry_directories();
+    let mut registries = builtin_command_registries(resources);
+    for dir in custom_dirs {
+        registries.insert(
+            dir.id().to_owned(),
+            dir.entry_ids().iter().map(ToString::to_string).collect(),
+        );
+    }
     let mut pack_tag_files: BTreeMap<String, Vec<Vec<u8>>> = BTreeMap::new();
     for pack in packs {
         if pack.id == "vanilla" {
@@ -368,18 +377,22 @@ pub(super) fn worldgen_load_conditions(
             let Some(after_tags) = rest.strip_prefix("tags/") else {
                 continue;
             };
-            let Some((kind, path)) = after_tags.split_once('/') else {
+            let Some(rel) = after_tags.strip_suffix(".json") else {
                 continue;
             };
-            if !WORLDGEN_STATIC_TAG_REGISTRIES.contains(&kind) {
+            let matches_builtin = rel
+                .split_once('/')
+                .is_some_and(|(kind, _)| WORLDGEN_STATIC_TAG_REGISTRIES.contains(&kind));
+            let matches_custom = custom_dirs.iter().any(|dir| {
+                rel.strip_prefix(dir.tag_directory())
+                    .is_some_and(|tail| tail.starts_with('/'))
+            });
+            if !matches_builtin && !matches_custom {
                 continue;
             }
-            let Some(path) = path.strip_suffix(".json") else {
-                continue;
-            };
             if let Some(bytes) = pack.read(&file) {
                 pack_tag_files
-                    .entry(format!("tags/{ns}:{kind}/{path}"))
+                    .entry(format!("tags/{ns}:{rel}"))
                     .or_default()
                     .push(bytes);
             }
@@ -404,6 +417,20 @@ pub(super) fn worldgen_load_conditions(
                 .map(|(tag, _)| tag)
                 .collect();
             non_empty_tags.push((format!("minecraft:{kind}"), tags));
+        }
+    }
+    for dir in custom_dirs {
+        if let Ok(loaded) =
+            sunrise_world::tag_layers::load(resources, dir.tag_directory(), &tag_overlay, |id| {
+                dir.contains_id(id)
+            })
+        {
+            let tags: Vec<String> = loaded
+                .into_iter()
+                .filter(|(_, members)| !members.is_empty())
+                .map(|(tag, _)| tag)
+                .collect();
+            non_empty_tags.push((dir.id().to_owned(), tags));
         }
     }
     // `ResourceManagerRegistryLoadTask.java.patch:43` passes `FeatureFlags.VANILLA_SET`.

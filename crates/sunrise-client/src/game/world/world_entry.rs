@@ -404,6 +404,32 @@ impl Game<'_> {
         for registry in &static_registries {
             bind_tags(registry, &mut view)?;
         }
+        // Bind tags for mod-declared static custom registries in the static layer
+        // (`WorldLoader.java.patch` `staticLayerTags`) so both `WORLD_REGISTRIES` and
+        // downstream reloadable data see them in `neoforge:tag_empty`, and store them
+        // in `pack_tags` keyed by canonical registry ID (`chemlib:gas`).
+        for dir in mod_api::__private::custom_registry_directories() {
+            match sunrise_world::tag_layers::load(root, dir.tag_directory(), &tag_files, |id| {
+                dir.contains_id(id)
+            }) {
+                Ok(tags) => {
+                    view.tags.insert(
+                        dir.id().to_owned(),
+                        tags.iter()
+                            .filter(|(_, members)| !members.is_empty())
+                            .map(|(tag, _)| tag.clone())
+                            .collect(),
+                    );
+                    pack_tags.insert(dir.id().to_owned(), tags);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Sunrise: the world's {} tags are not applied: {e}",
+                        dir.id()
+                    );
+                }
+            }
+        }
         // WORLD_REGISTRIES codecs see static holders (not their own pending entries)
         // and NeoForge's ResourceManagerRegistryLoadTask uses VANILLA_SET.
         let frozen = self.world_tables.as_ref().filter(|_| reload);
@@ -564,30 +590,6 @@ impl Game<'_> {
                 .collect(),
         );
         pack_tags.insert("damage_type".to_owned(), damage_tags);
-        // Bind tags for mod-declared static custom registries into the same `pack_tags` store,
-        // keyed by canonical registry ID (`chemlib:gas`) and preserving tag order.
-        for dir in mod_api::__private::custom_registry_directories() {
-            match sunrise_world::tag_layers::load(root, dir.tag_directory(), &tag_files, |id| {
-                dir.contains_id(id)
-            }) {
-                Ok(tags) => {
-                    view.tags.insert(
-                        dir.id().to_owned(),
-                        tags.iter()
-                            .filter(|(_, members)| !members.is_empty())
-                            .map(|(tag, _)| tag.clone())
-                            .collect(),
-                    );
-                    pack_tags.insert(dir.id().to_owned(), tags);
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Sunrise: the world's {} tags are not applied: {e}",
-                        dir.id()
-                    );
-                }
-            }
-        }
         if !view.tags.contains_key("minecraft:villager_trade")
             && let Ok(tags) = sunrise_client::items::load_tags(root, "villager_trade", &tag_files)
         {

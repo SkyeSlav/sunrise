@@ -1138,3 +1138,167 @@ fn trade_files_with_unknown_load_condition_report_errors() {
         "expected trade_set file path and unknown condition id, got: {err}"
     );
 }
+
+/// PR 5b: `worldgen_load_conditions` exposes frozen mod custom static registries to
+/// `neoforge:registered` and binds custom-registry tags (from resources and packs) plus
+/// built-in and pack `c:` convention tags for `neoforge:tag_empty`.
+#[test]
+fn worldgen_load_conditions_wires_custom_registries_custom_tags_and_c_tags() {
+    use sunrise_assets::resource_source::ResourceSource;
+    use sunrise_client::datapack::{DataPack, worldgen_overrides};
+
+    struct Gas;
+    const GASES: mod_api::RegistryKey<Gas> = mod_api::RegistryKey::new("chemlib:gas");
+    struct ChemReg;
+    #[mod_api::__subscriptions]
+    impl Hooks for ChemReg {
+        fn register(&self, r: &mut dyn mod_api::Registrar, _: &RegistrationContext) {
+            r.declare_registry(GASES, mod_api::RegistryOptions::new());
+            r.register_entry(GASES, "chemlib:oxygen", Gas);
+        }
+    }
+
+    mod_platform::testing::with_mods(
+        vec![ModEntry::new("chemlib", Box::new(ChemReg))].into(),
+        || {
+            mod_platform::__private::part_tests::install_parts_fixture(mod_api::__private::mods())
+                .unwrap();
+
+            let scratch = tempfile::tempdir().unwrap();
+            let resources = scratch.path().join("resources");
+            std::fs::create_dir_all(resources.join("data/chemlib/tags/chemlib/gas")).unwrap();
+            std::fs::write(
+                resources.join("registries.json"),
+                json!({
+                    "minecraft:item": {
+                        "entries": {
+                            "minecraft:iron_ingot": {"protocol_id": 0}
+                        }
+                    }
+                })
+                .to_string(),
+            )
+            .unwrap();
+            std::fs::write(
+                resources.join("data/chemlib/tags/chemlib/gas/breathable.json"),
+                json!({"values": ["chemlib:oxygen"]}).to_string(),
+            )
+            .unwrap();
+
+            let pack_dir = scratch.path().join("pack");
+            std::fs::create_dir_all(pack_dir.join("data/boiler/tags/chemlib/gas")).unwrap();
+            std::fs::create_dir_all(pack_dir.join("data/c/tags/item/ingots")).unwrap();
+            std::fs::create_dir_all(pack_dir.join("data/demo/worldgen/feature")).unwrap();
+            std::fs::write(
+                pack_dir.join("data/boiler/tags/chemlib/gas/pack_hot.json"),
+                json!({"values": ["chemlib:oxygen"]}).to_string(),
+            )
+            .unwrap();
+            std::fs::write(
+                pack_dir.join("data/c/tags/item/ingots/tin.json"),
+                json!({"values": ["minecraft:iron_ingot"]}).to_string(),
+            )
+            .unwrap();
+
+            let write_feature = |name: &str, cond: Value| {
+                std::fs::write(
+                    pack_dir.join(format!("data/demo/worldgen/feature/{name}.json")),
+                    json!({
+                        "neoforge:conditions": [cond],
+                        "type": "minecraft:no_op",
+                        "config": {}
+                    })
+                    .to_string(),
+                )
+                .unwrap();
+            };
+
+            write_feature(
+                "custom_reg_present",
+                json!({"type": "neoforge:registered", "registry": "chemlib:gas", "value": "chemlib:oxygen"}),
+            );
+            write_feature(
+                "custom_reg_absent",
+                json!({"type": "neoforge:registered", "registry": "chemlib:gas", "value": "chemlib:helium"}),
+            );
+            write_feature(
+                "custom_tag_from_resources",
+                json!({
+                    "type": "neoforge:not",
+                    "value": {"type": "neoforge:tag_empty", "registry": "chemlib:gas", "tag": "chemlib:breathable"}
+                }),
+            );
+            write_feature(
+                "custom_tag_from_pack",
+                json!({
+                    "type": "neoforge:not",
+                    "value": {"type": "neoforge:tag_empty", "registry": "chemlib:gas", "tag": "boiler:pack_hot"}
+                }),
+            );
+            write_feature(
+                "custom_tag_absent_empty",
+                json!({"type": "neoforge:tag_empty", "registry": "chemlib:gas", "tag": "boiler:missing"}),
+            );
+            write_feature(
+                "c_builtin_tag_present",
+                json!({
+                    "type": "neoforge:not",
+                    "value": {"type": "neoforge:tag_empty", "registry": "minecraft:item", "tag": "c:ingots/iron"}
+                }),
+            );
+            write_feature(
+                "c_pack_tag_present",
+                json!({
+                    "type": "neoforge:not",
+                    "value": {"type": "neoforge:tag_empty", "registry": "minecraft:item", "tag": "c:ingots/tin"}
+                }),
+            );
+            write_feature(
+                "c_absent_tag_empty",
+                json!({"type": "neoforge:tag_empty", "registry": "minecraft:item", "tag": "c:ingots/platinum"}),
+            );
+
+            let pack =
+                DataPack::from_source("file/demo".into(), ResourceSource::directory(pack_dir));
+            let conditions = super::worldgen_load_conditions(
+                &sunrise_world::conditions::LoadConditions::vanilla(),
+                &resources,
+                &[&pack],
+            );
+            let (overrides, _) = worldgen_overrides(&[&pack], |_| true, &conditions);
+            let features: Vec<&str> = overrides.entries("features").map(|(id, _)| id).collect();
+            assert!(
+                features.contains(&"demo:custom_reg_present"),
+                "{features:?}"
+            );
+            assert!(
+                !features.contains(&"demo:custom_reg_absent"),
+                "{features:?}"
+            );
+            assert!(
+                features.contains(&"demo:custom_tag_from_resources"),
+                "{features:?}"
+            );
+            assert!(
+                features.contains(&"demo:custom_tag_from_pack"),
+                "{features:?}"
+            );
+            assert!(
+                features.contains(&"demo:custom_tag_absent_empty"),
+                "{features:?}"
+            );
+            assert!(
+                features.contains(&"demo:c_builtin_tag_present"),
+                "{features:?}"
+            );
+            assert!(
+                features.contains(&"demo:c_pack_tag_present"),
+                "{features:?}"
+            );
+            assert!(
+                features.contains(&"demo:c_absent_tag_empty"),
+                "{features:?}"
+            );
+        },
+    );
+}

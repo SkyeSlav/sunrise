@@ -1,15 +1,18 @@
 //! Two separately built native mods prove `neoforge:conditions` across every data loader wired
-//! in #5139: `chemlib` (optional library mod) registers a custom `chemlib:active` condition and
-//! ships a recipe guarded by it; `boiler` (optional dependency on `chemlib`) ships conditional
-//! data files across recipes, recipe filters, content-mod worldgen bundles, pack worldgen
-//! features (including `neoforge:tag_empty` on static block tags), villager trades, trade sets,
-//! predicates, item modifiers, and slot sources.
+//! in #5139: `chemlib` (optional library mod) registers a custom `chemlib:active` condition,
+//! declares a custom static registry `chemlib:gas` (`chemlib:oxygen`), populates a custom-registry
+//! tag `chemlib:breathable` and a `c:` item tag `c:chemlib_catalysts`, and ships a recipe guarded
+//! by `chemlib:active`; `boiler` (optional dependency on `chemlib`) ships conditional data files
+//! across recipes, recipe filters, content-mod worldgen bundles, pack worldgen features (including
+//! `neoforge:registered` on `chemlib:gas` and `neoforge:tag_empty` on static block tags, custom
+//! static registry tags, and `c:` convention tags), villager trades, trade sets, predicates, item
+//! modifiers, and slot sources.
 //!
 //! Run 1 (both `chemlib` and `boiler` installed): all guarded entries load and the conditional
 //! `recipe_filter` removes `boiler:filtered_out`, while `neoforge:never` siblings stay omitted.
 //! Run 2 (`boiler` installed alone): `boiler` starts cleanly with zero errors, `boiler:filtered_out`
-//! survives, every `chemlib`-guarded entry is absent, and the static-tag `tag_empty` pack feature
-//! still loads.
+//! survives, every `chemlib`-guarded entry (including `chemlib:gas` and `c:chemlib_catalysts`
+//! conditions) is absent, and built-in static-tag / `c:ingots/iron` conditions still hold.
 
 use serde_json::Value;
 use std::{
@@ -19,6 +22,11 @@ use std::{
 };
 
 const CHEMLIB_SOURCE: &str = r#"
+#[derive(Debug)]
+pub struct Gas;
+
+pub const GASES: mod_api::RegistryKey<Gas> = mod_api::RegistryKey::new("chemlib:gas");
+
 #[derive(Default)]
 struct ChemLib;
 
@@ -31,6 +39,11 @@ impl mod_api::LoadCondition for Active {
 
 #[mod_api::sunrise_mod]
 impl mod_api::Hooks for ChemLib {
+    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+        r.declare_registry(GASES, mod_api::RegistryOptions::new());
+        r.register_entry(GASES, "chemlib:oxygen", Gas);
+    }
+
     fn register_load_conditions(
         &self,
         _: &mod_api::RegistrationContext,
@@ -65,9 +78,19 @@ impl mod_api::Hooks for Boiler {
         let chemlib_custom = has_recipe("chemlib:active_brew");
         let boiler_recipe = has_recipe("boiler:chem_recipe");
         let filtered_out = has_recipe("boiler:filtered_out");
+        let gas_reg_recipe = has_recipe("boiler:gas_registered_recipe");
+        let gas_tag_recipe = has_recipe("boiler:gas_tag_recipe");
+        let c_builtin_recipe = has_recipe("boiler:c_builtin_tag_recipe");
+        let c_mod_recipe = has_recipe("boiler:c_mod_tag_recipe");
         let content_feature = has_entry("minecraft:worldgen/feature", "boiler:chem_feature");
         let pack_feature = has_entry("minecraft:worldgen/feature", "boiler:pack_chem_feature");
         let pack_tag_feature = has_entry("minecraft:worldgen/feature", "boiler:pack_tag_feature");
+        let pack_custom_reg_feature =
+            has_entry("minecraft:worldgen/feature", "boiler:pack_custom_reg_feature");
+        let pack_custom_tag_feature =
+            has_entry("minecraft:worldgen/feature", "boiler:pack_custom_tag_feature");
+        let pack_c_tag_feature =
+            has_entry("minecraft:worldgen/feature", "boiler:pack_c_tag_feature");
         let false_feature = has_entry("minecraft:worldgen/feature", "boiler:never_feature");
         let trade = has_entry("minecraft:villager_trade", "boiler:chem_trade");
         let trade_set = has_entry("minecraft:trade_set", "boiler:chem_set");
@@ -76,7 +99,7 @@ impl mod_api::Hooks for Boiler {
         let slot_source = has_entry("minecraft:slot_source", "boiler:chem_slots");
 
         println!(
-            "m2m_load_conditions chemlib_custom={chemlib_custom} boiler_recipe={boiler_recipe} filtered_out={filtered_out} content_feature={content_feature} pack_feature={pack_feature} pack_tag_feature={pack_tag_feature} false_feature={false_feature} trade={trade} trade_set={trade_set} predicate={predicate} item_mod={item_mod} slot_source={slot_source}"
+            "m2m_load_conditions chemlib_custom={chemlib_custom} boiler_recipe={boiler_recipe} filtered_out={filtered_out} gas_reg_recipe={gas_reg_recipe} gas_tag_recipe={gas_tag_recipe} c_builtin_recipe={c_builtin_recipe} c_mod_recipe={c_mod_recipe} content_feature={content_feature} pack_feature={pack_feature} pack_tag_feature={pack_tag_feature} pack_custom_reg_feature={pack_custom_reg_feature} pack_custom_tag_feature={pack_custom_tag_feature} pack_c_tag_feature={pack_c_tag_feature} false_feature={false_feature} trade={trade} trade_set={trade_set} predicate={predicate} item_mod={item_mod} slot_source={slot_source}"
         );
         std::process::exit(0);
     }
@@ -147,6 +170,21 @@ fn write_world_datapack(game_dir: &Path) {
         &pack.join("data/boiler/worldgen/feature/pack_tag_feature.json"),
         r#"{"neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:tag_empty","registry":"minecraft:block","tag":"minecraft:logs"}}],"type":"minecraft:no_op","config":{}}"#,
     );
+    // Pack worldgen feature guarded by neoforge:registered on custom static registry chemlib:gas.
+    write_file(
+        &pack.join("data/boiler/worldgen/feature/pack_custom_reg_feature.json"),
+        r#"{"neoforge:conditions":[{"type":"neoforge:registered","registry":"chemlib:gas","value":"chemlib:oxygen"}],"type":"minecraft:no_op","config":{}}"#,
+    );
+    // Pack worldgen feature guarded by neoforge:tag_empty on custom static registry tag chemlib:breathable.
+    write_file(
+        &pack.join("data/boiler/worldgen/feature/pack_custom_tag_feature.json"),
+        r#"{"neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:tag_empty","registry":"chemlib:gas","tag":"chemlib:breathable"}}],"type":"minecraft:no_op","config":{}}"#,
+    );
+    // Pack worldgen feature guarded by neoforge:tag_empty on built-in c: convention tag c:ingots/iron.
+    write_file(
+        &pack.join("data/boiler/worldgen/feature/pack_c_tag_feature.json"),
+        r#"{"neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:tag_empty","registry":"minecraft:item","tag":"c:ingots/iron"}}],"type":"minecraft:no_op","config":{}}"#,
+    );
     // Sibling guarded by neoforge:never must stay omitted in both runs.
     write_file(
         &pack.join("data/boiler/worldgen/feature/never_feature.json"),
@@ -203,6 +241,14 @@ fn two_separately_built_mods_gate_all_data_loaders_with_load_conditions() {
     write_file(
         &chemlib.join("data/chemlib/recipe/active_brew.json"),
         r#"{"neoforge:conditions":[{"type":"chemlib:active"}],"type":"minecraft:crafting_shapeless","ingredients":["minecraft:stick"],"result":{"id":"minecraft:torch","count":1}}"#,
+    );
+    write_file(
+        &chemlib.join("data/chemlib/tags/chemlib/gas/breathable.json"),
+        r#"{"values":["chemlib:oxygen"]}"#,
+    );
+    write_file(
+        &chemlib.join("data/c/tags/item/chemlib_catalysts.json"),
+        r#"{"values":["minecraft:iron_ingot"]}"#,
     );
 
     let stage = |name: &str, project: &Path| -> PathBuf {
@@ -263,6 +309,23 @@ fn two_separately_built_mods_gate_all_data_loaders_with_load_conditions() {
     write_file(
         &boiler.join("data/boiler/recipe_filter/remove_when_chem.json"),
         r#"{"neoforge:conditions":[{"type":"neoforge:mod_loaded","modid":"chemlib"}],"filters":[{"id":"boiler:filtered_out","remove":true}]}"#,
+    );
+    // Recipes guarded by neoforge:registered and neoforge:tag_empty on chemlib:gas and c: tags.
+    write_file(
+        &boiler.join("data/boiler/recipe/gas_registered_recipe.json"),
+        r#"{"neoforge:conditions":[{"type":"neoforge:registered","registry":"chemlib:gas","value":"chemlib:oxygen"}],"type":"minecraft:crafting_shapeless","ingredients":["minecraft:glass"],"result":{"id":"minecraft:glass_bottle","count":1}}"#,
+    );
+    write_file(
+        &boiler.join("data/boiler/recipe/gas_tag_recipe.json"),
+        r#"{"neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:tag_empty","registry":"chemlib:gas","tag":"chemlib:breathable"}}],"type":"minecraft:crafting_shapeless","ingredients":["minecraft:sand"],"result":{"id":"minecraft:glass","count":1}}"#,
+    );
+    write_file(
+        &boiler.join("data/boiler/recipe/c_builtin_tag_recipe.json"),
+        r#"{"neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:tag_empty","tag":"c:ingots/iron"}}],"type":"minecraft:crafting_shapeless","ingredients":["minecraft:iron_ingot"],"result":{"id":"minecraft:iron_nugget","count":9}}"#,
+    );
+    write_file(
+        &boiler.join("data/boiler/recipe/c_mod_tag_recipe.json"),
+        r#"{"neoforge:conditions":[{"type":"neoforge:not","value":{"type":"neoforge:tag_empty","tag":"c:chemlib_catalysts"}}],"type":"minecraft:crafting_shapeless","ingredients":["minecraft:gold_ingot"],"result":{"id":"minecraft:gold_nugget","count":9}}"#,
     );
     // Content-mod worldgen feature guarded by mod_loaded("chemlib").
     write_file(
@@ -362,7 +425,7 @@ fn two_separately_built_mods_gate_all_data_loaders_with_load_conditions() {
 
     // Run 1: chemlib + boiler together.
     let stdout_both = start_dedicated(&combined, "game-both");
-    let expected_both = "m2m_load_conditions chemlib_custom=true boiler_recipe=true filtered_out=false content_feature=true pack_feature=true pack_tag_feature=true false_feature=false trade=true trade_set=true predicate=true item_mod=true slot_source=true";
+    let expected_both = "m2m_load_conditions chemlib_custom=true boiler_recipe=true filtered_out=false gas_reg_recipe=true gas_tag_recipe=true c_builtin_recipe=true c_mod_recipe=true content_feature=true pack_feature=true pack_tag_feature=true pack_custom_reg_feature=true pack_custom_tag_feature=true pack_c_tag_feature=true false_feature=false trade=true trade_set=true predicate=true item_mod=true slot_source=true";
     assert!(
         stdout_both.lines().any(|line| line == expected_both),
         "expected `{expected_both}` in Run 1 output:\n{stdout_both}"
@@ -370,7 +433,7 @@ fn two_separately_built_mods_gate_all_data_loaders_with_load_conditions() {
 
     // Run 2: boiler alone (optional chemlib absent).
     let stdout_alone = start_dedicated(&boiler_app, "game-alone");
-    let expected_alone = "m2m_load_conditions chemlib_custom=false boiler_recipe=false filtered_out=true content_feature=false pack_feature=false pack_tag_feature=true false_feature=false trade=false trade_set=false predicate=false item_mod=false slot_source=false";
+    let expected_alone = "m2m_load_conditions chemlib_custom=false boiler_recipe=false filtered_out=true gas_reg_recipe=false gas_tag_recipe=false c_builtin_recipe=true c_mod_recipe=false content_feature=false pack_feature=false pack_tag_feature=true pack_custom_reg_feature=false pack_custom_tag_feature=false pack_c_tag_feature=true false_feature=false trade=false trade_set=false predicate=false item_mod=false slot_source=false";
     assert!(
         stdout_alone.lines().any(|line| line == expected_alone),
         "expected `{expected_alone}` in Run 2 output:\n{stdout_alone}"
