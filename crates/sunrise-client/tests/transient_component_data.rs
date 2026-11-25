@@ -239,7 +239,8 @@ fn advancement_exact_values_fail_but_any_value_component_types_load() {
         "advancement",
         "b_icon",
         &json!({"display":{"icon":{"id":"minecraft:stone",
-        "components":{"!minecraft:creative_slot_lock":{}}}},"criteria":{}}),
+        "components":{"!minecraft:creative_slot_lock":{}}}},
+        "criteria":{"never":{"trigger":"minecraft:impossible"}}}),
     );
     write(
         root.path(),
