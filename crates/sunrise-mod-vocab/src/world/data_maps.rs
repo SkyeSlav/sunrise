@@ -217,18 +217,21 @@ impl RawDataMap {
     }
 
     /// The target registry ID as supplied by the caller.
+    // hidden: the registrar lowers a RawDataMap by reading the registry as written; mods never read it back.
     #[doc(hidden)]
     pub fn raw_registry(&self) -> &str {
         &self.registry
     }
 
     /// The map ID as supplied by the caller.
+    // hidden: the registrar lowers a RawDataMap by reading the id as written; mods never read it back.
     #[doc(hidden)]
     pub fn raw_id(&self) -> &str {
         &self.id
     }
 
     /// The configured sync policy.
+    // hidden: the registrar lowers a RawDataMap by reading the sync policy as written; mods never read it back.
     #[doc(hidden)]
     pub fn raw_sync(&self) -> DataMapSync {
         self.sync
