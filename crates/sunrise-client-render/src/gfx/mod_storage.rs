@@ -240,6 +240,16 @@ impl ModStorageBuffers {
         })
     }
 
+    /// The whole buffer of `handle`, checking ownership and liveness (an indirect dispatch reads
+    /// its counts from it).
+    pub fn resolve_buffer(
+        &self,
+        owner: Option<&'static str>,
+        handle: StorageBufferRef,
+    ) -> Result<wgpu::Buffer, BufferError> {
+        self.get_owned(owner, handle).map(|buf| buf.buffer.clone())
+    }
+
     fn get_owned(
         &self,
         owner: Option<&'static str>,
@@ -328,6 +338,18 @@ impl super::Renderer {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .resolve(&self.device.limits(), owner, slice)
+    }
+
+    /// The buffer of `handle` for an indirect dispatch.
+    pub fn resolve_mod_storage_buffer(
+        &self,
+        owner: Option<&'static str>,
+        handle: StorageBufferRef,
+    ) -> Result<wgpu::Buffer, BufferError> {
+        self.mod_storage
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .resolve_buffer(owner, handle)
     }
 
     /// Apply the queued storage buffer writes, in order, before the frame draws.

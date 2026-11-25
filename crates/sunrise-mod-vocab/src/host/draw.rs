@@ -847,4 +847,17 @@ pub trait FrameGraphContext {
         let _ = (desc, record);
         Err(FrameGraphError::Unavailable)
     }
+
+    /// Add a compute node to this frame's graph: `record` issues dispatches synchronously during
+    /// setup, and the graph runs them outside any render pass at the node's place in the
+    /// topological order. Never culled. A dispatch the device cannot run is refused by
+    /// [`ComputeDispatchContext`] with an `Err`, never a panic.
+    fn add_compute_pass(
+        &mut self,
+        desc: ComputePassDescriptor,
+        record: &mut dyn FnMut(&mut dyn ComputeDispatchContext),
+    ) -> Result<FramePassId, FrameGraphError> {
+        let _ = (desc, record);
+        Err(FrameGraphError::Unavailable)
+    }
 }

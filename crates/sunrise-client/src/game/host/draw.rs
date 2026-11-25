@@ -833,6 +833,46 @@ impl OffscreenDrawContext for GameOffscreenDrawContext<'_, '_> {
     }
 }
 
+/// Dispatch recorder handed to a `FrameGraphContext::add_compute_pass` callback.
+struct GameComputeDispatchContext<'a, 'g> {
+    game: &'a Game<'g>,
+    pass: &'a mut sunrise_client::gfx::mod_frame_graph::RecordedFramePass,
+    transients: &'a [RenderTargetDescriptor],
+}
+
+impl ComputeDispatchContext for GameComputeDispatchContext<'_, '_> {
+    fn dispatch(
+        &mut self,
+        pipeline: ComputePipelineRef,
+        bindings: &DrawBindings<'_>,
+        workgroups: [u32; 3],
+    ) -> Result<(), ComputeDispatchError> {
+        self.game.native_compute_dispatch(
+            self.pass,
+            self.transients,
+            pipeline,
+            bindings,
+            Ok(workgroups),
+        )
+    }
+
+    fn dispatch_indirect(
+        &mut self,
+        pipeline: ComputePipelineRef,
+        bindings: &DrawBindings<'_>,
+        indirect: StorageBufferRef,
+        offset: u64,
+    ) -> Result<(), ComputeDispatchError> {
+        self.game.native_compute_dispatch(
+            self.pass,
+            self.transients,
+            pipeline,
+            bindings,
+            Err((indirect, offset)),
+        )
+    }
+}
+
 /// Frame-graph setup context lent to `Hooks::frame_graph_setup` (`FrameGraphSetupEvent`).
 pub(crate) struct GameFrameGraphContext<'a, 'g> {
     game: &'a Game<'g>,
@@ -907,6 +947,47 @@ impl FrameGraphContext for GameFrameGraphContext<'_, '_> {
                 pass: &mut recorded,
                 transients: &self.surface.graph.transients,
                 camera: self.surface.camera,
+            };
+            record(&mut ctx);
+        }
+        Ok(self.surface.graph.push_pass(recorded))
+    }
+
+    fn add_compute_pass(
+        &mut self,
+        desc: ComputePassDescriptor,
+        record: &mut dyn FnMut(&mut dyn ComputeDispatchContext),
+    ) -> Result<FramePassId, FrameGraphError> {
+        let Some(renderer) = self.game.renderer.as_ref() else {
+            return Err(FrameGraphError::Unavailable);
+        };
+        let owner = mod_api::content::crash::current_native_mod();
+        for &t in desc.reads.iter().chain(desc.writes.iter()) {
+            if let FrameTarget::Mod(rt) = t {
+                renderer
+                    .render_target_size(owner, rt)
+                    .map_err(FrameGraphError::InvalidTarget)?;
+            }
+        }
+        if let Err(err) = self
+            .surface
+            .graph
+            .validate_new_compute_pass(&desc, self.surface.oit_on)
+        {
+            if let FrameGraphError::Cycle { ref passes } = err {
+                renderer.warn_frame_graph_cycle_once(passes);
+            }
+            return Err(err);
+        }
+        let mut recorded =
+            sunrise_client::gfx::mod_frame_graph::RecordedFramePass::from_compute_descriptor(
+                desc, owner,
+            );
+        {
+            let mut ctx = GameComputeDispatchContext {
+                game: self.game,
+                pass: &mut recorded,
+                transients: &self.surface.graph.transients,
             };
             record(&mut ctx);
         }

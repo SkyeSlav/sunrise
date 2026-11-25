@@ -704,6 +704,98 @@ pub fn translate(
         .unwrap_or_else(|reason| Err(vec![problem(sources.fragment_file, reason)]))
 }
 
+/// The GLSL source text and path of one mod compute shader (`.csh`).
+pub struct ComputeSources<'a> {
+    /// Asset path for diagnostics (e.g. `assets/mod/shaders/compute/a.csh`).
+    pub file: &'a str,
+    /// Include base folder for quoted relative includes (e.g. `mod:shaders/compute/`).
+    pub dir: &'a str,
+    pub source: &'a str,
+}
+
+/// Compilation options for [`translate_compute`].
+#[derive(Clone, Copy)]
+pub struct ComputeOptions<'a> {
+    /// Preprocessor defines (`NAME` or `NAME value`) in order.
+    pub defines: &'a [&'a str],
+    /// Mod-declared bindings (`BindGroupLayout`) in declaration order, bound in group
+    /// [`COMPUTE_BIND_GROUP`].
+    pub mod_bindings: &'a [ModBinding<'a>],
+    /// Also run SPIR-V, Metal and DirectX 12 backend translation checks.
+    pub check_backends: bool,
+    /// Stage interface limits of the target device (or [`DEVICELESS_INTERFACE_LIMITS`]).
+    pub interface: InterfaceLimits,
+}
+
+/// The one bind group of a compute pipeline: the mod's own `BindGroupLayout`. A compute shader
+/// reads no vanilla bindings, so there is no shared set 0 to sit beside.
+pub const COMPUTE_BIND_GROUP: u32 = 0;
+
+/// The folder under `assets/<namespace>/` holding compute shaders (`.csh`).
+pub const COMPUTE_FOLDER: &str = "shaders/compute";
+
+/// Translate and validate one mod compute shader (`.csh`) on a guarded 64 MiB stack thread with
+/// the same crash/memory containment bounds as [`translate`].
+pub fn translate_compute(
+    sources: &ComputeSources<'_>,
+    options: &ComputeOptions<'_>,
+    include: &(dyn Fn(&str) -> Result<Option<String>, String> + Sync),
+) -> Result<sunrise_glsl::ComputeTranslated, Vec<Problem>> {
+    guard::guarded(|| translate_compute_inner(sources, options, include))
+        .unwrap_or_else(|reason| Err(vec![problem(sources.file, reason)]))
+}
+
+fn translate_compute_inner(
+    sources: &ComputeSources<'_>,
+    options: &ComputeOptions<'_>,
+    include: &dyn Fn(&str) -> Result<Option<String>, String>,
+) -> Result<sunrise_glsl::ComputeTranslated, Vec<Problem>> {
+    let includes = Includes {
+        read: &include,
+        namespace: "minecraft",
+        folder: INCLUDE_FOLDER,
+        once: &["moj_import"],
+    };
+    let expanded = sunrise_glsl::expand_includes(
+        sources.source,
+        sources.dir,
+        &includes,
+        Some(options.defines),
+    )
+    .map_err(|e| vec![problem(sources.file, e.to_string())])?;
+    if let Some((at, msg)) = guard::refusal(&expanded) {
+        return Err(vec![located(sources.file, &expanded, at, msg)]);
+    }
+    let set = assign_set1_bindings(options.mod_bindings, 0);
+    let inputs = Inputs {
+        blocks: &[],
+        samplers: &[],
+        extra_set: COMPUTE_BIND_GROUP,
+        extra_blocks: &set.blocks,
+        extra_samplers: &set.samplers,
+        extra_texel_buffers: &set.texel_buffers,
+        extra_storage_buffers: &set.storage_buffers,
+        extra_storage_images: &set.storage_images,
+        push_constant_binding: None,
+        loose: &[],
+        defines: options.defines,
+        includes: &includes,
+    };
+    let translated =
+        sunrise_glsl::translate_compute(sources.source, sources.dir, &inputs, options.interface)
+            .map_err(|e| vec![problem(sources.file, e)])?;
+    if options.check_backends {
+        let errors: Vec<Problem> = translate_backends(&translated.module)
+            .into_iter()
+            .map(|err| problem(sources.file, err))
+            .collect();
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+    }
+    Ok(translated)
+}
+
 /// Translate and validate all three OIT variants (`DepthBounds`, `Transmittance`, `Accumulate`)
 /// of an `.order_independent()` mod render pipeline program on a guarded 64 MiB stack thread.
 /// When `additive` is true (`PipelineBlend::Additive`), `OIT_ADDITIVE` is also defined so the

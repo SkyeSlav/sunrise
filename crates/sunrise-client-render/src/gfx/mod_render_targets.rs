@@ -591,6 +591,10 @@ impl super::Renderer {
                 .features()
                 .contains(wgpu::Features::FLOAT32_FILTERABLE),
             read_write_storage,
+            self.device.features().contains(wgpu::Features::SUBGROUP),
+            self.device
+                .features()
+                .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE),
         )
     }
 
@@ -669,6 +673,11 @@ impl super::Renderer {
     /// Maximum 2D texture dimension supported by this renderer's GPU device.
     pub fn max_texture_dimension_2d(&self) -> u32 {
         self.device.limits().max_texture_dimension_2d
+    }
+
+    /// Maximum workgroup count of one compute dispatch dimension on this renderer's GPU device.
+    pub fn max_compute_workgroups_per_dimension(&self) -> u32 {
+        self.device.limits().max_compute_workgroups_per_dimension
     }
 
     /// Whether this renderer's GPU device supports linear filtering on `R32Float` textures.

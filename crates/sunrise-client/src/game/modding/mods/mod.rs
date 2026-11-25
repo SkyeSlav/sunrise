@@ -907,13 +907,16 @@ fn register_render_pipelines(
     }
     let mut pipelines = Vec::new();
     let mut render_types = Vec::new();
+    let mut compute_pipelines = Vec::new();
     Game::native_register_render_pipelines(
         &RegistrationContext::new(),
         &mut pipelines,
         &mut render_types,
+        &mut compute_pipelines,
     );
     sunrise_client_render::mod_pipelines::register(pipelines, vanilla_root)?;
     sunrise_client_render::mod_pipelines::register_render_types(render_types, vanilla_root)?;
+    sunrise_client_render::mod_compute::register(compute_pipelines)?;
     Ok(())
 }
 

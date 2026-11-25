@@ -42,7 +42,8 @@ pub enum FrameGraphSlot {
 #[derive(Clone, Debug)]
 pub struct RecordedFramePass {
     pub label: String,
-    pub target: FrameTarget,
+    /// The render target the pass draws into; `None` for a compute node.
+    pub target: Option<FrameTarget>,
     pub clear_color: Vec<Option<[f32; 4]>>,
     pub clear_depth: Option<f32>,
     pub clear_stencil: Option<u32>,
@@ -59,6 +60,8 @@ pub struct RecordedFramePass {
     pub inline_uniforms: Vec<u8>,
     pub texel_data: Vec<u8>,
     pub owner: Option<&'static str>,
+    /// The dispatches of a compute node (`None` for a render pass).
+    pub dispatches: Option<Vec<super::mod_compute::RecordedDispatch>>,
 }
 
 impl RecordedFramePass {
@@ -66,7 +69,7 @@ impl RecordedFramePass {
     pub fn from_descriptor(desc: FramePassDescriptor, owner: Option<&'static str>) -> Self {
         Self {
             label: desc.label,
-            target: desc.target,
+            target: Some(desc.target),
             clear_color: desc.clear_color,
             clear_depth: desc.clear_depth,
             clear_stencil: desc.clear_stencil,
@@ -83,15 +86,36 @@ impl RecordedFramePass {
             inline_uniforms: Vec::new(),
             texel_data: Vec::new(),
             owner,
+            dispatches: None,
         }
     }
 
-    fn writes_external(&self) -> bool {
-        self.target.is_external() || self.writes.iter().any(|t| t.is_external())
-    }
-
-    fn all_writes(&self) -> impl Iterator<Item = FrameTarget> + '_ {
-        std::iter::once(self.target).chain(self.writes.iter().copied())
+    /// An empty compute node from a validated [`ComputePassDescriptor`]; it is never culled.
+    pub fn from_compute_descriptor(
+        desc: mod_api::ComputePassDescriptor,
+        owner: Option<&'static str>,
+    ) -> Self {
+        Self {
+            label: desc.label,
+            target: None,
+            clear_color: Vec::new(),
+            clear_depth: None,
+            clear_stencil: None,
+            projection: None,
+            view: None,
+            reads: desc.reads,
+            writes: desc.writes,
+            after: desc.after,
+            before: desc.before,
+            disable_culling: true,
+            draws: Vec::new(),
+            transient_vertices: Vec::new(),
+            transient_indices: Vec::new(),
+            inline_uniforms: Vec::new(),
+            texel_data: Vec::new(),
+            owner,
+            dispatches: Some(Vec::new()),
+        }
     }
 }
 
@@ -131,20 +155,33 @@ impl RecordedFrameGraph {
         desc: &FramePassDescriptor,
         oit_on: bool,
     ) -> Result<(), FrameGraphError> {
+        self.validate_spec(PassGraphSpec::from_descriptor(desc), oit_on)
+    }
+
+    /// [`Self::validate_new_pass`] for a compute node.
+    pub fn validate_new_compute_pass(
+        &self,
+        desc: &mod_api::ComputePassDescriptor,
+        oit_on: bool,
+    ) -> Result<(), FrameGraphError> {
+        self.validate_spec(PassGraphSpec::from_compute_descriptor(desc), oit_on)
+    }
+
+    fn validate_spec(&self, desc: PassGraphSpec<'_>, oit_on: bool) -> Result<(), FrameGraphError> {
         if desc.label.trim().is_empty() {
             return Err(FrameGraphError::EmptyLabel);
         }
         match desc.target {
-            FrameTarget::Mod(_) => {}
-            FrameTarget::Transient(id) => {
+            None | Some(FrameTarget::Mod(_)) => {}
+            Some(FrameTarget::Transient(id)) => {
                 if self.transient_desc(id).is_none() {
                     return Err(FrameGraphError::UnknownTransientTarget(id));
                 }
             }
-            other => return Err(FrameGraphError::UnsupportedTarget(other)),
+            Some(other) => return Err(FrameGraphError::UnsupportedTarget(other)),
         }
-        for &t in &desc.reads {
-            if t == desc.target || desc.writes.contains(&t) {
+        for &t in desc.reads {
+            if Some(t) == desc.target || desc.writes.contains(&t) {
                 return Err(FrameGraphError::SelfDependency);
             }
             if let FrameTarget::Transient(id) = t
@@ -153,7 +190,7 @@ impl RecordedFrameGraph {
                 return Err(FrameGraphError::UnknownTransientTarget(id));
             }
         }
-        for &t in &desc.writes {
+        for &t in desc.writes {
             if let FrameTarget::Transient(id) = t
                 && self.transient_desc(id).is_none()
             {
@@ -175,7 +212,7 @@ impl RecordedFrameGraph {
             .iter()
             .map(PassGraphSpec::from_recorded)
             .collect();
-        specs.push(PassGraphSpec::from_descriptor(desc));
+        specs.push(desc);
         compile_specs(&specs, self.transients.len(), oit_on, false).map(|_| ())
     }
 
@@ -202,7 +239,7 @@ impl RecordedFrameGraph {
 /// implementation without cloning draw buffers.
 struct PassGraphSpec<'a> {
     label: &'a str,
-    target: FrameTarget,
+    target: Option<FrameTarget>,
     reads: &'a [FrameTarget],
     writes: &'a [FrameTarget],
     after: &'a [FramePassRef],
@@ -223,10 +260,22 @@ impl<'a> PassGraphSpec<'a> {
         }
     }
 
+    fn from_compute_descriptor(d: &'a mod_api::ComputePassDescriptor) -> Self {
+        Self {
+            label: &d.label,
+            target: None,
+            reads: &d.reads,
+            writes: &d.writes,
+            after: &d.after,
+            before: &d.before,
+            disable_culling: true,
+        }
+    }
+
     fn from_descriptor(d: &'a FramePassDescriptor) -> Self {
         Self {
             label: &d.label,
-            target: d.target,
+            target: Some(d.target),
             reads: &d.reads,
             writes: &d.writes,
             after: &d.after,
@@ -236,11 +285,11 @@ impl<'a> PassGraphSpec<'a> {
     }
 
     fn writes_external(&self) -> bool {
-        self.target.is_external() || self.writes.iter().any(|t| t.is_external())
+        self.target.is_some_and(|t| t.is_external()) || self.writes.iter().any(|t| t.is_external())
     }
 
     fn all_writes(&self) -> impl Iterator<Item = FrameTarget> + '_ {
-        std::iter::once(self.target).chain(self.writes.iter().copied())
+        self.target.into_iter().chain(self.writes.iter().copied())
     }
 }
 
@@ -783,9 +832,18 @@ impl FrameGraphRunner {
 
             let pass_idx = self.compiled.order[order_pos];
             let pass = &self.recorded.passes[pass_idx];
+            if let Some(dispatches) = &pass.dispatches {
+                let resolved = resolve_dispatch_transients(dispatches, &self.active_transients);
+                world_primitives
+                    .pipelines
+                    .compute
+                    .record(device, encoder, &resolved);
+            }
             let resolved_target = match pass.target {
-                FrameTarget::Mod(rt) => mod_render_targets.resolve_target(pass.owner, rt, 0).ok(),
-                FrameTarget::Transient(id) => {
+                Some(FrameTarget::Mod(rt)) => {
+                    mod_render_targets.resolve_target(pass.owner, rt, 0).ok()
+                }
+                Some(FrameTarget::Transient(id)) => {
                     self.active_transients.get(&id).map(|t| t.as_resolved())
                 }
                 _ => None,
@@ -905,6 +963,41 @@ fn resolve_pass_transient_bindings(
                         }
                     }
                     _ => {}
+                }
+            }
+        }
+        if ok {
+            out.push(cloned);
+        }
+    }
+    out
+}
+
+/// `dispatches` with each transient target binding swapped for its pooled texture view; a
+/// dispatch whose transient is not live is dropped, as a draw's is.
+fn resolve_dispatch_transients(
+    dispatches: &[super::mod_compute::RecordedDispatch],
+    active_transients: &HashMap<TransientTargetId, PooledTransientTarget>,
+) -> Vec<super::mod_compute::RecordedDispatch> {
+    let mut out = Vec::with_capacity(dispatches.len());
+    for dispatch in dispatches {
+        let mut cloned = dispatch.clone();
+        let mut ok = true;
+        for entry in &mut cloned.entries {
+            let view = match *entry {
+                ResolvedSet1Entry::TransientColor { target, attachment } => active_transients
+                    .get(&target)
+                    .and_then(|t| t.color_view(attachment)),
+                ResolvedSet1Entry::TransientDepth { target } => {
+                    active_transients.get(&target).and_then(|t| t.depth_view())
+                }
+                _ => continue,
+            };
+            match view {
+                Some((view_id, view)) => *entry = ResolvedSet1Entry::Texture { view_id, view },
+                None => {
+                    ok = false;
+                    break;
                 }
             }
         }

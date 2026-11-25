@@ -431,3 +431,50 @@ or one without `.order_independent()` to `OitTranslucent` returns
 `cargo sunrise-mod check` validates all three OIT variants using prepared resources or Sunrise's
 interface-only `oit.glsl` stub.
 
+## Compute pipelines
+
+A compute shader runs a grid of workgroups with no render pass: it reads and writes storage buffers,
+storage images and texel buffers, which suits culling, reductions and mip building (for example a
+depth-pyramid reduction that writes a mip chain and a visibility count). It is registered on the
+same `register_render_pipelines` hook as a draw pipeline.
+
+1. Write `assets/<namespace>/shaders/compute/<path>.csh` in GLSL 450. Declare
+   `layout(local_size_x = 8, local_size_y = 8) in;` and bind every resource by the name its
+   `BindGroupLayout` entry gives it. A compute shader has no `in` or `out` variables, no push
+   constants and one bind group, so a binding is the entry you declared and nothing else.
+2. Register it:
+
+   ```rust,ignore
+   event.compute_pipeline(
+       ComputePipeline::builder(id("mymod:reduce"), id("mymod:reduce"))
+           .bind_group_layout(layout)
+           .define_value("TILE", "8")
+           .build(),
+   );
+   ```
+
+3. Resolve `host.render_assets().compute_pipeline(&id)` in `client_setup` and again in
+   `client_resources_reloaded`; a handle from before a reload is `Stale`.
+4. In `frame_graph_setup`, add a compute node and dispatch from its callback:
+
+   ```rust,ignore
+   graph.add_compute_pass(
+       ComputePassDescriptor::new("reduce")
+           .reads(FrameTarget::Mod(depth))
+           .writes(FrameTarget::Mod(pyramid))
+           .after_stage(RenderLevelStage::AfterLevel),
+       &mut |ctx| {
+           let _ = ctx.dispatch(pipeline, &bindings, [8, 8, 1]);
+       },
+   )?;
+   ```
+
+   The node runs outside any render pass, in the order its reads, writes and `after`/`before`
+   give it, and is never culled. `dispatch_indirect` reads the three counts from a storage buffer
+   created with `indirect: true`.
+
+Everything a mod can get wrong comes back as an `Err`: a workgroup size, workgroup storage or
+binding count over the device's limits makes the pipeline resolve `Invalid`, a shader that needs
+subgroup operations resolves `UnsupportedFeature` when `RenderCapabilities::subgroup` is false,
+and a dispatch over `max_compute_workgroups_per_dimension` is `TooManyWorkgroups`. Your GPU
+objects survive a resource reload and a world close; free them with `release`.

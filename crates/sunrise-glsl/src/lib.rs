@@ -423,6 +423,86 @@ pub fn translate(
     ))
 }
 
+/// A compute shader, expanded, translated and validated ([`translate_compute`]).
+#[derive(Debug)]
+pub struct ComputeTranslated {
+    pub module: naga::Module,
+    /// The `local_size_x`, `local_size_y` and `local_size_z` the entry point declares.
+    pub workgroup_size: [u32; 3],
+    /// Bytes of `shared` (workgroup address space) variables the entry point uses
+    /// (`max_compute_workgroup_storage_size` bounds them).
+    pub workgroup_storage_bytes: u32,
+    /// Whether the shader uses subgroup operations (`GL_KHR_shader_subgroup_*`, `subgroupAdd` and
+    /// the like): a device without `Features::SUBGROUP` must refuse it.
+    pub uses_subgroup: bool,
+    /// The bindings of group 0 the entry point reads or writes.
+    pub read: Vec<u32>,
+}
+
+/// One GLSL 450 compute shader under `inputs`, whose extra bindings are in
+/// [`Inputs::extra_set`] (a compute pipeline has one bind group, the mod's, so callers use set
+/// `0`). `layout(local_size_x = ..., local_size_y = ..., local_size_z = ...) in;` declares the
+/// workgroup size; the caller checks it, [`ComputeTranslated::workgroup_storage_bytes`] and
+/// [`ComputeTranslated::uses_subgroup`] against the device's limits and features, as only it
+/// knows them. `in` and `out` variables are refused: a compute shader has no stage interface.
+pub fn translate_compute(
+    text: &str,
+    dir: &str,
+    inputs: &Inputs,
+    interface: InterfaceLimits,
+) -> Result<ComputeTranslated, String> {
+    let expanded = expand_includes(text, dir, inputs.includes, Some(inputs.defines))
+        .map_err(|e| e.to_string())?;
+    let stripped = strip_comments(&expanded);
+    let uses_subgroup = stripped.contains("subgroup") || stripped.contains("gl_Subgroup");
+    let source = texel_fetches(&glsl_fixups::fixups(&expanded));
+    let glue = Glue {
+        inputs: &[],
+        prelude: "",
+        setup: "",
+        finish: "",
+        vertex_id: "0",
+        fragment_finish: None,
+        interface,
+    };
+    let mut names = Names::new(other_binding_base(inputs)?);
+    let code = rewrite(&source, ShaderStage::Compute, inputs, &glue, &mut names)?;
+    let (module, info) = compile(
+        ShaderStage::Compute,
+        &code,
+        inputs.defines,
+        &names,
+        &|_| false,
+        interface,
+    )?;
+    let Some(entry) = module.entry_points.first() else {
+        return Err("the compute shader has no `main`".to_owned());
+    };
+    let workgroup_size = entry.workgroup_size;
+    let used = info.get_entry_point(0);
+    let mut workgroup_storage_bytes = 0u32;
+    let mut read = Vec::new();
+    for (handle, global) in module.global_variables.iter() {
+        if used[handle].is_empty() {
+            continue;
+        }
+        if global.space == naga::AddressSpace::WorkGroup {
+            workgroup_storage_bytes = workgroup_storage_bytes
+                .saturating_add(module.types[global.ty].inner.size(module.to_ctx()));
+        }
+        if let Some(binding) = global.binding.as_ref().filter(|b| b.group == 0) {
+            read.push(binding.binding);
+        }
+    }
+    Ok(ComputeTranslated {
+        module,
+        workgroup_size,
+        workgroup_storage_bytes,
+        uses_subgroup,
+        read,
+    })
+}
+
 /// A bound on a program's includes, which are pasted every time.
 const MAX_PASTES: u32 = 1024;
 pub const MAX_EXPANDED: usize = 1 << 20;
@@ -1131,6 +1211,12 @@ fn rewrite(
                 out.push('\n');
                 continue;
             };
+            if stage == ShaderStage::Compute && matches!(decl.storage, "in" | "out") {
+                return Err(format!(
+                    "{} {} is not allowed in a compute shader, which has no stage interface",
+                    decl.storage, decl.name
+                ));
+            }
             let qualifiers = decl.qualifiers.join(" ");
             match decl.storage {
                 "uniform" if matches!(decl.ty, "isamplerBuffer" | "usamplerBuffer") => {

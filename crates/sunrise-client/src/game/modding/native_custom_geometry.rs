@@ -611,7 +611,7 @@ impl Game<'_> {
     /// The optional device features of the active renderer; all off without one.
     pub(super) fn render_capabilities(&self) -> mod_api::RenderCapabilities {
         self.renderer.as_ref().map_or_else(
-            || mod_api::__private::built::render_capabilities(false, Vec::new()),
+            || mod_api::__private::built::render_capabilities(false, Vec::new(), false, false),
             |renderer| renderer.render_capabilities(),
         )
     }
@@ -667,6 +667,35 @@ impl Game<'_> {
             .ok_or(PipelineDrawError::Pipeline(
                 mod_api::RenderPipelineError::Invalid,
             ))?;
+        let writes_depth = self.pack.render.mod_pipelines.writes_depth(slot);
+        self.resolve_bindings_against(
+            layout,
+            pc_size,
+            writes_depth,
+            bindings,
+            active_target,
+            transients,
+            push_inline,
+            push_texel,
+        )
+    }
+
+    /// [`Self::resolve_draw_bindings_into`] for any pipeline kind: `layout` is the pipeline's
+    /// declared bind group, `pc_size` its push-constant bytes (0 for compute) and `writes_depth`
+    /// whether it writes depth (a depth-sampling hazard).
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::game) fn resolve_bindings_against(
+        &self,
+        layout: &mod_api::BindGroupLayout,
+        pc_size: u32,
+        writes_depth: bool,
+        bindings: &mod_api::DrawBindings<'_>,
+        active_target: Option<(mod_api::FrameTarget, u32)>,
+        transients: &[mod_api::RenderTargetDescriptor],
+        push_inline: &mut dyn FnMut(&[u8]) -> std::ops::Range<usize>,
+        push_texel: &mut dyn FnMut(&[u8]) -> std::ops::Range<usize>,
+    ) -> Result<Option<sunrise_client::gfx::mod_pipelines::ResolvedDrawBindings>, PipelineDrawError>
+    {
         if layout.is_empty() && pc_size == 0 {
             if !bindings.entries.is_empty() || bindings.push_constants.is_some() {
                 return Err(PipelineDrawError::InvalidBinding);
@@ -682,7 +711,6 @@ impl Game<'_> {
             .as_ref()
             .ok_or(PipelineDrawError::Buffer(mod_api::BufferError::Unavailable))?;
         let owner = mod_api::content::crash::current_native_mod();
-        let writes_depth = self.pack.render.mod_pipelines.writes_depth(slot);
         let active_pass = match active_target {
             Some((mod_api::FrameTarget::Mod(rt), mip)) => Some((rt, mip)),
             _ => None,
@@ -1272,6 +1300,85 @@ impl Game<'_> {
         }
         Ok(())
     }
+    /// Record one compute dispatch into a frame-graph compute node: the handle, the bindings
+    /// against the pipeline's declared bind group and the workgroup counts (or the indirect
+    /// buffer range) are all checked here, before any GPU call, so a bad dispatch is an `Err`.
+    pub(in crate::game) fn native_compute_dispatch(
+        &self,
+        pass: &mut sunrise_client::gfx::mod_frame_graph::RecordedFramePass,
+        transients: &[mod_api::RenderTargetDescriptor],
+        pipeline: mod_api::ComputePipelineRef,
+        bindings: &mod_api::DrawBindings<'_>,
+        workgroups: Result<[u32; 3], (mod_api::StorageBufferRef, u64)>,
+    ) -> Result<(), mod_api::ComputeDispatchError> {
+        use mod_api::ComputeDispatchError as Refused;
+        use sunrise_client::gfx::mod_compute::{DispatchKind, RecordedDispatch};
+        let dispatches = pass.dispatches.as_mut().ok_or(Refused::Unavailable)?;
+        let renderer = self.renderer.as_ref().ok_or(Refused::Unavailable)?;
+        let compute = self.pack.render.mod_pipelines.compute();
+        let slot = compute.slot(pipeline).map_err(Refused::Pipeline)?;
+        let built = compute.built()[slot as usize]
+            .as_ref()
+            .ok_or(Refused::Pipeline(mod_api::ComputePipelineError::Invalid))?;
+        let kind = match workgroups {
+            Ok(counts) => {
+                let max = renderer.max_compute_workgroups_per_dimension();
+                if counts.iter().any(|&n| n > max) {
+                    return Err(Refused::TooManyWorkgroups);
+                }
+                DispatchKind::Direct(counts)
+            }
+            Err((indirect, offset)) => {
+                let buffer = renderer
+                    .resolve_mod_storage_buffer(
+                        mod_api::content::crash::current_native_mod(),
+                        indirect,
+                    )
+                    .map_err(Refused::Buffer)?;
+                if !buffer.usage().contains(wgpu::BufferUsages::INDIRECT)
+                    || !offset.is_multiple_of(4)
+                    || offset.checked_add(12).is_none_or(|end| end > buffer.size())
+                {
+                    return Err(Refused::InvalidIndirect);
+                }
+                DispatchKind::Indirect { buffer, offset }
+            }
+        };
+        let mut inline = Vec::new();
+        let mut texel = Vec::new();
+        let resolved = self
+            .resolve_bindings_against(
+                &built.bind_group_layout,
+                0,
+                false,
+                bindings,
+                None,
+                transients,
+                &mut |bytes| {
+                    let start = inline.len();
+                    inline.extend_from_slice(bytes);
+                    start..inline.len()
+                },
+                &mut |bytes| {
+                    let start = texel.len();
+                    texel.extend_from_slice(bytes);
+                    start..texel.len()
+                },
+            )
+            .map_err(|error| match error {
+                PipelineDrawError::Buffer(error) => Refused::Buffer(error),
+                _ => Refused::InvalidBinding,
+            })?;
+        dispatches.push(RecordedDispatch {
+            slot,
+            entries: resolved.map_or_else(Vec::new, |bindings| bindings.entries),
+            inline,
+            texel,
+            kind,
+        });
+        Ok(())
+    }
+
     /// Record a retained GPU [`mod_api::MeshRef`] draw into an offscreen frame-graph pass.
     pub(in crate::game) fn native_offscreen_draw_mesh(
         &self,
@@ -1308,7 +1415,7 @@ impl Game<'_> {
             topology,
             &mesh_draw,
         )?;
-        let active_target = Some((pass.target, 0));
+        let active_target = pass.target.map(|target| (target, 0));
         let resolved_bindings = self.resolve_draw_bindings_into(
             slot,
             bindings,
@@ -1434,7 +1541,7 @@ impl Game<'_> {
             }
             _ => return Err(PipelineDrawError::InvalidRange),
         }
-        let active_target = Some((pass.target, 0));
+        let active_target = pass.target.map(|target| (target, 0));
         let resolved_bindings = self.resolve_draw_bindings_into(
             slot,
             bindings,

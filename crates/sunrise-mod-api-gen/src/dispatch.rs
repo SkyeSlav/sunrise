@@ -692,6 +692,7 @@ pub(super) fn emit<'a>(
                             | ("ExtractBlockScreenEffectEvent", "renderer")
                             | ("RegisterDebugRenderersEvent", "entries")
                             | ("RegisterRenderPipelinesEvent", "render_types")
+                            | ("RegisterRenderPipelinesEvent", "compute_pipelines")
                     ) =>
                 {
                     "pub(super)"
@@ -1321,7 +1322,8 @@ pub(super) fn emit<'a>(
                 continue;
             }
             if (registration_append.is_some() && Some(field.as_str()) == out)
-                || (event_type == "RegisterRenderPipelinesEvent" && field == "render_types")
+                || (event_type == "RegisterRenderPipelinesEvent"
+                    && matches!(field.as_str(), "render_types" | "compute_pipelines"))
             {
                 // Only the tail is writable; never clone or restore earlier registrations.
                 snaps.push(format!("{event}.{field}.len()"));

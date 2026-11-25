@@ -736,16 +736,18 @@ pub struct ModPipelines {
     oit_runs: Vec<Run>,
     draws: Vec<PreparedDraw>,
     oit_draws: Vec<PreparedDraw>,
+    /// The compute pipelines of the same load (`mod_compute`).
+    pub(super) compute: super::mod_compute::ModCompute,
 }
 
-fn sampler_filter_idx(filter: SamplerFilter) -> usize {
+pub(super) fn sampler_filter_idx(filter: SamplerFilter) -> usize {
     match filter {
         SamplerFilter::Linear => 1,
         _ => 0,
     }
 }
 
-fn sampler_address_idx(address: SamplerAddress) -> usize {
+pub(super) fn sampler_address_idx(address: SamplerAddress) -> usize {
     match address {
         SamplerAddress::Repeat => 1,
         SamplerAddress::MirroredRepeat => 2,
@@ -753,7 +755,7 @@ fn sampler_address_idx(address: SamplerAddress) -> usize {
     }
 }
 
-fn create_mod_samplers(device: &wgpu::Device) -> [[wgpu::Sampler; 3]; 2] {
+pub(super) fn create_mod_samplers(device: &wgpu::Device) -> [[wgpu::Sampler; 3]; 2] {
     let filters = [wgpu::FilterMode::Nearest, wgpu::FilterMode::Linear];
     let addresses = [
         wgpu::AddressMode::ClampToEdge,
@@ -1122,6 +1124,7 @@ impl ModPipelines {
             texel_storage_buf: None,
             texel_staging: Vec::new(),
             set1_bind_group_cache: HashMap::new(),
+            compute: Default::default(),
             fan_indices: FanIndices::default(),
             generation: 0,
             oit_generation: 0,
@@ -1807,7 +1810,9 @@ impl ModPipelines {
         set: &Pipelines,
         textures: Option<TextureSources<'_>>,
     ) -> Result<(), String> {
-        self.build_with(set, |this, built| this.pipeline(device, built, textures))
+        self.build_with(set, |this, built| this.pipeline(device, built, textures))?;
+        self.compute.build(device, set.compute());
+        Ok(())
     }
 
     fn build_with(

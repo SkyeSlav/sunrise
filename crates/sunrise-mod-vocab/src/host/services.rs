@@ -364,6 +364,21 @@ pub trait RenderAssets {
     }
     /// Side: client.
     /// Published asset/data read: available in Setup, Reloading and World.
+    /// Resolve the handle of a registered compute pipeline ([`ComputePipeline`]) by ID once in
+    /// `client_setup` and again in `client_resources_reloaded`, not each frame. Returns
+    /// [`ComputePipelineError::Unknown`] for an unregistered ID,
+    /// [`ComputePipelineError::Invalid`] when the shader did not build in the current resource
+    /// load or the device refuses it, and [`ComputePipelineError::UnsupportedFeature`] when it
+    /// needs subgroup operations the adapter lacks.
+    fn compute_pipeline(
+        &self,
+        id: &Identifier,
+    ) -> Result<ComputePipelineRef, ComputePipelineError> {
+        let _ = id;
+        unimplemented!("RenderAssets::compute_pipeline")
+    }
+    /// Side: client.
+    /// Published asset/data read: available in Setup, Reloading and World.
     /// Resolve the handle of a registered pipeline modifier by ID once in `client_setup`
     /// (also valid in `client_resources_reloaded`). `Unknown` for an ID no mod registered.
     /// Modifiers are static across resource reloads.

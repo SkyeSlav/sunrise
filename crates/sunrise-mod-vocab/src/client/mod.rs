@@ -9,6 +9,7 @@ pub(crate) mod client_executor;
 pub mod camera;
 pub(crate) mod client_reload;
 pub(crate) mod client_session;
+pub(crate) mod compute_pipeline;
 pub(crate) mod debug_entries;
 pub(crate) mod dynamic_texture;
 pub(crate) mod entity_layers;

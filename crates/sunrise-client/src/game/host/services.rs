@@ -136,6 +136,12 @@ impl RenderAssets for Game<'_> {
     fn render_type(&self, id: &Identifier) -> Result<RenderTypeRef, RenderTypeError> {
         CallbackOwner::call_host(|| self.pack.render.render_type(id))
     }
+    fn compute_pipeline(
+        &self,
+        id: &Identifier,
+    ) -> Result<ComputePipelineRef, ComputePipelineError> {
+        CallbackOwner::call_host(|| self.pack.render.compute_pipeline(id))
+    }
     fn pipeline_modifier(
         &self,
         id: &Identifier,
