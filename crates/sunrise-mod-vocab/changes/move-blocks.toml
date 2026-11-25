@@ -1,0 +1,10 @@
+ids = [
+    "handle:LevelRef::move_blocks",
+    "type:BlockTransform",
+    "type:MovedBlocks",
+    "type:MoveBlocksError",
+    "type:MoveBlocksError.NotLoaded",
+    "type:MoveBlocksError.BlockEntityRefused",
+    "type:MoveBlocksError.Transaction",
+]
+why = "Adds LevelRef::move_blocks (and BlockTransform, MovedBlocks, MoveBlocksError) to move blocks, their block entities (as the same holder with attachments, never cloned or dropped) and pending scheduled block ticks within a level or across levels, following vanilla /clone ... move (CloneCommands.clone with Mode.MOVE) and StructureTemplate.placeInWorld for rotation and mirroring. Verified block_changed already observes every Level.setBlock write with its BlockUpdateFlags, so block_changed keeps version 2."
