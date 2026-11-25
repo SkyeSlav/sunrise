@@ -65,3 +65,13 @@ server bakes no models: its store is empty.
 
 All three calls are available through `ClientHost::render_assets()` in Setup, Reloading and World.
 A state the live index lacks gives `UnknownModel` on both.
+
+## Sprite pixels
+
+`render_assets().atlas_sprite_pixels(sprite)` reads one blocks-atlas sprite on the CPU. Pass the
+`SpriteRef` that `texture_sprites` or `block_sprites` returned for it. It answers the sprite's
+first frame (an animated sprite's strip is not returned whole), untinted, as RGBA8 with rows from
+the top, at the sprite's own size, with no GPU readback. `NoSuchSprite` means the reference has
+no sprite in the published atlas (ask `texture_sprites` again after a reload); `NotReady` means no
+resources are published yet. Call it in `client_setup` or `client_resources_reloaded` to bake a
+lookup texture or a colour table, not each frame.

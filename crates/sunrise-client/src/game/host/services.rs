@@ -130,6 +130,12 @@ impl RenderAssets for Game<'_> {
     fn baked_model(&self, key: BakedModelKey) -> Result<BakedModelView<'_>, ModelError> {
         CallbackOwner::call_host(|| self.pack.render.baked_model(key))
     }
+    fn atlas_sprite_pixels(
+        &self,
+        sprite: SpriteRef,
+    ) -> Result<AtlasSpritePixels, AtlasSpriteError> {
+        CallbackOwner::call_host(|| self.native_atlas_sprite_pixels(sprite))
+    }
     fn render_pipeline(&self, id: &Identifier) -> Result<RenderPipelineRef, RenderPipelineError> {
         CallbackOwner::call_host(|| self.pack.render.render_pipeline(id))
     }

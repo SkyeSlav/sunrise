@@ -1,7 +1,9 @@
 //! Where blocks' textures are in the block sprite arrays, for a client mod drawing blocks with the player's own
 //! textures (resource packs included) in its own pass: with `WorldDrawn::block_sprites`, the arrays themselves.
 use super::Game;
-use mod_api::{AtlasRegion, ColorResolver, Identifier, LevelReadError};
+use mod_api::{
+    AtlasRegion, AtlasSpriteError, AtlasSpritePixels, ColorResolver, Identifier, LevelReadError,
+};
 use sunrise_client::block_sprites::{BlockSprites, Lookup, SpriteRef};
 use sunrise_client::chunk::Chunk;
 use sunrise_world::registry::BlockStateId;
@@ -41,6 +43,22 @@ impl Game<'_> {
             .iter()
             .map(|name| sunrise_client::block_sprites::texture_at(atlas, split, name))
             .collect()
+    }
+    /// For a client mod: one blocks-atlas sprite's first frame as RGBA8 (`RenderAssets::atlas_sprite_pixels`), from
+    /// the same atlas `texture_sprites` answers from, split into arrays the same way.
+    pub(super) fn native_atlas_sprite_pixels(
+        &self,
+        sprite: SpriteRef,
+    ) -> Result<AtlasSpritePixels, AtlasSpriteError> {
+        let atlas = self
+            .stitching_block_atlas
+            .as_ref()
+            .unwrap_or(&self.pack.render);
+        let split = self
+            .renderer
+            .as_ref()
+            .map_or(u32::MAX, |r| r.sprite_split());
+        atlas.atlas_sprite_pixels(sprite, split)
     }
     /// `ClientLevel.getBlockTint(pos, resolver)`, without consulting block or fluid tint sources.
     pub(super) fn biome_tint(

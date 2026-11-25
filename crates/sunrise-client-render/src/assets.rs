@@ -158,6 +158,65 @@ impl RenderAssets {
             .ok_or(mod_api::ModelError::UnknownModel)?;
         Ok(mod_api::__private::built::model_ref(self.generation, slot))
     }
+    /// Block-atlas sprite `sprite`'s first frame at its own resolution, for `RenderAssets::atlas_sprite_pixels`:
+    /// `split` is the layers to an array (`Renderer::sprite_split`). The layer pixels are the frame
+    /// the sprite starts on (an animation's first `.mcmeta` frame), scaled up to the array edge
+    /// by whole pixels when the sprite is smaller (`Sprites::finish`), so a sprite whose own side
+    /// (`Settings::native_size`) is not above the edge is read back exactly; a larger one stays at the edge.
+    pub fn atlas_sprite_pixels(
+        &self,
+        sprite: mod_api::SpriteRef,
+        split: u32,
+    ) -> std::result::Result<mod_api::AtlasSpritePixels, mod_api::AtlasSpriteError> {
+        use mod_api::AtlasSpriteError::{NoSuchSprite, NotReady};
+        if self.generation == 0 {
+            return Err(NotReady);
+        }
+        let split = u64::from(split.max(1));
+        if u64::from(sprite.layer) >= split {
+            return Err(NoSuchSprite);
+        }
+        let layer = u64::from(sprite.array) * split + u64::from(sprite.layer);
+        if layer >= u64::from(self.texture_layers) {
+            return Err(NoSuchSprite);
+        }
+        let edge = self.sprite_size as usize;
+        let bytes = edge * edge * 4;
+        let pixels = self.pixels.get();
+        let Some(held) = (layer as usize)
+            .checked_mul(bytes)
+            .and_then(|from| pixels.get(from..from.checked_add(bytes)?))
+        else {
+            return Err(NoSuchSprite);
+        };
+        let side = self
+            .sprite_mips
+            .get(layer as usize)
+            .map_or(edge, |m| m.native_size as usize);
+        if side == 0 || side >= edge {
+            return Ok(mod_api::__private::built::atlas_sprite_pixels(
+                edge as u32,
+                edge as u32,
+                held.to_vec(),
+            ));
+        }
+        // `Sprites::finish` read the pixel at row `r * side / edge` for each of the `edge` rows;
+        // the first row that reads source row `y` is `ceil(y * edge / side)`.
+        let at = |y: usize| (y * edge).div_ceil(side);
+        let mut rgba = Vec::with_capacity(side * side * 4);
+        for y in 0..side {
+            let row = at(y) * edge;
+            for x in 0..side {
+                let offset = (row + at(x)) * 4;
+                rgba.extend_from_slice(&held[offset..offset + 4]);
+            }
+        }
+        Ok(mod_api::__private::built::atlas_sprite_pixels(
+            side as u32,
+            side as u32,
+            rgba,
+        ))
+    }
     /// The keyframe animation `id` of this published store
     /// (`assets/<namespace>/neoforge/animations/entity/<path>.json`).
     pub fn animation(&self, id: &mod_api::Identifier) -> Option<mod_api::AnimationHolder> {
@@ -830,5 +889,103 @@ mod tests {
         );
         assert_eq!(*stored.get(), pixels);
         assert_eq!(stored.len(), pixels.len());
+    }
+}
+
+#[cfg(test)]
+mod atlas_sprite_pixels_tests {
+    use super::{RenderAssets, SpritePixels};
+    use crate::{mipmap::Settings, sprites::resample};
+    use mod_api::{AtlasSpriteError, SpriteRef};
+
+    fn sprite(array: u32, layer: u32) -> SpriteRef {
+        SpriteRef {
+            array,
+            layer,
+            animated: false,
+            cutout: false,
+        }
+    }
+
+    /// An atlas of `edge`-pixel layers holding each native frame scaled up as `Sprites::finish` does.
+    fn atlas(edge: u32, natives: &[(u32, Vec<u8>)]) -> RenderAssets {
+        let mut atlas = RenderAssets::unpublished();
+        atlas.generation = 1;
+        atlas.sprite_size = edge;
+        atlas.texture_layers = natives.len() as u32;
+        atlas.sprite_mips = natives
+            .iter()
+            .map(|(side, _)| Settings {
+                native_size: *side,
+                ..Default::default()
+            })
+            .collect();
+        atlas.pixels = SpritePixels::new(
+            natives
+                .iter()
+                .flat_map(|(side, frame)| resample(frame, *side, edge))
+                .collect(),
+        );
+        atlas
+    }
+
+    fn frame(side: u32, seed: u8) -> Vec<u8> {
+        (0..side * side * 4)
+            .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed))
+            .collect()
+    }
+
+    #[test]
+    fn a_small_sprite_comes_back_at_its_own_size() {
+        let (small, whole, odd) = (frame(4, 1), frame(16, 2), frame(3, 3));
+        let atlas = atlas(
+            16,
+            &[(4, small.clone()), (16, whole.clone()), (3, odd.clone())],
+        );
+        for (layer, side, expected) in [(0, 4, small), (1, 16, whole), (2, 3, odd)] {
+            let read = atlas
+                .atlas_sprite_pixels(sprite(0, layer), u32::MAX)
+                .unwrap();
+            assert_eq!((read.width, read.height), (side, side));
+            assert_eq!(read.rgba, expected, "layer {layer}");
+        }
+    }
+
+    #[test]
+    fn a_sprite_above_the_edge_stays_at_the_edge() {
+        let atlas = atlas(2, &[(2, frame(2, 9))]);
+        let mut shrunk = atlas;
+        shrunk.sprite_mips[0].native_size = 8;
+        let read = shrunk.atlas_sprite_pixels(sprite(0, 0), u32::MAX).unwrap();
+        assert_eq!((read.width, read.height, read.rgba.len()), (2, 2, 16));
+    }
+
+    #[test]
+    fn arrays_split_the_layers() {
+        let atlas = atlas(2, &[(2, frame(2, 1)), (2, frame(2, 2)), (2, frame(2, 3))]);
+        let read = atlas.atlas_sprite_pixels(sprite(1, 0), 2).unwrap();
+        assert_eq!(read.rgba, frame(2, 3));
+        let second = atlas.atlas_sprite_pixels(sprite(0, 1), 2).unwrap();
+        assert_eq!(second.rgba, frame(2, 2));
+    }
+
+    #[test]
+    fn a_reference_with_no_sprite_is_refused_and_nothing_published_is_not_ready() {
+        let atlas = atlas(2, &[(2, frame(2, 1))]);
+        for bad in [
+            sprite(0, 1),
+            sprite(1, 0),
+            sprite(0, 2),
+            sprite(u32::MAX, u32::MAX),
+        ] {
+            assert_eq!(
+                atlas.atlas_sprite_pixels(bad, 2),
+                Err(AtlasSpriteError::NoSuchSprite)
+            );
+        }
+        assert_eq!(
+            RenderAssets::unpublished().atlas_sprite_pixels(sprite(0, 0), 1),
+            Err(AtlasSpriteError::NotReady)
+        );
     }
 }

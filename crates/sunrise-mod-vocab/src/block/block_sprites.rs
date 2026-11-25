@@ -14,6 +14,44 @@ pub struct SpriteRef {
     /// Some of its pixels are clear (alpha 0): leaves, glass, flowers. Draw those as holes.
     pub cutout: bool,
 }
+/// One sprite of the blocks atlas, read on the CPU ([`RenderAssets::atlas_sprite_pixels`](crate::RenderAssets::atlas_sprite_pixels)):
+/// the sprite's first frame (vanilla's `SpriteContents` for the sprite, as stitched after resource-pack
+/// layering and its `.mcmeta`), untinted, at its own resolution.
+// no wire: an owned read of the published sprite, never sent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AtlasSpritePixels {
+    /// The frame's width in pixels.
+    pub width: u32,
+    /// The frame's height in pixels.
+    pub height: u32,
+    /// `width * height * 4` bytes of RGBA8, rows from the top, pixels from the left
+    /// (`NativeImage.Format.RGBA`'s order), not premultiplied and not tinted.
+    pub rgba: Vec<u8>,
+}
+
+/// Why [`RenderAssets::atlas_sprite_pixels`](crate::RenderAssets::atlas_sprite_pixels) read nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+// no wire: refusal of a local read.
+pub enum AtlasSpriteError {
+    /// The blocks atlas of the published resources holds no sprite at this reference: its array
+    /// or layer is past the last, or the reference came from an earlier resource load.
+    NoSuchSprite,
+    /// No resource load has published a blocks atlas yet.
+    NotReady,
+}
+
+/// A sprite read from the published atlas pixels, for the engine to hand a mod.
+#[doc(hidden)]
+pub fn atlas_sprite_pixels(width: u32, height: u32, rgba: Vec<u8>) -> AtlasSpritePixels {
+    AtlasSpritePixels {
+        width,
+        height,
+        rgba,
+    }
+}
+
 /// One face of a block's model on one of its sides.
 #[derive(Clone, Debug, PartialEq)]
 // exhaustive: the game builds it with a literal; mods only read it

@@ -420,6 +420,29 @@ pub trait RenderAssets {
     fn baked_model(&self, key: BakedModelKey) -> Result<BakedModelView<'_>, ModelError> {
         unimplemented!("RenderAssets::baked_model")
     }
+    /// Side: client.
+    /// Published asset/data read: available in Setup, Reloading and World.
+    /// The pixels of one blocks-atlas sprite, as `TextureAtlas.getSprite(..)`'s `SpriteContents`
+    /// holds them: the first frame of an animated sprite (the one its `.mcmeta` starts on, not the
+    /// whole strip), untinted, RGBA8, read on the CPU from the published resources with no GPU
+    /// readback. `sprite` is the reference `texture_sprites` and `block_sprites` answer; it names
+    /// the blocks atlas, the only atlas a `SpriteRef` indexes (`TextureAtlas::Blocks`).
+    ///
+    /// The size is the sprite's own frame as the engine stitched it. It never exceeds the atlas
+    /// array's edge: a sprite larger than the texture budget allows comes back at the array's
+    /// size, and a frame the atlas squared (a `.mcmeta` frame that is not square) comes back
+    /// squared. `AtlasSpriteError::NoSuchSprite` for a reference with no sprite behind it,
+    /// including one kept across a resource reload that moved sprites (ask again when
+    /// `block_sprites_version` changes); `AtlasSpriteError::NotReady` before any resources are
+    /// published. Each call copies the pixels: read once in `client_setup` or
+    /// `client_resources_reloaded` to bake a lookup texture, a colour table or a preview, not
+    /// each frame.
+    fn atlas_sprite_pixels(
+        &self,
+        sprite: SpriteRef,
+    ) -> Result<AtlasSpritePixels, AtlasSpriteError> {
+        unimplemented!("RenderAssets::atlas_sprite_pixels")
+    }
 }
 
 /// Client-side persistent copies of resolved models.

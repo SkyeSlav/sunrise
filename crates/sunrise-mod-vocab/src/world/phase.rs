@@ -247,6 +247,12 @@ impl crate::RenderAssets for EmptyClientReloadServices {
     ) -> Result<crate::BakedModelView<'_>, crate::ModelError> {
         Err(crate::ModelError::UnknownModel)
     }
+    fn atlas_sprite_pixels(
+        &self,
+        _: crate::SpriteRef,
+    ) -> Result<crate::AtlasSpritePixels, crate::AtlasSpriteError> {
+        Err(crate::AtlasSpriteError::NotReady)
+    }
 }
 
 impl crate::InstanceGroups for EmptyClientReloadServices {
