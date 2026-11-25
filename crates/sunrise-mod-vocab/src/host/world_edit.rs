@@ -64,4 +64,25 @@ pub trait WorldEditBackendMut {
         rotation: StructureRotation,
         mirror: StructureMirror,
     ) -> Result<(), StructureTemplateError>;
+    /// Side: server.
+    /// Move the blocks in `area` of this level to `to`, displaced by `offset` and turned by
+    /// `transform`, following vanilla's `/clone … move` (`CloneCommands.clone` with `Mode.MOVE`)
+    /// and `StructureTemplate.placeInWorld` for rotation and mirroring.
+    ///
+    /// Preflight checks run before any write: all source and destination chunks must be loaded
+    /// (`LevelReader.hasChunksAt`), and every block entity must be movable without an active
+    /// tick lease or a refusing `BlockEntityTransform`. Same-level overlapping moves are
+    /// supported through read-then-write buffering. Every block entity moves once as the same
+    /// holder with its data, components and attachments (never cloned or dropped). Pending block
+    /// ticks are copied with `LevelTicks.copyAreaFrom`, keeping remaining delay, priority and
+    /// sub-tick order while leaving source ticks in place. There is no area size cap.
+    fn level_move_blocks(
+        &mut self,
+        level: LevelRef,
+        to: LevelRef,
+        area: BoundingBox,
+        offset: [i32; 3],
+        transform: BlockTransform,
+        strict: bool,
+    ) -> Result<MovedBlocks, MoveBlocksError>;
 }

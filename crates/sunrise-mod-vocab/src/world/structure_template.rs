@@ -2,11 +2,12 @@
 use crate::{BlockState, Compound};
 
 /// Rotation of a template about its origin.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum StructureRotation {
     /// No rotation.
+    #[default]
     None,
     /// A clockwise quarter turn.
     Clockwise90,
@@ -17,11 +18,12 @@ pub enum StructureRotation {
 }
 
 /// Mirror applied before rotating a template.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(sunrise_mod_api_macros::Wire)]
 pub enum StructureMirror {
     /// No mirror.
+    #[default]
     None,
     /// Mirror north and south.
     LeftRight,

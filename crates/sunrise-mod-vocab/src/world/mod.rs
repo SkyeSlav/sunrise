@@ -39,6 +39,7 @@ pub(crate) mod landing_write;
 pub(crate) mod level_attachments;
 pub(crate) mod level_write_error;
 pub(crate) mod map_decoration_types;
+pub(crate) mod move_blocks;
 // hidden: a module of game-side types; mods use their re-exports
 #[doc(hidden)]
 pub mod mod_chunk_tickets;
