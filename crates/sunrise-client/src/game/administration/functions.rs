@@ -350,12 +350,20 @@ impl Game<'_> {
             .map_or(&self.pack.data_changes, |root| root.data_changes())
             .clone();
         let additional = super::pack_finders::data_packs(&self.mods);
+        // A world opening installs `self.level` only after this load: the selection is the
+        // opening level's `DataPacks` (`WorldDataConfiguration`), chosen at creation for a new
+        // world, not the previous world's.
+        let selection = opening
+            .as_ref()
+            .map_or(self.level.data_packs.as_ref(), |prepared| {
+                prepared.level.data_packs.as_ref()
+            });
         let stack = pack_stack(
             &self.world_root,
             &resources,
             data,
             &changes,
-            self.level.data_packs.as_ref(),
+            selection,
             enabled_features,
             &additional,
         );
