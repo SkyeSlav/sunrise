@@ -2737,9 +2737,10 @@ impl PackPost {
                     spec.pass_slot != ModPassSlot::Shadow
                         && pre_mod_depth_sampled.get(idx).copied().unwrap_or(false)
                 });
+                let mod_set1_layout = mods.bind_group_layouts.get(spec.slot).copied().flatten();
                 let mod_geometry = Geometry {
                     buffers: mods.vertex_buffers,
-                    table: None,
+                    table: mod_set1_layout,
                     depth_write: spec.depth_write,
                     atlas: None,
                     material_maps: true,
@@ -2761,6 +2762,7 @@ impl PackPost {
                         slot: spec.slot,
                         pass_slot: spec.pass_slot,
                         depth_target: active_depth,
+                        has_mod_bind_group: mod_set1_layout.is_some(),
                         pass,
                     });
                 }

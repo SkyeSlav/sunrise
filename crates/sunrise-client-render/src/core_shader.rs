@@ -101,6 +101,11 @@ pub fn translate_core_at(
     let inputs = Inputs {
         blocks: &BLOCKS,
         samplers: &SAMPLERS,
+        extra_set: 0,
+        extra_blocks: &[],
+        extra_samplers: &[],
+        extra_texel_buffers: &[],
+        push_constant_binding: None,
         loose: &LOOSE,
         defines: &defines,
         includes: &includes(&read),

@@ -1,7 +1,8 @@
 //! Per-view custom geometry; buffers pre-reserve initial space and grow dynamically.
 use crate::gfx::mod_meshes::ResolvedMeshDraw;
 use crate::gfx::mod_pipelines::{
-    self, PipelineDraw, PipelineDrawSource, PipelineRun, PipelineVertex,
+    self, PipelineDraw, PipelineDrawSource, PipelineRun, PipelineVertex, ResolvedDrawBindings,
+    ResolvedSet1Entry,
 };
 use crate::gfx::world_primitives::{
     Batch, DEFAULT_CAPACITY as CAPACITY, DrawRanges, OIT_STAGES, OitBatch,
@@ -65,6 +66,8 @@ struct StageBuffers {
     pipeline_draws: Vec<PipelineDraw>,
     transient_vertices: Vec<u8>,
     transient_indices: Vec<u8>,
+    inline_uniforms: Vec<u8>,
+    texel_data: Vec<u8>,
 }
 impl StageBuffers {
     fn clear(&mut self) {
@@ -77,6 +80,8 @@ impl StageBuffers {
         self.pipeline_draws.clear();
         self.transient_vertices.clear();
         self.transient_indices.clear();
+        self.inline_uniforms.clear();
+        self.texel_data.clear();
     }
 }
 
@@ -132,12 +137,16 @@ pub struct WorldGeometry {
     pipeline_draws: Vec<PipelineDraw>,
     transient_vertices: Vec<u8>,
     transient_indices: Vec<u8>,
+    inline_uniforms: Vec<u8>,
+    texel_data: Vec<u8>,
     /// OIT mod-pipeline quads and runs (`RenderLevelStage::OitTranslucent`).
     oit_pipeline_quads: Vec<PipelineVertex>,
     oit_pipeline_runs: Vec<PipelineRun>,
     oit_pipeline_draws: Vec<PipelineDraw>,
     oit_transient_vertices: Vec<u8>,
     oit_transient_indices: Vec<u8>,
+    oit_inline_uniforms: Vec<u8>,
+    oit_texel_data: Vec<u8>,
     /// Currently pushed pipeline modifier slots (outermost first, innermost last).
     modifier_stack: Vec<u32>,
     /// Interned modifier stacks referenced by `PipelineRun::modifier_stack`.
@@ -194,11 +203,15 @@ impl Default for WorldGeometry {
             pipeline_draws: Vec::new(),
             transient_vertices: Vec::new(),
             transient_indices: Vec::new(),
+            inline_uniforms: Vec::new(),
+            texel_data: Vec::new(),
             oit_pipeline_quads: Vec::new(),
             oit_pipeline_runs: Vec::new(),
             oit_pipeline_draws: Vec::new(),
             oit_transient_vertices: Vec::new(),
             oit_transient_indices: Vec::new(),
+            oit_inline_uniforms: Vec::new(),
+            oit_texel_data: Vec::new(),
             modifier_stack: Vec::new(),
             modifier_stacks: crate::mod_pipelines::ModifierStacks::new(),
             pack_uniforms: Vec::new(),
@@ -239,11 +252,15 @@ impl WorldGeometry {
         self.pipeline_draws.clear();
         self.transient_vertices.clear();
         self.transient_indices.clear();
+        self.inline_uniforms.clear();
+        self.texel_data.clear();
         self.oit_pipeline_quads.clear();
         self.oit_pipeline_runs.clear();
         self.oit_pipeline_draws.clear();
         self.oit_transient_vertices.clear();
         self.oit_transient_indices.clear();
+        self.oit_inline_uniforms.clear();
+        self.oit_texel_data.clear();
         self.modifier_stack.clear();
         self.modifier_stacks.clear();
         self.pack_uniforms.clear();
@@ -500,10 +517,15 @@ impl WorldGeometry {
             .extend_from_slice(&self.custom.pipeline_runs);
         let v_base = self.transient_vertices.len() as u64;
         let i_base = self.transient_indices.len() as u64;
+        let u_base = self.inline_uniforms.len();
+        let t_base = self.texel_data.len();
         self.transient_vertices
             .extend_from_slice(&self.custom.transient_vertices);
         self.transient_indices
             .extend_from_slice(&self.custom.transient_indices);
+        self.inline_uniforms
+            .extend_from_slice(&self.custom.inline_uniforms);
+        self.texel_data.extend_from_slice(&self.custom.texel_data);
         for mut cmd in self.custom.pipeline_draws.drain(..) {
             if let PipelineDrawSource::Transient {
                 ref mut vertex_ranges,
@@ -517,6 +539,25 @@ impl WorldGeometry {
                 if let Some((_, range)) = index_range.as_mut() {
                     range.start += i_base;
                     range.end += i_base;
+                }
+            }
+            if let Some(ref mut bindings) = cmd.bindings {
+                for entry in &mut bindings.entries {
+                    match entry {
+                        ResolvedSet1Entry::InlineUniform { byte_range } => {
+                            byte_range.start += u_base;
+                            byte_range.end += u_base;
+                        }
+                        ResolvedSet1Entry::TexelBuffer { byte_range } => {
+                            byte_range.start += t_base;
+                            byte_range.end += t_base;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(ref mut pc) = bindings.push_constants {
+                    pc.start += u_base;
+                    pc.end += u_base;
                 }
             }
             self.pipeline_draws.push(cmd);
@@ -840,6 +881,30 @@ impl WorldGeometry {
             }),
         }
     }
+    /// Append inline uniform or push-constant bytes into the active target's per-frame byte pool.
+    pub fn push_inline_uniform(&mut self, bytes: &[u8]) -> std::ops::Range<usize> {
+        let pool = match self.active {
+            ActiveTarget::Primary => &mut self.inline_uniforms,
+            ActiveTarget::Custom => &mut self.custom.inline_uniforms,
+            ActiveTarget::Oit => &mut self.oit_inline_uniforms,
+        };
+        let start = pool.len();
+        pool.extend_from_slice(bytes);
+        start..pool.len()
+    }
+
+    /// Append expanded `i32`/`u32` texel-buffer bytes into the active target's per-frame byte pool.
+    pub fn push_texel_data(&mut self, bytes: &[u8]) -> std::ops::Range<usize> {
+        let pool = match self.active {
+            ActiveTarget::Primary => &mut self.texel_data,
+            ActiveTarget::Custom => &mut self.custom.texel_data,
+            ActiveTarget::Oit => &mut self.oit_texel_data,
+        };
+        let start = pool.len();
+        pool.extend_from_slice(bytes);
+        start..pool.len()
+    }
+
     /// Append a unified transient vertex/index draw command (used by `draw_vertices` and the
     /// `pipeline_quads` shorthand). Caller has already validated alignment, strides, and bounds.
     pub fn draw_vertices_slot(
@@ -848,6 +913,7 @@ impl WorldGeometry {
         vertices: &[(u32, &[u8])],
         indices: Option<(mod_api::IndexFormat, &[u8])>,
         draw: mod_api::MeshDraw,
+        bindings: Option<ResolvedDrawBindings>,
     ) {
         let modifier_stack = self.active_modifier_stack();
         let (draws, v_pool, i_pool, stage) = match self.active {
@@ -892,6 +958,7 @@ impl WorldGeometry {
                 vertex_ranges,
                 index_range,
             },
+            bindings,
         });
     }
     /// Record a zero-copy retained [`mod_api::MeshRef`] draw command. Caller has already
@@ -901,6 +968,7 @@ impl WorldGeometry {
         slot: u32,
         resolved: ResolvedMeshDraw,
         draw: mod_api::MeshDraw,
+        bindings: Option<ResolvedDrawBindings>,
     ) {
         let modifier_stack = self.active_modifier_stack();
         let (draws, stage) = match self.active {
@@ -917,6 +985,7 @@ impl WorldGeometry {
             modifier_stack,
             draw,
             source: PipelineDrawSource::Retained(resolved),
+            bindings,
         });
     }
     /// Record a per-frame value for a registered shader-pack uniform without heap allocation.
@@ -950,6 +1019,8 @@ impl WorldGeometry {
                 draws: &self.pipeline_draws,
                 transient_vertices: &self.transient_vertices,
                 transient_indices: &self.transient_indices,
+                inline_uniforms: &self.inline_uniforms,
+                texel_data: &self.texel_data,
                 modifiers: Some(&self.modifier_stacks),
                 modifier_defs: None,
                 oit_vertices: &self.oit_pipeline_quads,
@@ -957,6 +1028,8 @@ impl WorldGeometry {
                 oit_draws: &self.oit_pipeline_draws,
                 oit_transient_vertices: &self.oit_transient_vertices,
                 oit_transient_indices: &self.oit_transient_indices,
+                oit_inline_uniforms: &self.oit_inline_uniforms,
+                oit_texel_data: &self.oit_texel_data,
                 time: self.time,
             },
             pack_uniforms: &self.pack_uniforms,

@@ -357,6 +357,11 @@ pub mod built {
     pub fn mesh_ref(generation: u64, slot: u32) -> crate::MeshRef {
         crate::MeshRef::from_parts(generation, slot).expect("published mesh generation")
     }
+    /// Wrap a slot in the retained GPU uniform buffer store.
+    pub fn uniform_buffer_ref(generation: u64, slot: u32) -> crate::UniformBufferRef {
+        crate::UniformBufferRef::from_parts(generation, slot)
+            .expect("published uniform buffer generation")
+    }
 }
 
 /// What the game reads of handles and calls on the API's own types.

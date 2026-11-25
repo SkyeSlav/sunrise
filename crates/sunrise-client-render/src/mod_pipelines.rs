@@ -53,6 +53,7 @@ pub enum RegistrationError {
     InvalidShaderDefine(String),
     InvalidPipelineState(String),
     InvalidVertexFormat(String),
+    InvalidBindGroupLayout(String),
     AlreadyPublished,
 }
 
@@ -94,6 +95,7 @@ impl std::fmt::Display for RegistrationError {
             Self::InvalidShaderDefine(reason) => f.write_str(reason),
             Self::InvalidPipelineState(reason) => f.write_str(reason),
             Self::InvalidVertexFormat(reason) => f.write_str(reason),
+            Self::InvalidBindGroupLayout(reason) => f.write_str(reason),
             Self::AlreadyPublished => f.write_str("pipeline registrations were already published"),
         }
     }
@@ -177,6 +179,13 @@ pub fn register(
         }
         if let Err(reason) = pipeline.validate_vertex_bindings() {
             return Err(RegistrationError::InvalidVertexFormat(format!(
+                "mod {}: pipeline {}: {reason}",
+                pipeline.owner(),
+                pipeline.id
+            )));
+        }
+        if let Err(reason) = pipeline.validate_bind_group_layout() {
+            return Err(RegistrationError::InvalidBindGroupLayout(format!(
                 "mod {}: pipeline {}: {reason}",
                 pipeline.owner(),
                 pipeline.id
@@ -612,6 +621,45 @@ pub struct Built {
     pub optional: bool,
     /// What its shader samples, if anything.
     pub texture: Option<BuiltTexture>,
+    /// Mod-declared set-1 bind-group layout (`#5428`).
+    pub bind_group_layout: mod_api::BindGroupLayout,
+    /// Declared push-constant byte size (`0..=128`, multiple of 4).
+    pub push_constant_size: u32,
+}
+
+impl Built {
+    /// Convert this pipeline's set-1 [`mod_api::BindGroupLayout`] into [`sunrise_mod_pipeline::ModBinding`]
+    /// entries for shader translation.
+    pub fn mod_bindings(&self) -> Vec<sunrise_mod_pipeline::ModBinding<'_>> {
+        mod_bindings_from_layout(&self.bind_group_layout)
+    }
+}
+
+fn mod_bindings_from_layout(
+    layout: &mod_api::BindGroupLayout,
+) -> Vec<sunrise_mod_pipeline::ModBinding<'_>> {
+    layout
+        .entries
+        .iter()
+        .filter_map(|e| {
+            let kind = match e.kind {
+                mod_api::BindingKind::UniformBuffer { .. } => {
+                    sunrise_mod_pipeline::ModBindingKind::UniformBuffer
+                }
+                mod_api::BindingKind::CombinedImageSampler { .. } => {
+                    sunrise_mod_pipeline::ModBindingKind::CombinedImageSampler
+                }
+                mod_api::BindingKind::TexelBuffer { .. } => {
+                    sunrise_mod_pipeline::ModBindingKind::TexelBuffer
+                }
+                _ => return None,
+            };
+            Some(sunrise_mod_pipeline::ModBinding {
+                name: e.name.as_str(),
+                kind,
+            })
+        })
+        .collect()
 }
 
 /// A textured pipeline's texture as a load found it ([`PipelineTexture`]).
@@ -705,10 +753,16 @@ impl Pipelines {
                     .iter()
                     .map(|(name, ty)| (name.as_str(), *ty))
                     .collect();
+                let mod_bindings = mod_bindings_from_layout(&pipeline.bind_group_layout);
                 let loaded = pipeline
                     .validate_defines()
                     .and_then(|()| pipeline.validate_state())
                     .and_then(|()| pipeline.validate_vertex_bindings())
+                    .and_then(|()| {
+                        pipeline
+                            .validate_bind_group_layout()
+                            .map_err(|e| e.to_string())
+                    })
                     .and_then(|()| {
                         let vertex = read_stage(&vertex_file)?;
                         let fragment = read_stage(&fragment_file)?;
@@ -724,6 +778,8 @@ impl Pipelines {
                             textured: pipeline.texture.is_some(),
                             defines: &define_refs,
                             vertex_inputs: &vertex_input_refs,
+                            mod_bindings: &mod_bindings,
+                            push_constant_size: pipeline.push_constant_size,
                             linear_light: false,
                             check_backends: false,
                             interface: sunrise_mod_pipeline::DEVICELESS_INTERFACE_LIMITS,
@@ -790,6 +846,8 @@ impl Pipelines {
                         oit,
                         optional: pipeline.optional,
                         texture,
+                        bind_group_layout: pipeline.bind_group_layout.clone(),
+                        push_constant_size: pipeline.push_constant_size,
                     }),
                     Err(reason) => {
                         let refusal = format!(
@@ -835,6 +893,23 @@ impl Pipelines {
             .get(slot as usize)
             .and_then(|b| b.as_ref())
             .map(|b| b.vertex_bindings.as_slice())
+    }
+
+    /// The mod-declared set-1 [`mod_api::BindGroupLayout`] and `push_constant_size` of `slot`,
+    /// or `None` if `slot` is out of range or was not built.
+    pub fn bind_group_layout(&self, slot: u32) -> Option<(&mod_api::BindGroupLayout, u32)> {
+        self.built
+            .get(slot as usize)
+            .and_then(|b| b.as_ref())
+            .map(|b| (&b.bind_group_layout, b.push_constant_size))
+    }
+
+    /// Whether `slot` writes depth (`depth_stencil.is_some_and(|d| d.write)`).
+    pub fn writes_depth(&self, slot: u32) -> bool {
+        self.built
+            .get(slot as usize)
+            .and_then(|b| b.as_ref())
+            .is_some_and(|b| b.state.depth_stencil.is_some_and(|d| d.write))
     }
 
     /// Whether `slot` uses the default `PositionTexColor` vertex format (eligible for

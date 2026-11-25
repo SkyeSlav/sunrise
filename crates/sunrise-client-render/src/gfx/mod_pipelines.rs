@@ -17,10 +17,12 @@ use super::world_primitives::{Upload, VertexPages};
 use crate::mod_pipelines::{Built, BuiltTexture, ModifierStacks, Pipelines};
 use glam::Mat4;
 use mod_api::{
-    BlendFactor, BlendOp, ColorTargetState, ColorWrite, DepthCompare, DrawRange, Identifier,
-    IndexFormat, MeshDraw, PipelineBlend, PipelineState, PolygonMode, PrimitiveTopology,
-    VertexAttributeFormat, VertexFormat, VertexStepMode,
+    BindingKind, BlendFactor, BlendOp, ColorTargetState, ColorWrite, DepthCompare, DrawRange,
+    Identifier, IndexFormat, MeshDraw, PipelineBlend, PipelineState, PolygonMode,
+    PrimitiveTopology, SamplerAddress, SamplerFilter, VertexAttributeFormat, VertexFormat,
+    VertexStepMode,
 };
+use std::collections::HashMap;
 use sunrise_mod_pipeline::{
     ENTRY, OIT_STAGE_SAMPLERS, Options as PipelineOptions, SPRITE_RECT_BINDING,
 };
@@ -78,6 +80,34 @@ pub enum PipelineDrawSource {
     Retained(ResolvedMeshDraw),
 }
 
+/// One resolved set-1 binding entry for a [`PipelineDraw`] (`#5428`).
+#[derive(Clone, Debug)]
+pub enum ResolvedSet1Entry {
+    /// Retained GPU uniform buffer (`UniformBufferRef`).
+    UniformBuffer {
+        id: u64,
+        buffer: wgpu::Buffer,
+        byte_len: u64,
+    },
+    /// Inline std140 uniform byte range in `Batch::inline_uniforms` / `Batch::oit_inline_uniforms`.
+    InlineUniform { byte_range: std::ops::Range<usize> },
+    /// Resolved 2D texture view with a unique cache key id.
+    Texture {
+        view_id: u64,
+        view: wgpu::TextureView,
+    },
+    /// Expanded `i32`/`u32` texel buffer byte range in `Batch::texel_data` / `Batch::oit_texel_data`.
+    TexelBuffer { byte_range: std::ops::Range<usize> },
+}
+
+/// Resolved set-1 resource bindings for one [`PipelineDraw`] in exact declaration order.
+#[derive(Clone, Debug, Default)]
+pub struct ResolvedDrawBindings {
+    pub entries: Vec<ResolvedSet1Entry>,
+    /// Optional push-constant byte range in `Batch::inline_uniforms` / `Batch::oit_inline_uniforms`.
+    pub push_constants: Option<std::ops::Range<usize>>,
+}
+
 /// One unified mod-pipeline draw command (`draw_mesh`, `draw_vertices`, or `pipeline_quads`).
 #[derive(Clone, Debug)]
 pub struct PipelineDraw {
@@ -92,6 +122,9 @@ pub struct PipelineDraw {
     pub draw: MeshDraw,
     /// Transient byte ranges or zero-copy retained GPU buffers.
     pub source: PipelineDrawSource,
+    /// Resolved set-1 resource bindings (`None` when the pipeline has no set-1 layout or push
+    /// constants).
+    pub bindings: Option<ResolvedDrawBindings>,
 }
 
 /// A frame's pipeline draws, as the game queued them: legacy quad runs plus unified
@@ -108,6 +141,10 @@ pub struct Batch<'a> {
     pub transient_vertices: &'a [u8],
     /// Transient per-frame index byte pool referenced by `draws`.
     pub transient_indices: &'a [u8],
+    /// Per-frame inline uniform & push-constant byte pool referenced by `draws`.
+    pub inline_uniforms: &'a [u8],
+    /// Per-frame expanded texel-buffer byte pool referenced by `draws`.
+    pub texel_data: &'a [u8],
     /// Interned modifier stacks referenced by `runs[*].modifier_stack` and
     /// `draws[*].modifier_stack`; `None` means empty.
     pub modifiers: Option<&'a ModifierStacks>,
@@ -122,6 +159,10 @@ pub struct Batch<'a> {
     pub oit_transient_vertices: &'a [u8],
     /// Transient per-frame index byte pool referenced by `oit_draws`.
     pub oit_transient_indices: &'a [u8],
+    /// Per-frame inline uniform & push-constant byte pool referenced by `oit_draws`.
+    pub oit_inline_uniforms: &'a [u8],
+    /// Per-frame expanded texel-buffer byte pool referenced by `oit_draws`.
+    pub oit_texel_data: &'a [u8],
     /// Seconds of game time (fallback `Globals.GameTime` when no full vanilla block is supplied).
     pub time: f32,
 }
@@ -142,6 +183,7 @@ struct PreparedDraw {
     topology: PrimitiveTopology,
     draw: MeshDraw,
     source: PipelineDrawSource,
+    set1_bind_group: Option<(wgpu::BindGroup, Vec<u32>)>,
 }
 
 /// Where textured pipelines' textures come from when the renderer builds them
@@ -543,6 +585,34 @@ struct CompiledOit {
 /// A built pipeline: its compiled render pipeline, its per-pipeline bind group (binding only
 /// the set-0 blocks/samplers its stages read, backed by the shared vanilla uniform buffer plus
 /// optional sprite texture/rect), and the shader modules and fixed state needed to lazily
+/// One compiled entry in a pipeline's set-1 `BindGroupLayout`.
+#[derive(Clone, Copy, Debug)]
+struct CompiledSet1Entry {
+    binding: u32,
+    kind: BindingKind,
+}
+
+/// Cache key for one resource slot in a cached set-1 `wgpu::BindGroup`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Set1ResourceKey {
+    /// Retained uniform buffer `(unique_id, byte_len)`.
+    RetainedUniform(u64, u64),
+    /// Inline uniform slice bound with dynamic offset (`bound_size`).
+    InlineUniform(u64),
+    /// Texture view `(unique_view_id)`.
+    Texture(u64),
+    /// Texel storage buffer range `(offset, size)`.
+    TexelBuffer(u64, u64),
+}
+
+/// Cache key for steady-state zero-allocation set-1 `wgpu::BindGroup` reuse.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct Set1CacheKey {
+    slot: usize,
+    generation: u64,
+    resources: Vec<Set1ResourceKey>,
+}
+
 /// compile modifier and shader-pack target variants.
 struct Compiled {
     id: Identifier,
@@ -550,6 +620,9 @@ struct Compiled {
     pipeline_layout: wgpu::PipelineLayout,
     group: wgpu::BindGroup,
     pack_group: wgpu::BindGroup,
+    set1_layout: Option<wgpu::BindGroupLayout>,
+    set1_entries: Vec<CompiledSet1Entry>,
+    push_constant_slot: Option<(u32, u32)>,
     vertex_shader: wgpu::ShaderModule,
     /// Fragment shader targeting the main frame (linear-decoded when `linear_light`).
     fragment_shader: wgpu::ShaderModule,
@@ -576,6 +649,8 @@ pub struct ModPipelines {
     sampler: wgpu::Sampler,
     /// Non-filtering nearest sampler for OIT float textures (`DepthBoundsSampler`, `Coeff0`, `Coeff1`).
     non_filtering_sampler: wgpu::Sampler,
+    /// Shared set-1 samplers indexed by `[filter][address]` (`Nearest`/`Linear` × `Clamp`/`Repeat`/`Mirror`).
+    mod_samplers: [[wgpu::Sampler; 3]; 2],
     /// Shared 1024-byte vanilla uniform buffer (`Globals`, `Projection`, `DynamicTransforms`, `Fog`).
     vanilla: wgpu::Buffer,
     /// Same blocks with `Projection` adapted to shader-pack GL coordinates (`pack_clip_matrix`).
@@ -586,6 +661,14 @@ pub struct ModPipelines {
     transient_ibuf: Option<wgpu::Buffer>,
     oit_transient_vbuf: Option<wgpu::Buffer>,
     oit_transient_ibuf: Option<wgpu::Buffer>,
+    /// Per-frame growing GPU uniform ring buffer for `UniformValue::Inline` and push constants.
+    inline_uniform_buf: Option<wgpu::Buffer>,
+    inline_uniform_staging: Vec<u8>,
+    /// Per-frame growing GPU read-only storage buffer for `TexelBuffer` bindings.
+    texel_storage_buf: Option<wgpu::Buffer>,
+    texel_staging: Vec<u8>,
+    /// Steady-state cache of set-1 `wgpu::BindGroup`s (cleared on reload or ring reallocation).
+    set1_bind_group_cache: HashMap<Set1CacheKey, wgpu::BindGroup>,
     fan_indices: FanIndices,
     /// The load `pipelines` was built from; 0 before any.
     generation: u64,
@@ -604,6 +687,219 @@ pub struct ModPipelines {
     oit_draws: Vec<PreparedDraw>,
 }
 
+fn sampler_filter_idx(filter: SamplerFilter) -> usize {
+    match filter {
+        SamplerFilter::Linear => 1,
+        _ => 0,
+    }
+}
+
+fn sampler_address_idx(address: SamplerAddress) -> usize {
+    match address {
+        SamplerAddress::Repeat => 1,
+        SamplerAddress::MirroredRepeat => 2,
+        _ => 0,
+    }
+}
+
+fn create_mod_samplers(device: &wgpu::Device) -> [[wgpu::Sampler; 3]; 2] {
+    let filters = [wgpu::FilterMode::Nearest, wgpu::FilterMode::Linear];
+    let addresses = [
+        wgpu::AddressMode::ClampToEdge,
+        wgpu::AddressMode::Repeat,
+        wgpu::AddressMode::MirrorRepeat,
+    ];
+    std::array::from_fn(|f| {
+        std::array::from_fn(|a| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("Mod set-1 sampler"),
+                address_mode_u: addresses[a],
+                address_mode_v: addresses[a],
+                address_mode_w: addresses[a],
+                mag_filter: filters[f],
+                min_filter: filters[f],
+                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+                ..Default::default()
+            })
+        })
+    })
+}
+
+fn build_set1_layout(
+    device: &wgpu::Device,
+    built: &Built,
+) -> Result<
+    (
+        Option<wgpu::BindGroupLayout>,
+        Vec<CompiledSet1Entry>,
+        Option<(u32, u32)>,
+    ),
+    String,
+> {
+    if built.bind_group_layout.is_empty() && built.push_constant_size == 0 {
+        return Ok((None, Vec::new(), None));
+    }
+    let limits = device.limits();
+    let mut layout_entries = Vec::new();
+    let mut compiled_entries = Vec::new();
+    let mut next_binding = 0u32;
+    let mut uniform_count = 0u32;
+    let mut dynamic_uniform_count = 0u32;
+    let mut texture_count = 0u32;
+    let mut sampler_count = 0u32;
+    let mut storage_count = 0u32;
+    for entry in &built.bind_group_layout.entries {
+        match entry.kind {
+            BindingKind::UniformBuffer { min_size } => {
+                if u64::from(min_size) > limits.max_uniform_buffer_binding_size {
+                    return Err(format!(
+                        "uniform buffer `{}` min_size ({min_size}) exceeds device max_uniform_buffer_binding_size ({})",
+                        entry.name, limits.max_uniform_buffer_binding_size
+                    ));
+                }
+                uniform_count += 1;
+                dynamic_uniform_count += 1;
+                layout_entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: next_binding,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(u64::from(min_size)),
+                    },
+                    count: None,
+                });
+                compiled_entries.push(CompiledSet1Entry {
+                    binding: next_binding,
+                    kind: entry.kind,
+                });
+                next_binding += 1;
+            }
+            BindingKind::CombinedImageSampler { filter, .. } => {
+                texture_count += 1;
+                sampler_count += 1;
+                let filterable = filter == SamplerFilter::Linear;
+                layout_entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: next_binding,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                });
+                layout_entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: next_binding + 1,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(if filterable {
+                        wgpu::SamplerBindingType::Filtering
+                    } else {
+                        wgpu::SamplerBindingType::NonFiltering
+                    }),
+                    count: None,
+                });
+                compiled_entries.push(CompiledSet1Entry {
+                    binding: next_binding,
+                    kind: entry.kind,
+                });
+                next_binding += 2;
+            }
+            BindingKind::TexelBuffer { .. } => {
+                storage_count += 1;
+                layout_entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: next_binding,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(4),
+                    },
+                    count: None,
+                });
+                compiled_entries.push(CompiledSet1Entry {
+                    binding: next_binding,
+                    kind: entry.kind,
+                });
+                next_binding += 1;
+            }
+            _ => {
+                return Err(format!(
+                    "unsupported bind-group entry kind for `{}`",
+                    entry.name
+                ));
+            }
+        }
+    }
+    let push_constant_slot = if built.push_constant_size > 0 {
+        uniform_count += 1;
+        dynamic_uniform_count += 1;
+        layout_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: next_binding,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: true,
+                min_binding_size: wgpu::BufferSize::new(u64::from(built.push_constant_size)),
+            },
+            count: None,
+        });
+        let slot = (next_binding, built.push_constant_size);
+        next_binding += 1;
+        Some(slot)
+    } else {
+        None
+    };
+    let _ = next_binding;
+    if dynamic_uniform_count > limits.max_dynamic_uniform_buffers_per_pipeline_layout {
+        return Err(format!(
+            "set-1 uniform buffer count ({dynamic_uniform_count}) exceeds device max_dynamic_uniform_buffers_per_pipeline_layout ({})",
+            limits.max_dynamic_uniform_buffers_per_pipeline_layout
+        ));
+    }
+    if uniform_count > limits.max_uniform_buffers_per_shader_stage {
+        return Err(format!(
+            "set-1 uniform buffer count ({uniform_count}) exceeds device max_uniform_buffers_per_shader_stage ({})",
+            limits.max_uniform_buffers_per_shader_stage
+        ));
+    }
+    if texture_count > limits.max_sampled_textures_per_shader_stage {
+        return Err(format!(
+            "set-1 sampled texture count ({texture_count}) exceeds device max_sampled_textures_per_shader_stage ({})",
+            limits.max_sampled_textures_per_shader_stage
+        ));
+    }
+    if sampler_count > limits.max_samplers_per_shader_stage {
+        return Err(format!(
+            "set-1 sampler count ({sampler_count}) exceeds device max_samplers_per_shader_stage ({})",
+            limits.max_samplers_per_shader_stage
+        ));
+    }
+    if storage_count > limits.max_storage_buffers_per_shader_stage {
+        return Err(format!(
+            "set-1 storage/texel buffer count ({storage_count}) exceeds device max_storage_buffers_per_shader_stage ({})",
+            limits.max_storage_buffers_per_shader_stage
+        ));
+    }
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Mod pipeline set-1"),
+        entries: &layout_entries,
+    });
+    Ok((Some(layout), compiled_entries, push_constant_slot))
+}
+
+fn align_up_usize(value: usize, align: usize) -> usize {
+    if align <= 1 {
+        return value;
+    }
+    let rem = value % align;
+    if rem == 0 {
+        value
+    } else {
+        value + (align - rem)
+    }
+}
+
 impl ModPipelines {
     /// Storage for pipelines drawing into `(color_format, linear_light)` over a reversed
     /// Depth32Float depth.
@@ -619,6 +915,7 @@ impl ModPipelines {
             label: Some("Mod pipeline OIT sampler"),
             ..Default::default()
         });
+        let mod_samplers = create_mod_samplers(device);
         let buffer = |label| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -634,6 +931,7 @@ impl ModPipelines {
             linear_light,
             sampler,
             non_filtering_sampler,
+            mod_samplers,
             vanilla,
             pack_vanilla,
             vertices: VertexPages::default(),
@@ -642,6 +940,11 @@ impl ModPipelines {
             transient_ibuf: None,
             oit_transient_vbuf: None,
             oit_transient_ibuf: None,
+            inline_uniform_buf: None,
+            inline_uniform_staging: Vec::new(),
+            texel_storage_buf: None,
+            texel_staging: Vec::new(),
+            set1_bind_group_cache: HashMap::new(),
             fan_indices: FanIndices::default(),
             generation: 0,
             oit_generation: 0,
@@ -856,6 +1159,7 @@ impl ModPipelines {
         state: PipelineState,
         variants: &[sunrise_glsl::Translated; 3],
         sprite_binding: Option<&(wgpu::TextureView, [f32; 4])>,
+        set1_layout: Option<&wgpu::BindGroupLayout>,
     ) -> Result<CompiledOit, String> {
         use wgpu::util::DeviceExt;
         let sprite = sprite_binding.map(|(view, rect)| {
@@ -949,9 +1253,13 @@ impl ModPipelines {
                 label: Some("Mod pipeline OIT"),
                 entries: &layout_entries,
             });
+            let mut layouts = vec![Some(&group_layout)];
+            if let Some(set1) = set1_layout {
+                layouts.push(Some(set1));
+            }
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Mod pipeline OIT"),
-                bind_group_layouts: &[Some(&group_layout)],
+                bind_group_layouts: &layouts,
                 ..Default::default()
             });
             let internal = pollster::block_on(internal.pop());
@@ -1034,10 +1342,13 @@ impl ModPipelines {
                 .iter()
                 .map(|(n, t)| (n.as_str(), *t))
                 .collect();
+            let mod_bindings = built.mod_bindings();
             let options = PipelineOptions {
                 textured: built.texture.is_some(),
                 defines: &define_refs,
                 vertex_inputs: &vertex_input_refs,
+                mod_bindings: &mod_bindings,
+                push_constant_size: built.push_constant_size,
                 linear_light: true,
                 check_backends: false,
                 interface: crate::core_shader::interface_limits(&device.limits()),
@@ -1164,9 +1475,14 @@ impl ModPipelines {
         };
         let group = make_group("Mod pipeline", &self.vanilla);
         let pack_group = make_group("Mod pipeline (pack)", &self.pack_vanilla);
+        let (set1_layout, set1_entries, push_constant_slot) = build_set1_layout(device, built)?;
+        let mut bind_group_layouts = vec![Some(&group_layout)];
+        if let Some(ref set1) = set1_layout {
+            bind_group_layouts.push(Some(set1));
+        }
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Mod pipeline"),
-            bind_group_layouts: &[Some(&group_layout)],
+            bind_group_layouts: &bind_group_layouts,
             ..Default::default()
         });
         let pipeline_label = built.id.to_string();
@@ -1200,6 +1516,7 @@ impl ModPipelines {
                 built.state,
                 variants,
                 sprite_binding.as_ref(),
+                set1_layout.as_ref(),
             )?)
         } else {
             None
@@ -1210,6 +1527,9 @@ impl ModPipelines {
             pipeline_layout,
             group,
             pack_group,
+            set1_layout,
+            set1_entries,
+            push_constant_slot,
             vertex_shader,
             fragment_shader,
             pack_fragment_shader,
@@ -1338,7 +1658,16 @@ impl ModPipelines {
         self.oit_generation = 0;
         self.pipelines = pipelines;
         self.pack_pipelines = None;
+        self.set1_bind_group_cache.clear();
         Ok(())
+    }
+
+    /// Borrow each pipeline slot's optional set-1 `wgpu::BindGroupLayout` (for `PackPost`).
+    pub fn set1_bind_group_layouts(&self) -> Vec<Option<&wgpu::BindGroupLayout>> {
+        self.pipelines
+            .iter()
+            .map(|slot| slot.as_ref().and_then(|c| c.set1_layout.as_ref()))
+            .collect()
     }
 
     /// Ensure OIT bind groups (`DepthBoundsSampler`, `Coeff0`, `Coeff1`) match the current OIT
@@ -1655,6 +1984,7 @@ impl ModPipelines {
                 topology,
                 draw: cmd.draw.clone(),
                 source: cmd.source.clone(),
+                set1_bind_group: None,
             });
         }
         for cmd in batch.oit_draws {
@@ -1703,6 +2033,7 @@ impl ModPipelines {
                 topology,
                 draw: cmd.draw.clone(),
                 source: cmd.source.clone(),
+                set1_bind_group: None,
             });
         }
         if self.runs.is_empty()
@@ -1712,6 +2043,7 @@ impl ModPipelines {
         {
             return 0;
         }
+        self.prepare_set1_bindings(device, upload, batch);
         if let Some(last) = self.runs.last() {
             let quads = last.quads.end;
             self.vertices.upload(
@@ -1931,7 +2263,377 @@ impl ModPipelines {
                 vertex_buffers,
                 kind,
                 instances: cmd.draw.instances.clone(),
+                mod_bind_group: cmd.set1_bind_group.clone(),
             });
+        }
+    }
+
+    /// Stage all per-frame inline uniforms, push constants, and texel buffers from `batch` into
+    /// growing GPU buffers and build/lookup cached set-1 `wgpu::BindGroup`s for each prepared draw.
+    fn prepare_set1_bindings<'b>(
+        &mut self,
+        device: &wgpu::Device,
+        upload: Upload<'_>,
+        batch: &Batch<'b>,
+    ) {
+        let ubo_align = (device.limits().min_uniform_buffer_offset_alignment as usize).max(16);
+        let storage_align = (device.limits().min_storage_buffer_offset_alignment as usize).max(4);
+        self.inline_uniform_staging.clear();
+        self.texel_staging.clear();
+
+        struct StagedDraw {
+            is_oit: bool,
+            prepared_idx: usize,
+            slot: usize,
+            inline_spans: Vec<(u32, u64)>,
+            texel_spans: Vec<(u64, u64)>,
+        }
+        let mut staged: Vec<(StagedDraw, &'b ResolvedDrawBindings)> = Vec::new();
+
+        let mut stage_list = |is_oit: bool,
+                              cmds: &'b [PipelineDraw],
+                              inline_pool: &[u8],
+                              texel_pool: &[u8]| {
+            let mut prepared_idx = 0usize;
+            for cmd in cmds {
+                let valid = if is_oit {
+                    cmd.stage < 3
+                        && self
+                            .pipelines
+                            .get(cmd.slot as usize)
+                            .and_then(Option::as_ref)
+                            .is_some_and(|c| c.oit.is_some())
+                } else {
+                    self.pipelines
+                        .get(cmd.slot as usize)
+                        .and_then(Option::as_ref)
+                        .is_some()
+                };
+                if !valid {
+                    continue;
+                }
+                let idx = prepared_idx;
+                prepared_idx += 1;
+                let Some(compiled) = self
+                    .pipelines
+                    .get(cmd.slot as usize)
+                    .and_then(Option::as_ref)
+                else {
+                    continue;
+                };
+                if compiled.set1_layout.is_none() {
+                    continue;
+                }
+                let Some(bindings) = &cmd.bindings else {
+                    continue;
+                };
+                if bindings.entries.len() != compiled.set1_entries.len() {
+                    continue;
+                }
+                let mut inline_spans = Vec::new();
+                let mut texel_spans = Vec::new();
+                let mut ok = true;
+                for (entry, spec) in bindings.entries.iter().zip(&compiled.set1_entries) {
+                    match (entry, spec.kind) {
+                        (
+                            ResolvedSet1Entry::InlineUniform { byte_range },
+                            BindingKind::UniformBuffer { min_size },
+                        ) => {
+                            let Some(slice) = inline_pool.get(byte_range.clone()) else {
+                                ok = false;
+                                break;
+                            };
+                            let start =
+                                align_up_usize(self.inline_uniform_staging.len(), ubo_align);
+                            self.inline_uniform_staging.resize(start, 0);
+                            let padded_len = align_up_usize(slice.len().max(min_size as usize), 16);
+                            self.inline_uniform_staging.extend_from_slice(slice);
+                            self.inline_uniform_staging.resize(start + padded_len, 0);
+                            inline_spans.push((start as u32, padded_len as u64));
+                        }
+                        (
+                            ResolvedSet1Entry::TexelBuffer { byte_range },
+                            BindingKind::TexelBuffer { .. },
+                        ) => {
+                            let Some(slice) = texel_pool.get(byte_range.clone()) else {
+                                ok = false;
+                                break;
+                            };
+                            if slice.is_empty() || !slice.len().is_multiple_of(4) {
+                                ok = false;
+                                break;
+                            }
+                            let start = align_up_usize(self.texel_staging.len(), storage_align);
+                            self.texel_staging.resize(start, 0);
+                            self.texel_staging.extend_from_slice(slice);
+                            texel_spans.push((start as u64, slice.len() as u64));
+                        }
+                        _ => {}
+                    }
+                }
+                if ok && let Some((_, pc_size)) = compiled.push_constant_slot {
+                    if let Some(ref pc_range) = bindings.push_constants
+                        && let Some(slice) = inline_pool.get(pc_range.clone())
+                    {
+                        let start = align_up_usize(self.inline_uniform_staging.len(), ubo_align);
+                        self.inline_uniform_staging.resize(start, 0);
+                        let padded_len = align_up_usize(slice.len().max(pc_size as usize), 16);
+                        self.inline_uniform_staging.extend_from_slice(slice);
+                        self.inline_uniform_staging.resize(start + padded_len, 0);
+                        inline_spans.push((start as u32, padded_len as u64));
+                    } else {
+                        ok = false;
+                    }
+                }
+                if ok {
+                    staged.push((
+                        StagedDraw {
+                            is_oit,
+                            prepared_idx: idx,
+                            slot: cmd.slot as usize,
+                            inline_spans,
+                            texel_spans,
+                        },
+                        bindings,
+                    ));
+                }
+            }
+        };
+
+        stage_list(false, batch.draws, batch.inline_uniforms, batch.texel_data);
+        stage_list(
+            true,
+            batch.oit_draws,
+            batch.oit_inline_uniforms,
+            batch.oit_texel_data,
+        );
+        if staged.is_empty() {
+            return;
+        }
+
+        if !self.inline_uniform_staging.is_empty() {
+            let need = self.inline_uniform_staging.len() as u64;
+            let grew = self
+                .inline_uniform_buf
+                .as_ref()
+                .is_none_or(|b| b.size() < need);
+            if grew {
+                let cap = need.next_power_of_two().max(4096);
+                self.inline_uniform_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Mod pipeline inline uniforms"),
+                    size: cap,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+                self.set1_bind_group_cache.clear();
+            }
+            if let Some(buf) = &self.inline_uniform_buf {
+                upload(buf, &self.inline_uniform_staging);
+            }
+        }
+
+        if !self.texel_staging.is_empty() {
+            let need = self.texel_staging.len() as u64;
+            let grew = self
+                .texel_storage_buf
+                .as_ref()
+                .is_none_or(|b| b.size() < need);
+            if grew {
+                let cap = need.next_power_of_two().max(4096);
+                self.texel_storage_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Mod pipeline texel buffers"),
+                    size: cap,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+                self.set1_bind_group_cache.clear();
+            }
+            if let Some(buf) = &self.texel_storage_buf {
+                upload(buf, &self.texel_staging);
+            }
+        }
+
+        for (sd, bindings) in staged {
+            let Some(Some(compiled)) = self.pipelines.get(sd.slot) else {
+                continue;
+            };
+            let Some(ref set1_layout) = compiled.set1_layout else {
+                continue;
+            };
+            let mut key_resources = Vec::with_capacity(
+                compiled.set1_entries.len() + usize::from(compiled.push_constant_slot.is_some()),
+            );
+            let mut dynamic_offsets: Vec<u32> = Vec::new();
+            let mut inline_cursor = 0usize;
+            let mut texel_cursor = 0usize;
+            let mut valid = true;
+            for (entry, spec) in bindings.entries.iter().zip(&compiled.set1_entries) {
+                match (entry, spec.kind) {
+                    (
+                        ResolvedSet1Entry::UniformBuffer { id, byte_len, .. },
+                        BindingKind::UniformBuffer { .. },
+                    ) => {
+                        key_resources.push(Set1ResourceKey::RetainedUniform(*id, *byte_len));
+                        dynamic_offsets.push(0);
+                    }
+                    (
+                        ResolvedSet1Entry::InlineUniform { .. },
+                        BindingKind::UniformBuffer { .. },
+                    ) => {
+                        let (offset, size) = sd.inline_spans[inline_cursor];
+                        inline_cursor += 1;
+                        key_resources.push(Set1ResourceKey::InlineUniform(size));
+                        dynamic_offsets.push(offset);
+                    }
+                    (
+                        ResolvedSet1Entry::Texture { view_id, .. },
+                        BindingKind::CombinedImageSampler { .. },
+                    ) => {
+                        key_resources.push(Set1ResourceKey::Texture(*view_id));
+                    }
+                    (ResolvedSet1Entry::TexelBuffer { .. }, BindingKind::TexelBuffer { .. }) => {
+                        let (offset, size) = sd.texel_spans[texel_cursor];
+                        texel_cursor += 1;
+                        key_resources.push(Set1ResourceKey::TexelBuffer(offset, size));
+                    }
+                    _ => {
+                        valid = false;
+                        break;
+                    }
+                }
+            }
+            if !valid {
+                continue;
+            }
+            if compiled.push_constant_slot.is_some() {
+                let (offset, size) = sd.inline_spans[inline_cursor];
+                key_resources.push(Set1ResourceKey::InlineUniform(size));
+                dynamic_offsets.push(offset);
+            }
+
+            let cache_key = Set1CacheKey {
+                slot: sd.slot,
+                generation: self.generation,
+                resources: key_resources,
+            };
+            let bind_group = if let Some(cached) = self.set1_bind_group_cache.get(&cache_key) {
+                cached.clone()
+            } else {
+                let mut bg_entries: Vec<wgpu::BindGroupEntry<'_>> = Vec::new();
+                let mut inline_i = 0usize;
+                let mut texel_i = 0usize;
+                for (entry, spec) in bindings.entries.iter().zip(&compiled.set1_entries) {
+                    match (entry, spec.kind) {
+                        (
+                            ResolvedSet1Entry::UniformBuffer {
+                                buffer, byte_len, ..
+                            },
+                            BindingKind::UniformBuffer { .. },
+                        ) => {
+                            bg_entries.push(wgpu::BindGroupEntry {
+                                binding: spec.binding,
+                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                    buffer,
+                                    offset: 0,
+                                    size: wgpu::BufferSize::new(*byte_len),
+                                }),
+                            });
+                        }
+                        (
+                            ResolvedSet1Entry::InlineUniform { .. },
+                            BindingKind::UniformBuffer { .. },
+                        ) => {
+                            let (_, size) = sd.inline_spans[inline_i];
+                            inline_i += 1;
+                            let Some(buf) = self.inline_uniform_buf.as_ref() else {
+                                valid = false;
+                                break;
+                            };
+                            bg_entries.push(wgpu::BindGroupEntry {
+                                binding: spec.binding,
+                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                    buffer: buf,
+                                    offset: 0,
+                                    size: wgpu::BufferSize::new(size),
+                                }),
+                            });
+                        }
+                        (
+                            ResolvedSet1Entry::Texture { view, .. },
+                            BindingKind::CombinedImageSampler { filter, address },
+                        ) => {
+                            let sampler = &self.mod_samplers[sampler_filter_idx(filter)]
+                                [sampler_address_idx(address)];
+                            bg_entries.push(wgpu::BindGroupEntry {
+                                binding: spec.binding,
+                                resource: wgpu::BindingResource::TextureView(view),
+                            });
+                            bg_entries.push(wgpu::BindGroupEntry {
+                                binding: spec.binding + 1,
+                                resource: wgpu::BindingResource::Sampler(sampler),
+                            });
+                        }
+                        (
+                            ResolvedSet1Entry::TexelBuffer { .. },
+                            BindingKind::TexelBuffer { .. },
+                        ) => {
+                            let (offset, size) = sd.texel_spans[texel_i];
+                            texel_i += 1;
+                            let Some(buf) = self.texel_storage_buf.as_ref() else {
+                                valid = false;
+                                break;
+                            };
+                            bg_entries.push(wgpu::BindGroupEntry {
+                                binding: spec.binding,
+                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                    buffer: buf,
+                                    offset,
+                                    size: wgpu::BufferSize::new(size),
+                                }),
+                            });
+                        }
+                        _ => {
+                            valid = false;
+                            break;
+                        }
+                    }
+                }
+                if valid && let Some((pc_binding, _)) = compiled.push_constant_slot {
+                    let (_, size) = sd.inline_spans[inline_i];
+                    if let Some(buf) = self.inline_uniform_buf.as_ref() {
+                        bg_entries.push(wgpu::BindGroupEntry {
+                            binding: pc_binding,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: buf,
+                                offset: 0,
+                                size: wgpu::BufferSize::new(size),
+                            }),
+                        });
+                    } else {
+                        valid = false;
+                    }
+                }
+                if !valid {
+                    continue;
+                }
+                let created = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Mod pipeline set-1"),
+                    layout: set1_layout,
+                    entries: &bg_entries,
+                });
+                self.set1_bind_group_cache
+                    .insert(cache_key, created.clone());
+                created
+            };
+
+            let target = if sd.is_oit {
+                self.oit_draws.get_mut(sd.prepared_idx)
+            } else {
+                self.draws.get_mut(sd.prepared_idx)
+            };
+            if let Some(prepared) = target {
+                prepared.set1_bind_group = Some((bind_group, dynamic_offsets));
+            }
         }
     }
 
@@ -2294,6 +2996,12 @@ impl ModPipelines {
                 },
                 &[],
             );
+            if compiled.set1_layout.is_some() {
+                let Some((ref bg, ref offsets)) = cmd.set1_bind_group else {
+                    continue;
+                };
+                pass.set_bind_group(1, bg, offsets);
+            }
             self.issue_prepared_draw(
                 pass,
                 indices,
@@ -2333,6 +3041,12 @@ impl ModPipelines {
             };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, group, &[]);
+            if compiled.set1_layout.is_some() {
+                let Some((ref bg, ref offsets)) = cmd.set1_bind_group else {
+                    continue;
+                };
+                pass.set_bind_group(1, bg, offsets);
+            }
             self.issue_prepared_draw(
                 pass,
                 indices,
@@ -3998,6 +4712,7 @@ void main() {
             modifier_stack: 0,
             draw: mesh_draw.clone(),
             source: PipelineDrawSource::Retained(resolved),
+            bindings: None,
         };
         let gpu = (device, queue);
         for frame in 0..2 {
@@ -4150,6 +4865,7 @@ void main() {
             modifier_stack: 0,
             draw: mesh_draw,
             source: PipelineDrawSource::Retained(resolved),
+            bindings: None,
         };
         let gpu = (device, queue);
         let batch = Batch {
@@ -4173,5 +4889,294 @@ void main() {
             1.0,
             "instance 3 yellow",
         );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn set1_uniform_buffer_inline_uniform_push_constant_and_texel_buffer_draw_expected_pixels() {
+        let _guard = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let id = Identifier::parse("mod_c3:set1_combo").unwrap();
+        let vsh = "#version 330\n\
+            #include <minecraft:projection.glsl>\n\
+            #include <minecraft:dynamictransforms.glsl>\n\
+            layout(push_constant) uniform Push { vec4 Offset; };\n\
+            in vec3 Position;\n\
+            in vec2 UV0;\n\
+            in vec4 Color;\n\
+            out vec4 vColor;\n\
+            void main() {\n\
+                vec3 p = Position + Offset.xyz;\n\
+                vec2 ndc = vec2(p.x / 32.0 - 1.0, 1.0 - p.y / 32.0);\n\
+                gl_Position = vec4(ndc, 0.5, 1.0);\n\
+                vColor = Color;\n\
+            }\n";
+        let fsh = "#version 330\n\
+            layout(std140) uniform BaseTint { vec4 Base; };\n\
+            layout(std140) uniform DrawTint { vec4 Scale; };\n\
+            uniform isamplerBuffer Lut;\n\
+            in vec4 vColor;\n\
+            out vec4 fragColor;\n\
+            void main() {\n\
+                float lutScale = float(texelFetch(Lut, 1).r) / 255.0;\n\
+                fragColor = vec4(Base.rgb * Scale.rgb * lutScale, 1.0) * vColor;\n\
+            }\n";
+        let p = RenderPipeline::new(
+            id.clone(),
+            id,
+            PipelineBlend::Opaque,
+            mod_api::WorldDepth::ThroughWalls,
+        )
+        .uniform_buffer("BaseTint", 16)
+        .uniform_buffer("DrawTint", 16)
+        .texel_buffer("Lut", mod_api::TexelBufferFormat::R32Sint)
+        .push_constant_size(16);
+        let set = Pipelines::build(&[p], 1, |file| {
+            if file.ends_with(".vsh") {
+                Ok(Some(vsh.to_owned()))
+            } else if file.ends_with(".fsh") {
+                Ok(Some(fsh.to_owned()))
+            } else {
+                Ok(sunrise_mod_pipeline::stubs::read(
+                    file.strip_prefix("assets/")
+                        .and_then(|r| r.split_once('/'))
+                        .map(|(ns, p)| format!("{ns}:{p}"))
+                        .as_deref()
+                        .unwrap_or(""),
+                )
+                .map(str::to_owned))
+            }
+        })
+        .expect("set-1 pipeline must translate");
+
+        let mut uniforms = crate::gfx::mod_uniforms::ModUniformBuffers::default();
+        let base_bytes: [f32; 4] = [1.0, 0.5, 1.0, 1.0];
+        let ubo = uniforms
+            .create_uniform_buffer(&device, &queue, None, bytemuck::cast_slice(&base_bytes))
+            .unwrap();
+        let (ubo_id, ubo_buf, ubo_len) = uniforms.resolve(None, ubo, 16).unwrap();
+
+        let quad = [
+            PipelineVertex {
+                pos: [0.0, 0.0, 0.0],
+                uv: [0.0, 0.0],
+                color: 0xFFFF_FFFF,
+            },
+            PipelineVertex {
+                pos: [0.0, 32.0, 0.0],
+                uv: [0.0, 1.0],
+                color: 0xFFFF_FFFF,
+            },
+            PipelineVertex {
+                pos: [32.0, 32.0, 0.0],
+                uv: [1.0, 1.0],
+                color: 0xFFFF_FFFF,
+            },
+            PipelineVertex {
+                pos: [32.0, 0.0, 0.0],
+                uv: [1.0, 0.0],
+                color: 0xFFFF_FFFF,
+            },
+        ];
+        let vbytes = bytemuck::cast_slice(&quad);
+        let inline1: [f32; 4] = [1.0, 1.0, 0.0, 1.0];
+        let pc1: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
+        let inline2: [f32; 4] = [0.0, 1.0, 1.0, 1.0];
+        let pc2: [f32; 4] = [32.0, 0.0, 0.0, 0.0];
+        let mut inline_pool = Vec::new();
+        inline_pool.extend_from_slice(bytemuck::cast_slice(&inline1));
+        inline_pool.extend_from_slice(bytemuck::cast_slice(&pc1));
+        inline_pool.extend_from_slice(bytemuck::cast_slice(&inline2));
+        inline_pool.extend_from_slice(bytemuck::cast_slice(&pc2));
+        let lut_values: [i32; 2] = [0, 255];
+        let texel_pool: &[u8] = bytemuck::cast_slice(&lut_values);
+
+        let draws = [
+            PipelineDraw {
+                slot: 0,
+                stage: 4,
+                modifier_stack: 0,
+                draw: MeshDraw::vertices(0..4),
+                source: PipelineDrawSource::Transient {
+                    vertex_ranges: vec![(0, 0..vbytes.len() as u64)],
+                    index_range: None,
+                },
+                bindings: Some(ResolvedDrawBindings {
+                    entries: vec![
+                        ResolvedSet1Entry::UniformBuffer {
+                            id: ubo_id,
+                            buffer: ubo_buf.clone(),
+                            byte_len: ubo_len,
+                        },
+                        ResolvedSet1Entry::InlineUniform { byte_range: 0..16 },
+                        ResolvedSet1Entry::TexelBuffer {
+                            byte_range: 0..texel_pool.len(),
+                        },
+                    ],
+                    push_constants: Some(16..32),
+                }),
+            },
+            PipelineDraw {
+                slot: 0,
+                stage: 4,
+                modifier_stack: 0,
+                draw: MeshDraw::vertices(0..4),
+                source: PipelineDrawSource::Transient {
+                    vertex_ranges: vec![(0, 0..vbytes.len() as u64)],
+                    index_range: None,
+                },
+                bindings: Some(ResolvedDrawBindings {
+                    entries: vec![
+                        ResolvedSet1Entry::UniformBuffer {
+                            id: ubo_id,
+                            buffer: ubo_buf,
+                            byte_len: ubo_len,
+                        },
+                        ResolvedSet1Entry::InlineUniform { byte_range: 32..48 },
+                        ResolvedSet1Entry::TexelBuffer {
+                            byte_range: 0..texel_pool.len(),
+                        },
+                    ],
+                    push_constants: Some(48..64),
+                }),
+            },
+        ];
+
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut primitives = WorldPrimitives::new(&device, (format, false));
+        let gpu = (device, queue);
+        let batch = Batch {
+            set: Some(&set),
+            draws: &draws,
+            transient_vertices: vbytes,
+            inline_uniforms: &inline_pool,
+            texel_data: texel_pool,
+            time: 0.0,
+            ..Default::default()
+        };
+        let at = render(&gpu, &mut primitives, format, batch, STAGES - 1);
+        assert_near(at(16, 16), [255.0, 128.0, 0.0, 255.0], 2.0, "draw 1");
+        assert_near(at(48, 16), [0.0, 128.0, 255.0, 255.0], 2.0, "draw 2");
+        uniforms.destroy(None, ubo).unwrap();
+        assert_eq!(
+            uniforms.resolve(None, ubo, 16).unwrap_err(),
+            mod_api::PipelineDrawError::Buffer(mod_api::BufferError::Stale)
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn set1_dynamic_and_standalone_textures_sample_with_repeat_addressing() {
+        let _guard = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let id = Identifier::parse("mod_c3:repeat_tex").unwrap();
+        let vsh = "#version 330\n\
+            #include <minecraft:projection.glsl>\n\
+            #include <minecraft:dynamictransforms.glsl>\n\
+            in vec3 Position;\n\
+            in vec2 UV0;\n\
+            in vec4 Color;\n\
+            out vec2 vUv;\n\
+            void main() {\n\
+                vec2 ndc = vec2(Position.x / 32.0 - 1.0, 1.0 - Position.y / 32.0);\n\
+                gl_Position = vec4(ndc, 0.5, 1.0);\n\
+                vUv = UV0;\n\
+            }\n";
+        let fsh = "#version 330\n\
+            uniform sampler2D CustomTex;\n\
+            in vec2 vUv;\n\
+            out vec4 fragColor;\n\
+            void main() {\n\
+                fragColor = texture(CustomTex, vUv);\n\
+            }\n";
+        let p = RenderPipeline::new(
+            id.clone(),
+            id,
+            PipelineBlend::Opaque,
+            mod_api::WorldDepth::ThroughWalls,
+        )
+        .sampler("CustomTex", SamplerFilter::Nearest, SamplerAddress::Repeat);
+        let set = Pipelines::build(&[p], 1, |file| {
+            if file.ends_with(".vsh") {
+                Ok(Some(vsh.to_owned()))
+            } else if file.ends_with(".fsh") {
+                Ok(Some(fsh.to_owned()))
+            } else {
+                Ok(sunrise_mod_pipeline::stubs::read(
+                    file.strip_prefix("assets/")
+                        .and_then(|r| r.split_once('/'))
+                        .map(|(ns, p)| format!("{ns}:{p}"))
+                        .as_deref()
+                        .unwrap_or(""),
+                )
+                .map(str::to_owned))
+            }
+        })
+        .expect("textured set-1 pipeline must translate");
+
+        let dyn_id = Identifier::parse("mod_c3:dyn_stripe").unwrap();
+        let rgba: [u8; 8] = [255, 0, 0, 255, 0, 0, 255, 255];
+        let mut uniforms = crate::gfx::mod_uniforms::ModUniformBuffers::default();
+        let (view_id, view) = uniforms
+            .resolve_dynamic_texture(&device, &queue, &dyn_id, [2, 1], &rgba, 1)
+            .unwrap();
+
+        let quad = [
+            PipelineVertex {
+                pos: [0.0, 0.0, 0.0],
+                uv: [0.0, 0.0],
+                color: 0xFFFF_FFFF,
+            },
+            PipelineVertex {
+                pos: [0.0, 64.0, 0.0],
+                uv: [0.0, 1.0],
+                color: 0xFFFF_FFFF,
+            },
+            PipelineVertex {
+                pos: [64.0, 64.0, 0.0],
+                uv: [2.0, 1.0],
+                color: 0xFFFF_FFFF,
+            },
+            PipelineVertex {
+                pos: [64.0, 0.0, 0.0],
+                uv: [2.0, 0.0],
+                color: 0xFFFF_FFFF,
+            },
+        ];
+        let vbytes = bytemuck::cast_slice(&quad);
+        let draw_cmd = PipelineDraw {
+            slot: 0,
+            stage: 4,
+            modifier_stack: 0,
+            draw: MeshDraw::vertices(0..4),
+            source: PipelineDrawSource::Transient {
+                vertex_ranges: vec![(0, 0..vbytes.len() as u64)],
+                index_range: None,
+            },
+            bindings: Some(ResolvedDrawBindings {
+                entries: vec![ResolvedSet1Entry::Texture { view_id, view }],
+                push_constants: None,
+            }),
+        };
+
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut primitives = WorldPrimitives::new(&device, (format, false));
+        let gpu = (device, queue);
+        let batch = Batch {
+            set: Some(&set),
+            draws: std::slice::from_ref(&draw_cmd),
+            transient_vertices: vbytes,
+            time: 0.0,
+            ..Default::default()
+        };
+        let at = render(&gpu, &mut primitives, format, batch, STAGES - 1);
+        assert_near(at(8, 32), [255.0, 0.0, 0.0, 255.0], 1.0, "repeat 0 red");
+        assert_near(at(24, 32), [0.0, 0.0, 255.0, 255.0], 1.0, "repeat 0 blue");
+        assert_near(at(40, 32), [255.0, 0.0, 0.0, 255.0], 1.0, "repeat 1 red");
+        assert_near(at(56, 32), [0.0, 0.0, 255.0, 255.0], 1.0, "repeat 1 blue");
     }
 }

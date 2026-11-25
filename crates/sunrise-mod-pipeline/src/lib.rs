@@ -189,6 +189,199 @@ pub struct ProgramSources<'a> {
 pub const DEFAULT_VERTEX_INPUTS: [(&str, &str); 3] =
     [("Position", "vec3"), ("UV0", "vec2"), ("Color", "vec4")];
 
+/// Bind-group set index for mod-declared `BindGroupLayout` entries (set 0 stays vanilla's shared
+/// bindings from `BindGroupLayouts.java`).
+pub const MOD_BIND_GROUP_SET: u32 = 1;
+
+/// Maximum push-constant block size in bytes (`RenderPipeline.java:406`).
+pub const MAX_PUSH_CONSTANT_SIZE: u32 = 128;
+
+/// Built-in vanilla set-0 names from `net.minecraft.client.renderer.BindGroupLayouts` (used by
+/// deviceless static validation so `extract_mod_bindings` never treats reserved vanilla names
+/// as mod-declared set-1 bindings).
+const VANILLA_RESERVED_BINDINGS: &[&str] = &[
+    "DynamicTransforms",
+    "Projection",
+    "ChunkSection",
+    "TerrainUniform",
+    "Fog",
+    "Globals",
+    "Lighting",
+    "Sampler0",
+    "Sampler1",
+    "Sampler2",
+    "CloudInfo",
+    "CloudFaces",
+    "DissolveMaskSampler",
+    "InSampler",
+    "LightmapInfo",
+    "SpriteAnimationInfo",
+    "Sprite",
+    "CurrentSprite",
+    "NextSprite",
+    "GlintSampler",
+    "DepthBoundsSampler",
+    "Coeff0",
+    "Coeff1",
+];
+
+/// Resource kind of one mod-declared set-1 binding (`BindGroupLayout`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ModBindingKind {
+    /// std140 uniform block (`binding = k`).
+    UniformBuffer,
+    /// Combined 2D image + sampler (`texture` at `k`, `sampler` at `k + 1`).
+    CombinedImageSampler,
+    /// Integer texel buffer (`isamplerBuffer`/`usamplerBuffer`, read-only storage at `k`).
+    TexelBuffer,
+}
+
+/// One mod-declared set-1 binding passed into [`Options::mod_bindings`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModBinding<'a> {
+    pub name: &'a str,
+    pub kind: ModBindingKind,
+}
+
+/// Deterministic set-1 binding indices assigned in declaration order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Set1Bindings<'a> {
+    pub blocks: Vec<(&'a str, u32)>,
+    pub samplers: Vec<(&'a str, u32)>,
+    pub texel_buffers: Vec<(&'a str, u32)>,
+    pub push_constant_binding: Option<u32>,
+    pub next_binding: u32,
+}
+
+/// Assign deterministic set-1 binding indices for `bindings` (in declaration order) followed by
+/// an optional inline uniform slot for `push_constant_size > 0`.
+pub fn assign_set1_bindings<'a>(
+    bindings: &'a [ModBinding<'a>],
+    push_constant_size: u32,
+) -> Set1Bindings<'a> {
+    let mut out = Set1Bindings::default();
+    let mut next = 0u32;
+    for b in bindings {
+        match b.kind {
+            ModBindingKind::UniformBuffer => {
+                out.blocks.push((b.name, next));
+                next += 1;
+            }
+            ModBindingKind::CombinedImageSampler => {
+                out.samplers.push((b.name, next));
+                next += 2;
+            }
+            ModBindingKind::TexelBuffer => {
+                out.texel_buffers.push((b.name, next));
+                next += 1;
+            }
+        }
+    }
+    if push_constant_size > 0 {
+        out.push_constant_binding = Some(next);
+        next += 1;
+    }
+    out.next_binding = next;
+    out
+}
+
+/// Extract non-vanilla uniform blocks, `sampler2D`s, `isamplerBuffer`/`usamplerBuffer`s, and
+/// `layout(push_constant)` blocks from a mod shader pair for deviceless static checking
+/// (`cargo sunrise-mod check`). Reserved vanilla `BindGroupLayouts.java` names (plus
+/// `SpriteRect` when `textured`) are never extracted as mod bindings so undeclared vanilla
+/// names are still refused.
+pub fn extract_mod_bindings(
+    vertex: &str,
+    fragment: &str,
+    textured: bool,
+) -> (Vec<(String, ModBindingKind)>, u32) {
+    let mut out: Vec<(String, ModBindingKind)> = Vec::new();
+    let mut push_constant_size = 0u32;
+    let is_reserved = |name: &str| {
+        VANILLA_RESERVED_BINDINGS.contains(&name) || (textured && name == "SpriteRect")
+    };
+    for source in [vertex, fragment] {
+        let mut in_block_comment = false;
+        for raw_line in source.lines() {
+            let mut line = raw_line.trim();
+            if in_block_comment {
+                if let Some(end) = line.find("*/") {
+                    in_block_comment = false;
+                    line = line[end + 2..].trim();
+                } else {
+                    continue;
+                }
+            }
+            if let Some(start) = line.find("/*") {
+                if let Some(end) = line[start + 2..].find("*/") {
+                    let before = line[..start].trim();
+                    let after = line[start + 2 + end + 2..].trim();
+                    line = if before.is_empty() { after } else { before };
+                } else {
+                    in_block_comment = true;
+                    line = line[..start].trim();
+                }
+            }
+            if let Some(comment) = line.find("//") {
+                line = line[..comment].trim();
+            }
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some(at) = line.find("uniform") else {
+                continue;
+            };
+            let head = line[..at].trim();
+            if !(head.is_empty() || head.starts_with("layout")) {
+                continue;
+            }
+            // Check for layout(push_constant) uniform Name { ... }
+            if head.starts_with("layout")
+                && let Some(open) = head.find('(')
+                && let Some(close) = head[open + 1..].rfind(')')
+                && head[open + 1..open + 1 + close]
+                    .split(',')
+                    .any(|item| item.trim() == "push_constant")
+            {
+                push_constant_size = MAX_PUSH_CONSTANT_SIZE;
+                continue;
+            }
+            let rest = line[at + "uniform".len()..].trim();
+            let first_end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            let first = &rest[..first_end];
+            let after_first = rest[first_end..].trim();
+            let (name, kind) = if matches!(first, "sampler2D" | "isamplerBuffer" | "usamplerBuffer")
+            {
+                let name_end = after_first
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(after_first.len());
+                let name = &after_first[..name_end];
+                if name.is_empty() {
+                    continue;
+                }
+                let kind = if first == "sampler2D" {
+                    ModBindingKind::CombinedImageSampler
+                } else {
+                    ModBindingKind::TexelBuffer
+                };
+                (name, kind)
+            } else if !first.is_empty() && (after_first.is_empty() || after_first.starts_with('{'))
+            {
+                (first, ModBindingKind::UniformBuffer)
+            } else {
+                continue;
+            };
+            if is_reserved(name) || out.iter().any(|(n, _)| n == name) {
+                continue;
+            }
+            out.push((name.to_owned(), kind));
+        }
+    }
+    (out, push_constant_size)
+}
+
 /// Compilation options for [`translate`].
 #[derive(Clone, Copy)]
 pub struct Options<'a> {
@@ -201,6 +394,11 @@ pub struct Options<'a> {
     /// Declared vertex inputs `(name, glsl_type)` in deterministic sequential location order
     /// (`0..N`) across `(binding_index, attribute_index)`. Defaults to [`DEFAULT_VERTEX_INPUTS`].
     pub vertex_inputs: &'a [(&'a str, &'a str)],
+    /// Mod-declared set-1 bindings (`BindGroupLayout`) in declaration order.
+    pub mod_bindings: &'a [ModBinding<'a>],
+    /// Declared push-constant block size in bytes (`0` = none, at most
+    /// [`MAX_PUSH_CONSTANT_SIZE`] = 128 B).
+    pub push_constant_size: u32,
     /// Whether the target frame stores linear light (attaching [`LINEAR_FRAGMENT_FINISH`]).
     pub linear_light: bool,
     /// Also run SPIR-V, Metal and DirectX 12 backend translation checks (used by
@@ -216,6 +414,8 @@ impl Default for Options<'_> {
             textured: false,
             defines: &[],
             vertex_inputs: &DEFAULT_VERTEX_INPUTS,
+            mod_bindings: &[],
+            push_constant_size: 0,
             linear_light: false,
             check_backends: false,
             interface: DEVICELESS_INTERFACE_LIMITS,
@@ -573,6 +773,16 @@ fn translate_inner(
         }
     };
 
+    if options.push_constant_size > MAX_PUSH_CONSTANT_SIZE {
+        return Err(vec![problem(
+            sources.fragment_file,
+            format!(
+                "push_constant_size {} exceeds maximum {MAX_PUSH_CONSTANT_SIZE} bytes",
+                options.push_constant_size
+            ),
+        )]);
+    }
+    let set1 = assign_set1_bindings(options.mod_bindings, options.push_constant_size);
     let inputs = Inputs {
         blocks: if options.textured {
             &BLOCKS_WITH_SPRITE
@@ -584,6 +794,11 @@ fn translate_inner(
         } else {
             &[]
         },
+        extra_set: MOD_BIND_GROUP_SET,
+        extra_blocks: &set1.blocks,
+        extra_samplers: &set1.samplers,
+        extra_texel_buffers: &set1.texel_buffers,
+        push_constant_binding: set1.push_constant_binding,
         loose: &[],
         defines,
         includes: &includes,
@@ -604,6 +819,18 @@ fn translate_inner(
         let (file, msg) = split_stage_error(sources, &e, options.textured);
         vec![problem(file, msg)]
     })?;
+    if let Some(pc_binding) = set1.push_constant_binding
+        && let Some(actual_size) = translated.uniform_block_size(MOD_BIND_GROUP_SET, pc_binding)
+        && actual_size > options.push_constant_size
+    {
+        return Err(vec![problem(
+            sources.fragment_file,
+            format!(
+                "push_constant block size {actual_size} bytes exceeds declared push_constant_size {} bytes",
+                options.push_constant_size
+            ),
+        )]);
+    }
 
     if options.check_backends {
         let mut backend_errors = Vec::new();
@@ -642,6 +869,7 @@ pub fn translate_linear_fragment(
             folder: INCLUDE_FOLDER,
             once: &["moj_import"],
         };
+        let set1 = assign_set1_bindings(options.mod_bindings, options.push_constant_size);
         let inputs = Inputs {
             blocks: if options.textured {
                 &BLOCKS_WITH_SPRITE
@@ -653,6 +881,11 @@ pub fn translate_linear_fragment(
             } else {
                 &[]
             },
+            extra_set: MOD_BIND_GROUP_SET,
+            extra_blocks: &set1.blocks,
+            extra_samplers: &set1.samplers,
+            extra_texel_buffers: &set1.texel_buffers,
+            push_constant_binding: set1.push_constant_binding,
             loose: &[],
             defines: &defines,
             includes: &includes,
@@ -1142,6 +1375,104 @@ void main() {
         assert!(
             err[0].message.contains("PackedPos") && err[0].message.contains("uvec4"),
             "expected type mismatch in error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn set1_bind_group_layout_and_push_constants_translate_and_refuse_undeclared_or_oversize() {
+        let vsh = "\
+#version 330
+#include <minecraft:projection.glsl>
+#include <minecraft:dynamictransforms.glsl>
+layout(push_constant) uniform Push { vec4 Offset; };
+uniform isamplerBuffer Lut;
+in vec3 Position;
+in vec2 UV0;
+in vec4 Color;
+out vec2 texCoord0;
+out vec4 vertexColor;
+void main() {
+    int lut = texelFetch(Lut, 0).r;
+    gl_Position = ProjMat * ModelViewMat * vec4(Position + Offset.xyz, 1.0);
+    texCoord0 = UV0 + vec2(float(lut) * 0.0, 0.0);
+    vertexColor = Color;
+}
+";
+        let fsh = "\
+#version 330
+layout(std140) uniform TintBlock { vec4 TintColor; };
+uniform sampler2D CustomTex;
+in vec2 texCoord0;
+in vec4 vertexColor;
+out vec4 fragColor;
+void main() {
+    fragColor = texture(CustomTex, texCoord0) * vertexColor * TintColor;
+}
+";
+        let mod_bindings = [
+            ModBinding {
+                name: "TintBlock",
+                kind: ModBindingKind::UniformBuffer,
+            },
+            ModBinding {
+                name: "CustomTex",
+                kind: ModBindingKind::CombinedImageSampler,
+            },
+            ModBinding {
+                name: "Lut",
+                kind: ModBindingKind::TexelBuffer,
+            },
+        ];
+        let opts = Options {
+            mod_bindings: &mod_bindings,
+            push_constant_size: 16,
+            check_backends: true,
+            ..Default::default()
+        };
+        let built = translate(&sources(vsh, fsh), &opts, &stub_include)
+            .expect("set-1 uniform + sampler + texel buffer + push_constant must translate");
+        assert!(built.translated.other.is_empty());
+
+        // Undeclared block is refused naming the missing block.
+        let missing_opts = Options {
+            mod_bindings: &mod_bindings[1..],
+            push_constant_size: 16,
+            ..Default::default()
+        };
+        let err = translate(&sources(vsh, fsh), &missing_opts, &stub_include)
+            .expect_err("undeclared TintBlock must fail");
+        assert!(err[0].message.contains("TintBlock"), "got: {err:?}");
+
+        // Push constant block exceeding declared push_constant_size is refused.
+        let tiny_pc_opts = Options {
+            mod_bindings: &mod_bindings,
+            push_constant_size: 8,
+            ..Default::default()
+        };
+        let err = translate(&sources(vsh, fsh), &tiny_pc_opts, &stub_include)
+            .expect_err("push_constant larger than declared size must fail");
+        assert!(err[0].message.contains("push_constant"), "got: {err:?}");
+
+        // push_constant_size > 128 B is refused.
+        let huge_pc_opts = Options {
+            mod_bindings: &mod_bindings,
+            push_constant_size: MAX_PUSH_CONSTANT_SIZE + 4,
+            ..Default::default()
+        };
+        let err = translate(&sources(vsh, fsh), &huge_pc_opts, &stub_include)
+            .expect_err("push_constant_size > 128 must fail");
+        assert!(err[0].message.contains("128"), "got: {err:?}");
+
+        // Static extraction helper finds the custom set-1 bindings and push constant.
+        let (extracted, pc) = extract_mod_bindings(vsh, fsh, false);
+        assert_eq!(pc, MAX_PUSH_CONSTANT_SIZE);
+        assert_eq!(
+            extracted,
+            vec![
+                ("Lut".to_owned(), ModBindingKind::TexelBuffer),
+                ("TintBlock".to_owned(), ModBindingKind::UniformBuffer),
+                ("CustomTex".to_owned(), ModBindingKind::CombinedImageSampler),
+            ]
         );
     }
 }

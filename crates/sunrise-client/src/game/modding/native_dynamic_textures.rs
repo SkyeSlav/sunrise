@@ -42,7 +42,13 @@ impl Game<'_> {
     ) -> Result<(), DynamicTextureError> {
         let owner = mod_api::content::crash::current_native_mod();
         let (pool, mut names) = self.gui.atlas.dynamic_names();
-        self.dynamic_textures.free(pool, &mut names, owner, id)
+        let res = self.dynamic_textures.free(pool, &mut names, owner, id);
+        if res.is_ok()
+            && let Some(renderer) = &self.renderer
+        {
+            renderer.remove_mod_dynamic_texture(id);
+        }
+        res
     }
     /// What the calling mod may still create.
     pub(in crate::game) fn dynamic_texture_budget(

@@ -461,6 +461,283 @@ impl Game<'_> {
             .ok_or(mod_api::MeshError::Unavailable)?;
         renderer.mesh_destroy(mod_api::content::crash::current_native_mod(), mesh)
     }
+    /// Allocate a retained GPU [`mod_api::UniformBufferRef`] on the active renderer.
+    pub(super) fn create_uniform_buffer(
+        &self,
+        bytes: &[u8],
+    ) -> Result<mod_api::UniformBufferRef, mod_api::BufferError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(mod_api::BufferError::Unavailable)?;
+        renderer.create_uniform_buffer(mod_api::content::crash::current_native_mod(), bytes)
+    }
+    /// Partially or fully update retained uniform `buffer` starting at `byte_offset`.
+    pub(super) fn uniform_buffer_write(
+        &self,
+        buffer: mod_api::UniformBufferRef,
+        byte_offset: u32,
+        bytes: &[u8],
+    ) -> Result<(), mod_api::BufferError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(mod_api::BufferError::Unavailable)?;
+        renderer.uniform_buffer_write(
+            mod_api::content::crash::current_native_mod(),
+            buffer,
+            byte_offset,
+            bytes,
+        )
+    }
+    /// Free retained uniform `buffer` and retire the handle.
+    pub(super) fn uniform_buffer_destroy(
+        &self,
+        buffer: mod_api::UniformBufferRef,
+    ) -> Result<(), mod_api::BufferError> {
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(mod_api::BufferError::Unavailable)?;
+        renderer.uniform_buffer_destroy(mod_api::content::crash::current_native_mod(), buffer)
+    }
+    /// Validate and resolve per-draw set-1 [`mod_api::DrawBindings`] against pipeline `slot`'s
+    /// declared `BindGroupLayout` and `push_constant_size`.
+    fn resolve_draw_bindings(
+        &self,
+        draw: &mut WorldGeometry,
+        slot: u32,
+        bindings: &mod_api::DrawBindings<'_>,
+    ) -> Result<Option<sunrise_client::gfx::mod_pipelines::ResolvedDrawBindings>, PipelineDrawError>
+    {
+        let (layout, pc_size) = self
+            .pack
+            .render
+            .mod_pipelines
+            .bind_group_layout(slot)
+            .ok_or(PipelineDrawError::Pipeline(
+                mod_api::RenderPipelineError::Invalid,
+            ))?;
+        if layout.is_empty() && pc_size == 0 {
+            if !bindings.entries.is_empty() || bindings.push_constants.is_some() {
+                return Err(PipelineDrawError::InvalidBinding);
+            }
+            return Ok(None);
+        }
+        // Reject duplicate or unknown entry names in `bindings`.
+        if bindings.entries.len() != layout.entries.len() {
+            return Err(PipelineDrawError::InvalidBinding);
+        }
+        let renderer = self
+            .renderer
+            .as_ref()
+            .ok_or(PipelineDrawError::Buffer(mod_api::BufferError::Unavailable))?;
+        let owner = mod_api::content::crash::current_native_mod();
+        let writes_depth = self.pack.render.mod_pipelines.writes_depth(slot);
+
+        // Validate every declared entry before appending to `draw`'s byte pools so a refused
+        // draw appends nothing.
+        enum StagedEntry<'a> {
+            UniformBuffer {
+                id: u64,
+                buffer: wgpu::Buffer,
+                byte_len: u64,
+            },
+            InlineUniform(&'a [u8]),
+            Texture {
+                view_id: u64,
+                view: wgpu::TextureView,
+            },
+            TexelBytes(Vec<u8>),
+        }
+        let mut staged = Vec::with_capacity(layout.entries.len());
+        for decl in &layout.entries {
+            let mut matches = bindings
+                .entries
+                .iter()
+                .filter(|(name, _)| *name == decl.name.as_str());
+            let Some((_, value)) = matches.next() else {
+                return Err(PipelineDrawError::InvalidBinding);
+            };
+            if matches.next().is_some() {
+                return Err(PipelineDrawError::InvalidBinding);
+            }
+            match (decl.kind, value) {
+                (
+                    mod_api::BindingKind::UniformBuffer { min_size },
+                    mod_api::BindingValue::Uniform(mod_api::UniformValue::Buffer(handle)),
+                ) => {
+                    let (id, buffer, byte_len) =
+                        renderer.resolve_mod_uniform_buffer(owner, *handle, min_size)?;
+                    staged.push(StagedEntry::UniformBuffer {
+                        id,
+                        buffer,
+                        byte_len,
+                    });
+                }
+                (
+                    mod_api::BindingKind::UniformBuffer { min_size },
+                    mod_api::BindingValue::Uniform(mod_api::UniformValue::Inline(bytes)),
+                ) => {
+                    if bytes.len() < min_size as usize || !bytes.len().is_multiple_of(4) {
+                        return Err(PipelineDrawError::InvalidBinding);
+                    }
+                    staged.push(StagedEntry::InlineUniform(bytes));
+                }
+                (
+                    mod_api::BindingKind::CombinedImageSampler { .. },
+                    mod_api::BindingValue::Texture(source),
+                ) => {
+                    let (view_id, view) = match source {
+                        mod_api::TextureSource::AtlasSprite(id) => {
+                            let sprite_key = id
+                                .to_string()
+                                .strip_prefix("minecraft:")
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| id.to_string());
+                            if !self.pack.render.sprite_layers.contains_key(&sprite_key)
+                                && !self.gui.atlas.sprites.contains_key(&sprite_key)
+                            {
+                                return Err(PipelineDrawError::InvalidBinding);
+                            }
+                            renderer.mod_atlas_texture_view()
+                        }
+                        mod_api::TextureSource::DynamicTexture(id) => {
+                            self.resolve_dynamic_texture_view(renderer, id)?
+                        }
+                        mod_api::TextureSource::StandaloneTexture(id) => {
+                            let asset_path = if id.path().ends_with(".png") {
+                                format!("assets/{}/{}", id.namespace(), id.path())
+                            } else {
+                                format!("assets/{}/textures/{}.png", id.namespace(), id.path())
+                            };
+                            renderer.resolve_mod_standalone_texture(id, || {
+                                self.pack.source.read(&asset_path).ok()
+                            })?
+                        }
+                        mod_api::TextureSource::WorldDepth => {
+                            if writes_depth {
+                                return Err(PipelineDrawError::InvalidBinding);
+                            }
+                            renderer.mod_world_depth_texture_view()
+                        }
+                        mod_api::TextureSource::WorldColor => {
+                            return Err(PipelineDrawError::InvalidBinding);
+                        }
+                        mod_api::TextureSource::Lightmap => renderer.mod_lightmap_texture_view(),
+                        _ => return Err(PipelineDrawError::InvalidBinding),
+                    };
+                    staged.push(StagedEntry::Texture { view_id, view });
+                }
+                (
+                    mod_api::BindingKind::TexelBuffer { format },
+                    mod_api::BindingValue::TexelBuffer(bytes),
+                ) => {
+                    if bytes.is_empty() || !bytes.len().is_multiple_of(format.element_bytes()) {
+                        return Err(PipelineDrawError::InvalidBinding);
+                    }
+                    let expanded = match format {
+                        mod_api::TexelBufferFormat::R8Sint => {
+                            let mut out = Vec::with_capacity(bytes.len() * 4);
+                            for &b in *bytes {
+                                out.extend_from_slice(&i32::from(b as i8).to_ne_bytes());
+                            }
+                            out
+                        }
+                        mod_api::TexelBufferFormat::R8Uint => {
+                            let mut out = Vec::with_capacity(bytes.len() * 4);
+                            for &b in *bytes {
+                                out.extend_from_slice(&u32::from(b).to_ne_bytes());
+                            }
+                            out
+                        }
+                        mod_api::TexelBufferFormat::R32Sint
+                        | mod_api::TexelBufferFormat::R32Uint => bytes.to_vec(),
+                        _ => return Err(PipelineDrawError::InvalidBinding),
+                    };
+                    staged.push(StagedEntry::TexelBytes(expanded));
+                }
+                _ => return Err(PipelineDrawError::InvalidBinding),
+            }
+        }
+        let pc_slice = if pc_size > 0 {
+            let Some(bytes) = bindings.push_constants else {
+                return Err(PipelineDrawError::InvalidBinding);
+            };
+            if bytes.is_empty() || bytes.len() > pc_size as usize || !bytes.len().is_multiple_of(4)
+            {
+                return Err(PipelineDrawError::InvalidBinding);
+            }
+            Some(bytes)
+        } else {
+            if bindings.push_constants.is_some() {
+                return Err(PipelineDrawError::InvalidBinding);
+            }
+            None
+        };
+
+        let mut resolved_entries = Vec::with_capacity(staged.len());
+        for entry in staged {
+            match entry {
+                StagedEntry::UniformBuffer {
+                    id,
+                    buffer,
+                    byte_len,
+                } => {
+                    resolved_entries.push(
+                        sunrise_client::gfx::mod_pipelines::ResolvedSet1Entry::UniformBuffer {
+                            id,
+                            buffer,
+                            byte_len,
+                        },
+                    );
+                }
+                StagedEntry::InlineUniform(bytes) => {
+                    let byte_range = draw.push_inline_uniform(bytes);
+                    resolved_entries.push(
+                        sunrise_client::gfx::mod_pipelines::ResolvedSet1Entry::InlineUniform {
+                            byte_range,
+                        },
+                    );
+                }
+                StagedEntry::Texture { view_id, view } => {
+                    resolved_entries.push(
+                        sunrise_client::gfx::mod_pipelines::ResolvedSet1Entry::Texture {
+                            view_id,
+                            view,
+                        },
+                    );
+                }
+                StagedEntry::TexelBytes(bytes) => {
+                    let byte_range = draw.push_texel_data(&bytes);
+                    resolved_entries.push(
+                        sunrise_client::gfx::mod_pipelines::ResolvedSet1Entry::TexelBuffer {
+                            byte_range,
+                        },
+                    );
+                }
+            }
+        }
+        let push_constants = pc_slice.map(|bytes| draw.push_inline_uniform(bytes));
+        Ok(Some(
+            sunrise_client::gfx::mod_pipelines::ResolvedDrawBindings {
+                entries: resolved_entries,
+                push_constants,
+            },
+        ))
+    }
+
+    fn resolve_dynamic_texture_view(
+        &self,
+        renderer: &sunrise_client::gfx::Renderer,
+        id: &mod_api::Identifier,
+    ) -> Result<(u64, wgpu::TextureView), mod_api::PipelineDrawError> {
+        let Some((size, pixels, rev)) = self.dynamic_textures.image_data(id) else {
+            return Err(mod_api::PipelineDrawError::InvalidBinding);
+        };
+        renderer.resolve_mod_dynamic_texture(id, size, &pixels, rev)
+    }
+
     /// Submit quads drawn by a mod pipeline: shorthand over [`Self::native_world_draw_vertices`]
     /// for pipelines using the default `PositionTexColor` vertex format and
     /// [`mod_api::PrimitiveTopology::Quads`]. Non-finite quads are skipped individually without
@@ -535,7 +812,7 @@ impl Game<'_> {
         pipeline: RenderPipelineRef,
         mesh: mod_api::MeshRef,
         mesh_draw: mod_api::MeshDraw,
-        _bindings: &mod_api::DrawBindings<'_>,
+        bindings: &mod_api::DrawBindings<'_>,
     ) -> Result<(), PipelineDrawError> {
         let slot = self
             .pack
@@ -564,6 +841,7 @@ impl Game<'_> {
             topology,
             &mesh_draw,
         )?;
+        let resolved_bindings = self.resolve_draw_bindings(draw, slot, bindings)?;
         let empty = mesh_draw.instances.is_empty()
             || match &mesh_draw.range {
                 mod_api::DrawRange::Vertices(r) => r.is_empty(),
@@ -571,7 +849,7 @@ impl Game<'_> {
                 _ => true,
             };
         if !empty {
-            draw.draw_mesh_slot(slot, resolved, mesh_draw);
+            draw.draw_mesh_slot(slot, resolved, mesh_draw, resolved_bindings);
         }
         Ok(())
     }
@@ -583,7 +861,7 @@ impl Game<'_> {
         vertices: &[&[u8]],
         indices: Option<(mod_api::IndexFormat, &[u8])>,
         mesh_draw: mod_api::MeshDraw,
-        _bindings: &mod_api::DrawBindings<'_>,
+        bindings: &mod_api::DrawBindings<'_>,
     ) -> Result<(), PipelineDrawError> {
         let slot = self
             .pack
@@ -662,6 +940,7 @@ impl Game<'_> {
             }
             _ => return Err(PipelineDrawError::InvalidRange),
         }
+        let resolved_bindings = self.resolve_draw_bindings(draw, slot, bindings)?;
         let empty = mesh_draw.instances.is_empty()
             || match &mesh_draw.range {
                 mod_api::DrawRange::Vertices(r) => r.is_empty(),
@@ -669,7 +948,7 @@ impl Game<'_> {
                 _ => true,
             };
         if !empty {
-            draw.draw_vertices_slot(slot, &bound_slices, indices, mesh_draw);
+            draw.draw_vertices_slot(slot, &bound_slices, indices, mesh_draw, resolved_bindings);
         }
         Ok(())
     }

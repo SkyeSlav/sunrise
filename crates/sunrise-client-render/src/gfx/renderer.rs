@@ -189,6 +189,8 @@ pub struct Renderer {
     pub(crate) world_primitives: Option<world_primitives::WorldPrimitives>,
     /// Retained GPU vertex/index buffers backing [`mod_api::MeshRef`].
     pub(crate) mod_meshes: std::sync::Mutex<mod_meshes::ModMeshes>,
+    /// Retained GPU uniform buffers backing [`mod_api::UniformBufferRef`] and cached mod textures.
+    pub(crate) mod_uniforms: std::sync::Mutex<mod_uniforms::ModUniformBuffers>,
     pub(crate) text_polygon_offset_pipeline: wgpu::RenderPipeline,
     pub(crate) world_text_pipeline: wgpu::RenderPipeline,
     pub(crate) text_mark_pipelines: [wgpu::RenderPipeline; 2],
