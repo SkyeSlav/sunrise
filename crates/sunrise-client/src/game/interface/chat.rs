@@ -3472,6 +3472,8 @@ mod link_and_path_tests {
     fn a_link_asked_during_gameplay_releases_the_pointer_until_answered() {
         super::super::native_entity_refs::tests::with_game(|game| {
             game.options.execution_role = super::super::execution_role::ExecutionRole::Client;
+            // The grab stays internal, as in the pointer tests: no system grab on a test window.
+            game.options.offscreen = true;
             let (_event_loop, window) =
                 super::super::native_entity_refs::tests::test_window([640, 480]);
             game.window = Some(window);
