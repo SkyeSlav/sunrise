@@ -52,6 +52,7 @@ pub enum RegistrationError {
     InvalidPackBinding(String),
     InvalidShaderDefine(String),
     InvalidPipelineState(String),
+    InvalidVertexFormat(String),
     AlreadyPublished,
 }
 
@@ -92,6 +93,7 @@ impl std::fmt::Display for RegistrationError {
             Self::InvalidPackBinding(reason) => f.write_str(reason),
             Self::InvalidShaderDefine(reason) => f.write_str(reason),
             Self::InvalidPipelineState(reason) => f.write_str(reason),
+            Self::InvalidVertexFormat(reason) => f.write_str(reason),
             Self::AlreadyPublished => f.write_str("pipeline registrations were already published"),
         }
     }
@@ -168,6 +170,13 @@ pub fn register(
         }
         if let Err(reason) = pipeline.validate_state() {
             return Err(RegistrationError::InvalidPipelineState(format!(
+                "mod {}: pipeline {}: {reason}",
+                pipeline.owner(),
+                pipeline.id
+            )));
+        }
+        if let Err(reason) = pipeline.validate_vertex_bindings() {
+            return Err(RegistrationError::InvalidVertexFormat(format!(
                 "mod {}: pipeline {}: {reason}",
                 pipeline.owner(),
                 pipeline.id
@@ -590,6 +599,10 @@ pub struct Built {
     pub state: PipelineState,
     /// Per-target colour blend and write-mask states (`1..=MAX_COLOR_TARGETS`).
     pub color_targets: Vec<Option<ColorTargetState>>,
+    /// Effective vertex buffer bindings sorted by binding index.
+    pub vertex_bindings: Vec<(u8, mod_api::VertexFormat)>,
+    /// Whether this pipeline uses the default `PositionTexColor` vertex format.
+    pub uses_default_vertex_format: bool,
     /// Whether the pipeline opted in to OIT (`RenderPipeline::order_independent()`).
     pub order_independent: bool,
     /// Three translated OIT variants (`DepthBounds`, `Transmittance`, `Accumulate`) when
@@ -679,9 +692,23 @@ impl Pipelines {
                     })
                     .collect();
                 let define_refs: Vec<&str> = defines_owned.iter().map(String::as_str).collect();
+                let vertex_bindings = pipeline.effective_vertex_bindings();
+                let vertex_inputs_owned: Vec<(String, &'static str)> = vertex_bindings
+                    .iter()
+                    .flat_map(|(_, fmt)| {
+                        fmt.attributes
+                            .iter()
+                            .map(|a| (a.name.clone(), a.format.glsl_type()))
+                    })
+                    .collect();
+                let vertex_input_refs: Vec<(&str, &str)> = vertex_inputs_owned
+                    .iter()
+                    .map(|(name, ty)| (name.as_str(), *ty))
+                    .collect();
                 let loaded = pipeline
                     .validate_defines()
                     .and_then(|()| pipeline.validate_state())
+                    .and_then(|()| pipeline.validate_vertex_bindings())
                     .and_then(|()| {
                         let vertex = read_stage(&vertex_file)?;
                         let fragment = read_stage(&fragment_file)?;
@@ -696,6 +723,7 @@ impl Pipelines {
                         let options = PipelineOptions {
                             textured: pipeline.texture.is_some(),
                             defines: &define_refs,
+                            vertex_inputs: &vertex_input_refs,
                             linear_light: false,
                             check_backends: false,
                             interface: sunrise_mod_pipeline::DEVICELESS_INTERFACE_LIMITS,
@@ -756,6 +784,8 @@ impl Pipelines {
                         defines: Arc::from(defines_owned),
                         state: pipeline.state,
                         color_targets: pipeline.effective_color_targets(),
+                        vertex_bindings,
+                        uses_default_vertex_format: pipeline.uses_default_vertex_format(),
                         order_independent: pipeline.order_independent,
                         oit,
                         optional: pipeline.optional,
@@ -796,6 +826,24 @@ impl Pipelines {
             .get(slot as usize)
             .and_then(|b| b.as_ref())
             .map(|b| b.state.topology)
+    }
+
+    /// The effective vertex buffer bindings of `slot`, or `None` if `slot` is out of range or
+    /// was not built.
+    pub fn vertex_bindings(&self, slot: u32) -> Option<&[(u8, mod_api::VertexFormat)]> {
+        self.built
+            .get(slot as usize)
+            .and_then(|b| b.as_ref())
+            .map(|b| b.vertex_bindings.as_slice())
+    }
+
+    /// Whether `slot` uses the default `PositionTexColor` vertex format (eligible for
+    /// `pipeline_quads`).
+    pub fn uses_default_vertex_format(&self, slot: u32) -> bool {
+        self.built
+            .get(slot as usize)
+            .and_then(|b| b.as_ref())
+            .is_some_and(|b| b.uses_default_vertex_format)
     }
 
     /// Whether `slot` may draw at `RenderLevelStage::OitTranslucent`: opted in via

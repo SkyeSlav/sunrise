@@ -187,6 +187,8 @@ pub struct Renderer {
     pub(crate) see_through_pipeline: wgpu::RenderPipeline,
     /// Native mods' world primitives (`Frame::world_primitives`), taken briefly during OIT pass.
     pub(crate) world_primitives: Option<world_primitives::WorldPrimitives>,
+    /// Retained GPU vertex/index buffers backing [`mod_api::MeshRef`].
+    pub(crate) mod_meshes: std::sync::Mutex<mod_meshes::ModMeshes>,
     pub(crate) text_polygon_offset_pipeline: wgpu::RenderPipeline,
     pub(crate) world_text_pipeline: wgpu::RenderPipeline,
     pub(crate) text_mark_pipelines: [wgpu::RenderPipeline; 2],

@@ -35,6 +35,10 @@ pub struct RenderPipeline {
     pub defines: Vec<(String, Option<String>)>,
     /// What the pipeline's draws are made of.
     pub vertex_format: PipelineVertexFormat,
+    /// Custom per-binding vertex formats (`withVertexBinding(bindingIndex, format)`). Empty by
+    /// default, meaning binding 0 uses [`VertexFormat::position_tex_color`] (stride 24:
+    /// `Position: Float32x3`, `UV0: Float32x2`, `Color: Unorm8x4`).
+    pub vertex_bindings: Vec<(u8, VertexFormat)>,
     /// Fixed-function blend, depth, depth-write, depth-bias, culling, colour-write, polygon-mode,
     /// and primitive-topology state.
     pub state: PipelineState,
@@ -89,6 +93,7 @@ impl RenderPipeline {
             vertex_shader: None,
             defines: Vec::new(),
             vertex_format: PipelineVertexFormat::PositionTexColor,
+            vertex_bindings: Vec::new(),
             state: PipelineState::new(blend, depth),
             color_targets: Vec::new(),
             invalid_color_target_index: None,
@@ -182,6 +187,77 @@ impl RenderPipeline {
                         );
                     }
                     Some(_) => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Declare a vertex buffer binding at `binding` (`0..MAX_VERTEX_BINDINGS`, vanilla's
+    /// `RenderPipeline.Builder.withVertexBinding(int bindingIndex, VertexFormat)`).
+    ///
+    /// When no binding is declared, the pipeline uses the default binding 0
+    /// ([`VertexFormat::position_tex_color`]). Registration refuses `binding >= 16`, duplicate
+    /// binding indices, invalid formats, duplicate attribute names across bindings, or more than
+    /// `MAX_VERTEX_ELEMENTS` (16) total attributes across all bindings (`RenderPipeline.java:408`).
+    pub fn vertex_binding(mut self, binding: u8, format: VertexFormat) -> Self {
+        self.vertex_bindings.push((binding, format));
+        self
+    }
+
+    /// The effective vertex buffer bindings sorted by binding index: [`Self::vertex_bindings`]
+    /// when non-empty, otherwise `[(0, VertexFormat::position_tex_color())]`.
+    pub fn effective_vertex_bindings(&self) -> Vec<(u8, VertexFormat)> {
+        if self.vertex_bindings.is_empty() {
+            vec![(0, VertexFormat::position_tex_color())]
+        } else {
+            let mut bindings = self.vertex_bindings.clone();
+            bindings.sort_by_key(|(idx, _)| *idx);
+            bindings
+        }
+    }
+
+    /// Whether this pipeline uses the default single `PositionTexColor` vertex binding
+    /// (compatible with the [`crate::WorldDrawContext::pipeline_quads`] shorthand).
+    pub fn uses_default_vertex_format(&self) -> bool {
+        self.vertex_bindings.is_empty()
+            || (self.vertex_bindings.len() == 1
+                && self.vertex_bindings[0].0 == 0
+                && self.vertex_bindings[0].1 == VertexFormat::position_tex_color())
+    }
+
+    /// Validate all declared vertex buffer bindings on this pipeline: binding indices `< 16`,
+    /// unique binding indices, valid per-binding [`VertexFormat`], unique GLSL attribute names
+    /// across all bindings, and at most `MAX_VERTEX_ELEMENTS` (16) total attributes
+    /// (`RenderPipeline.java:159,408`).
+    pub fn validate_vertex_bindings(&self) -> Result<(), String> {
+        let mut seen_bindings = std::collections::HashSet::new();
+        let mut seen_attrs = std::collections::HashSet::new();
+        let mut total_attrs = 0usize;
+        for (binding, format) in &self.vertex_bindings {
+            if usize::from(*binding) >= MAX_VERTEX_BINDINGS {
+                return Err(format!(
+                    "vertex binding index {binding} exceeds MAX_VERTEX_BINDINGS ({MAX_VERTEX_BINDINGS})"
+                ));
+            }
+            if !seen_bindings.insert(*binding) {
+                return Err(format!("duplicate vertex binding index {binding}"));
+            }
+            format
+                .validate()
+                .map_err(|e| format!("vertex binding {binding}: {e}"))?;
+            total_attrs += format.attributes.len();
+            if total_attrs > MAX_VERTEX_ELEMENTS {
+                return Err(format!(
+                    "total vertex attributes ({total_attrs}) exceeds MAX_VERTEX_ELEMENTS ({MAX_VERTEX_ELEMENTS})"
+                ));
+            }
+            for attr in &format.attributes {
+                if !seen_attrs.insert(attr.name.as_str()) {
+                    return Err(format!(
+                        "duplicate vertex attribute name {:?} across vertex bindings",
+                        attr.name
+                    ));
                 }
             }
         }
@@ -953,6 +1029,779 @@ impl std::error::Error for PipelineTextureError {}
 pub enum PipelineVertexFormat {
     /// A position, a texture coordinate and a colour: what [`PipelineQuad`] gives.
     PositionTexColor,
+}
+
+/// Required byte alignment for vertex strides (`VertexFormat.VERTEX_ALIGNMENT = 4`,
+/// `VertexFormat.java:13`).
+pub const VERTEX_ALIGNMENT: u32 = 4;
+
+/// Maximum number of vertex attributes across all bindings of a [`RenderPipeline`]
+/// (`VertexFormat.MAX_VERTEX_ELEMENTS = 16`, `VertexFormat.java:14`, `RenderPipeline.java:408`).
+pub const MAX_VERTEX_ELEMENTS: usize = 16;
+
+/// Maximum number of vertex buffer binding slots on a [`RenderPipeline`]
+/// (`RenderPipeline.java:159`). At GPU build time, a pipeline using a binding index `>=`
+/// `device.limits().max_vertex_buffers` is refused cleanly.
+pub const MAX_VERTEX_BINDINGS: usize = 16;
+
+/// Per-attribute vertex data format (the portable WebGPU/wgpu subset of vanilla's `GpuFormat`,
+/// supported across Linux Vulkan, Windows DX12/Vulkan, and Apple-chip macOS Metal without
+/// extensions). Each format maps 1:1 to a GLSL vertex `in` type (`float`/`vecN`/`int`/`ivecN`/
+/// `uint`/`uvecN`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline vertex attribute format.
+pub enum VertexAttributeFormat {
+    Float32,
+    Float32x2,
+    Float32x3,
+    Float32x4,
+    Float16x2,
+    Float16x4,
+    Unorm8x2,
+    Unorm8x4,
+    Snorm8x2,
+    Snorm8x4,
+    Uint8x2,
+    Uint8x4,
+    Sint8x2,
+    Sint8x4,
+    Unorm16x2,
+    Unorm16x4,
+    Snorm16x2,
+    Snorm16x4,
+    Uint16x2,
+    Uint16x4,
+    Sint16x2,
+    Sint16x4,
+    Uint32,
+    Uint32x2,
+    Uint32x3,
+    Uint32x4,
+    Sint32,
+    Sint32x2,
+    Sint32x3,
+    Sint32x4,
+    Unorm10_10_10_2,
+}
+
+impl VertexAttributeFormat {
+    /// Size of one attribute value in bytes.
+    pub const fn byte_size(self) -> u32 {
+        match self {
+            Self::Unorm8x2 | Self::Snorm8x2 | Self::Uint8x2 | Self::Sint8x2 => 2,
+            Self::Float32
+            | Self::Float16x2
+            | Self::Unorm8x4
+            | Self::Snorm8x4
+            | Self::Uint8x4
+            | Self::Sint8x4
+            | Self::Unorm16x2
+            | Self::Snorm16x2
+            | Self::Uint16x2
+            | Self::Sint16x2
+            | Self::Uint32
+            | Self::Sint32
+            | Self::Unorm10_10_10_2 => 4,
+            Self::Float32x2
+            | Self::Float16x4
+            | Self::Unorm16x4
+            | Self::Snorm16x4
+            | Self::Uint16x4
+            | Self::Sint16x4
+            | Self::Uint32x2
+            | Self::Sint32x2 => 8,
+            Self::Float32x3 | Self::Uint32x3 | Self::Sint32x3 => 12,
+            Self::Float32x4 | Self::Uint32x4 | Self::Sint32x4 => 16,
+        }
+    }
+
+    /// Required byte alignment of the attribute's offset inside its vertex buffer (`min(4,
+    /// byte_size)`, satisfying both `GpuFormat.byteAlignment()` and WebGPU vertex attribute
+    /// alignment).
+    pub const fn alignment(self) -> u32 {
+        let size = self.byte_size();
+        if size < 4 { size } else { 4 }
+    }
+
+    /// The GLSL vertex `in` type for this attribute (`float`/`vecN` for float and normalized
+    /// formats, `int`/`ivecN` for signed integer formats, `uint`/`uvecN` for unsigned integer
+    /// formats).
+    pub const fn glsl_type(self) -> &'static str {
+        match self {
+            Self::Float32 => "float",
+            Self::Float32x2
+            | Self::Float16x2
+            | Self::Unorm8x2
+            | Self::Snorm8x2
+            | Self::Unorm16x2
+            | Self::Snorm16x2 => "vec2",
+            Self::Float32x3 => "vec3",
+            Self::Float32x4
+            | Self::Float16x4
+            | Self::Unorm8x4
+            | Self::Snorm8x4
+            | Self::Unorm16x4
+            | Self::Snorm16x4
+            | Self::Unorm10_10_10_2 => "vec4",
+            Self::Uint32 => "uint",
+            Self::Uint8x2 | Self::Uint16x2 | Self::Uint32x2 => "uvec2",
+            Self::Uint32x3 => "uvec3",
+            Self::Uint8x4 | Self::Uint16x4 | Self::Uint32x4 => "uvec4",
+            Self::Sint32 => "int",
+            Self::Sint8x2 | Self::Sint16x2 | Self::Sint32x2 => "ivec2",
+            Self::Sint32x3 => "ivec3",
+            Self::Sint8x4 | Self::Sint16x4 | Self::Sint32x4 => "ivec4",
+        }
+    }
+
+    /// Whether this attribute is read as an integer (`int`/`ivecN`/`uint`/`uvecN`) rather than
+    /// floating-point (`float`/`vecN`).
+    pub const fn is_integer(self) -> bool {
+        matches!(
+            self,
+            Self::Uint8x2
+                | Self::Uint8x4
+                | Self::Sint8x2
+                | Self::Sint8x4
+                | Self::Uint16x2
+                | Self::Uint16x4
+                | Self::Sint16x2
+                | Self::Sint16x4
+                | Self::Uint32
+                | Self::Uint32x2
+                | Self::Uint32x3
+                | Self::Uint32x4
+                | Self::Sint32
+                | Self::Sint32x2
+                | Self::Sint32x3
+                | Self::Sint32x4
+        )
+    }
+}
+
+/// How a vertex buffer binding advances across vertices or instances (`VertexFormat.stepRate`).
+///
+/// WebGPU/wgpu supports per-vertex (`0`) and per-instance (`1`) step rates only; arbitrary
+/// instance divisors `> 1` (`VulkanRenderPipeline.java:177-182`) are refused with
+/// [`VertexFormatError::UnsupportedStepRate`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline vertex step mode.
+pub enum VertexStepMode {
+    /// Advance once per vertex (`stepRate = 0`).
+    #[default]
+    Vertex,
+    /// Advance once per instance (`stepRate = 1`).
+    Instance,
+}
+
+impl VertexStepMode {
+    /// Convert a vanilla numeric `stepRate` (`0` = per-vertex, `1` = per-instance), refusing
+    /// divisors `> 1` with [`VertexFormatError::UnsupportedStepRate`].
+    pub const fn from_step_rate(step_rate: u32) -> Result<Self, VertexFormatError> {
+        match step_rate {
+            0 => Ok(Self::Vertex),
+            1 => Ok(Self::Instance),
+            rate => Err(VertexFormatError::UnsupportedStepRate(rate)),
+        }
+    }
+}
+
+/// One named attribute inside a [`VertexFormat`] (`VertexFormatElement`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline vertex attribute declaration.
+pub struct VertexAttribute {
+    /// GLSL vertex `in` identifier (must be a valid non-`gl_` ASCII GLSL identifier).
+    pub name: String,
+    /// Byte offset from the start of each vertex/instance record.
+    pub offset: u32,
+    /// Data encoding of this attribute.
+    pub format: VertexAttributeFormat,
+}
+
+impl VertexAttribute {
+    /// Describe one vertex attribute.
+    pub fn new(name: impl Into<String>, offset: u32, format: VertexAttributeFormat) -> Self {
+        Self {
+            name: name.into(),
+            offset,
+            format,
+        }
+    }
+}
+
+/// Why a [`VertexFormat`] declaration was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+// no wire: local client render-pipeline vertex format validation error.
+pub enum VertexFormatError {
+    /// Attribute name is not a valid non-`gl_` ASCII GLSL identifier.
+    InvalidAttributeName(String),
+    /// Two attributes in the same format share a name (`VertexFormat.java:98`).
+    DuplicateAttributeName(String),
+    /// Attribute byte offset is not aligned to `format.alignment()` (`VertexFormat.java:89`).
+    UnalignedOffset {
+        name: String,
+        offset: u32,
+        alignment: u32,
+    },
+    /// Attribute bytes extend past the format's vertex stride.
+    AttributeOutOfBounds { name: String, end: u32, stride: u32 },
+    /// Vertex stride is zero or not a multiple of [`VERTEX_ALIGNMENT`] (4)
+    /// (`VertexFormat.java:152`).
+    InvalidStride(u32),
+    /// Format declares more than [`MAX_VERTEX_ELEMENTS`] (16) attributes
+    /// (`VertexFormat.java:14,80`).
+    TooManyAttributes(usize),
+    /// Step-rate divisor `> 1` is not supported on WebGPU/wgpu (`VulkanRenderPipeline.java:177-182`).
+    UnsupportedStepRate(u32),
+}
+
+impl std::fmt::Display for VertexFormatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidAttributeName(name) => write!(
+                f,
+                "invalid vertex attribute name {name:?}: expected a valid non-gl_ GLSL identifier"
+            ),
+            Self::DuplicateAttributeName(name) => {
+                write!(f, "duplicate vertex attribute name {name:?}")
+            }
+            Self::UnalignedOffset {
+                name,
+                offset,
+                alignment,
+            } => write!(
+                f,
+                "vertex attribute {name:?} offset {offset} is not aligned to {alignment} bytes"
+            ),
+            Self::AttributeOutOfBounds { name, end, stride } => write!(
+                f,
+                "vertex attribute {name:?} ends at byte {end}, exceeding stride {stride}"
+            ),
+            Self::InvalidStride(stride) => write!(
+                f,
+                "vertex stride {stride} must be non-zero and a multiple of {VERTEX_ALIGNMENT}"
+            ),
+            Self::TooManyAttributes(count) => write!(
+                f,
+                "vertex format has {count} attributes, exceeding MAX_VERTEX_ELEMENTS ({MAX_VERTEX_ELEMENTS})"
+            ),
+            Self::UnsupportedStepRate(rate) => write!(
+                f,
+                "vertex step rate {rate} is unsupported: only 0 (Vertex) and 1 (Instance) are supported"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for VertexFormatError {}
+
+/// Memory layout of one vertex or instance buffer binding (`com.mojang.renderpearl.api.vertex.VertexFormat`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline vertex buffer format.
+pub struct VertexFormat {
+    /// Whether this binding advances per vertex or per instance.
+    pub step_mode: VertexStepMode,
+    /// Size of one record in bytes (`> 0`, multiple of [`VERTEX_ALIGNMENT`] = 4).
+    pub stride: u32,
+    /// Attributes read from this binding (`<= MAX_VERTEX_ELEMENTS`).
+    pub attributes: Vec<VertexAttribute>,
+}
+
+impl VertexFormat {
+    /// Start building a [`VertexFormat`] with the given [`VertexStepMode`].
+    pub fn builder(step_mode: VertexStepMode) -> VertexFormatBuilder {
+        VertexFormatBuilder {
+            step_mode,
+            unsupported_step_rate: None,
+            attributes: Vec::new(),
+            auto_offset: 0,
+            explicit_stride: None,
+        }
+    }
+
+    /// Start building a [`VertexFormat`] from a numeric vanilla `stepRate` (`0` = per-vertex,
+    /// `1` = per-instance). Divisors `> 1` fail [`VertexFormatBuilder::build`] with
+    /// [`VertexFormatError::UnsupportedStepRate`].
+    pub fn builder_with_step_rate(step_rate: u32) -> VertexFormatBuilder {
+        match VertexStepMode::from_step_rate(step_rate) {
+            Ok(step_mode) => Self::builder(step_mode),
+            Err(_) => VertexFormatBuilder {
+                step_mode: VertexStepMode::Vertex,
+                unsupported_step_rate: Some(step_rate),
+                attributes: Vec::new(),
+                auto_offset: 0,
+                explicit_stride: None,
+            },
+        }
+    }
+
+    /// Default binding 0 matching [`PipelineVertexFormat::PositionTexColor`] (`Position: Float32x3`
+    /// at 0, `UV0: Float32x2` at 12, `Color: Unorm8x4` at 20, stride 24).
+    pub fn position_tex_color() -> Self {
+        Self {
+            step_mode: VertexStepMode::Vertex,
+            stride: 24,
+            attributes: vec![
+                VertexAttribute::new("Position", 0, VertexAttributeFormat::Float32x3),
+                VertexAttribute::new("UV0", 12, VertexAttributeFormat::Float32x2),
+                VertexAttribute::new("Color", 20, VertexAttributeFormat::Unorm8x4),
+            ],
+        }
+    }
+
+    /// Validate all vertex-format invariants (GLSL identifiers, uniqueness, alignment, stride,
+    /// attribute bounds, and attribute count).
+    pub fn validate(&self) -> Result<(), VertexFormatError> {
+        if self.attributes.len() > MAX_VERTEX_ELEMENTS {
+            return Err(VertexFormatError::TooManyAttributes(self.attributes.len()));
+        }
+        if self.stride == 0 || self.stride % VERTEX_ALIGNMENT != 0 {
+            return Err(VertexFormatError::InvalidStride(self.stride));
+        }
+        let mut seen = std::collections::HashSet::with_capacity(self.attributes.len());
+        for attr in &self.attributes {
+            if !is_valid_glsl_identifier(&attr.name) || attr.name.starts_with("gl_") {
+                return Err(VertexFormatError::InvalidAttributeName(attr.name.clone()));
+            }
+            if !seen.insert(attr.name.as_str()) {
+                return Err(VertexFormatError::DuplicateAttributeName(attr.name.clone()));
+            }
+            let alignment = attr.format.alignment();
+            if attr.offset % alignment != 0 {
+                return Err(VertexFormatError::UnalignedOffset {
+                    name: attr.name.clone(),
+                    offset: attr.offset,
+                    alignment,
+                });
+            }
+            let end = attr.offset.saturating_add(attr.format.byte_size());
+            if end > self.stride {
+                return Err(VertexFormatError::AttributeOutOfBounds {
+                    name: attr.name.clone(),
+                    end,
+                    stride: self.stride,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Builder for [`VertexFormat`], created via [`VertexFormat::builder`].
+#[derive(Clone, Debug)]
+// no wire: local client vertex format builder.
+pub struct VertexFormatBuilder {
+    step_mode: VertexStepMode,
+    unsupported_step_rate: Option<u32>,
+    attributes: Vec<VertexAttribute>,
+    auto_offset: u32,
+    explicit_stride: Option<u32>,
+}
+
+impl VertexFormatBuilder {
+    /// Append an attribute at the current byte cursor and advance the cursor by
+    /// `format.byte_size()`.
+    pub fn attribute(mut self, name: impl Into<String>, format: VertexAttributeFormat) -> Self {
+        let offset = self.auto_offset;
+        self.attributes.push(VertexAttribute {
+            name: name.into(),
+            offset,
+            format,
+        });
+        self.auto_offset = offset.saturating_add(format.byte_size());
+        self
+    }
+
+    /// Append an attribute at an explicit byte `offset`, advancing the automatic cursor to at
+    /// least `offset + format.byte_size()`.
+    pub fn attribute_at(
+        mut self,
+        name: impl Into<String>,
+        offset: u32,
+        format: VertexAttributeFormat,
+    ) -> Self {
+        self.attributes.push(VertexAttribute {
+            name: name.into(),
+            offset,
+            format,
+        });
+        self.auto_offset = self
+            .auto_offset
+            .max(offset.saturating_add(format.byte_size()));
+        self
+    }
+
+    /// Set an explicit vertex stride in bytes (must be non-zero and a multiple of
+    /// [`VERTEX_ALIGNMENT`] = 4). When omitted, the byte cursor after the last attribute is used.
+    pub fn stride(mut self, bytes: u32) -> Self {
+        self.explicit_stride = Some(bytes);
+        self
+    }
+
+    /// Validate and finish the [`VertexFormat`].
+    pub fn build(self) -> Result<VertexFormat, VertexFormatError> {
+        if let Some(rate) = self.unsupported_step_rate {
+            return Err(VertexFormatError::UnsupportedStepRate(rate));
+        }
+        let format = VertexFormat {
+            step_mode: self.step_mode,
+            stride: self.explicit_stride.unwrap_or(self.auto_offset),
+            attributes: self.attributes,
+        };
+        format.validate()?;
+        Ok(format)
+    }
+}
+
+/// Index element type for indexed mesh draws (`com.mojang.renderpearl.api.pipeline.IndexType`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client mesh index format.
+pub enum IndexFormat {
+    /// 16-bit unsigned indices (`IndexType.SHORT`, 2 bytes per index).
+    Uint16,
+    /// 32-bit unsigned indices (`IndexType.INT`, 4 bytes per index).
+    Uint32,
+}
+
+impl IndexFormat {
+    /// Size of one index in bytes (`2` for `Uint16`, `4` for `Uint32`).
+    pub const fn byte_size(self) -> u32 {
+        match self {
+            Self::Uint16 => 2,
+            Self::Uint32 => 4,
+        }
+    }
+}
+
+/// Initial descriptor for one vertex or instance buffer in a [`MeshDescriptor`].
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+// no wire: local client retained mesh vertex buffer descriptor.
+pub struct MeshBufferInit<'a> {
+    /// Record stride in bytes (`> 0`, multiple of 4).
+    pub stride: u32,
+    /// Total GPU buffer size in bytes (non-zero, multiple of `stride`, `<= device.limits().max_buffer_size`).
+    pub byte_len: u64,
+    /// Optional initial bytes written at offset 0 (`len <= byte_len`, multiple of 4).
+    pub initial: Option<&'a [u8]>,
+}
+
+impl<'a> MeshBufferInit<'a> {
+    /// Create a buffer sized exactly to `bytes` and initialized with `bytes`.
+    pub const fn from_bytes(stride: u32, bytes: &'a [u8]) -> Self {
+        Self {
+            stride,
+            byte_len: bytes.len() as u64,
+            initial: Some(bytes),
+        }
+    }
+
+    /// Create an uninitialized GPU buffer of `byte_len` bytes to be filled via
+    /// [`MeshRef::write_vertices`].
+    pub const fn empty(stride: u32, byte_len: u64) -> Self {
+        Self {
+            stride,
+            byte_len,
+            initial: None,
+        }
+    }
+}
+
+/// Initial descriptor for an optional index buffer in a [`MeshDescriptor`].
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+// no wire: local client retained mesh index buffer descriptor.
+pub struct MeshIndexInit<'a> {
+    /// Index element encoding (`Uint16` or `Uint32`).
+    pub format: IndexFormat,
+    /// Total GPU buffer size in bytes (non-zero, multiple of 4 and `format.byte_size()`,
+    /// `<= device.limits().max_buffer_size`).
+    pub byte_len: u64,
+    /// Optional initial index bytes written at offset 0 (`len <= byte_len`, multiple of 4).
+    pub initial: Option<&'a [u8]>,
+}
+
+impl<'a> MeshIndexInit<'a> {
+    /// Create an index buffer sized exactly to `bytes` and initialized with `bytes`.
+    pub const fn from_bytes(format: IndexFormat, bytes: &'a [u8]) -> Self {
+        Self {
+            format,
+            byte_len: bytes.len() as u64,
+            initial: Some(bytes),
+        }
+    }
+
+    /// Create an uninitialized GPU index buffer of `byte_len` bytes to be filled via
+    /// [`MeshRef::write_indices`].
+    pub const fn empty(format: IndexFormat, byte_len: u64) -> Self {
+        Self {
+            format,
+            byte_len,
+            initial: None,
+        }
+    }
+}
+
+/// Descriptor passed to [`crate::prelude::ClientRenderClientHost::create_mesh`] and
+/// [`MeshRef::replace`].
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+// no wire: local client retained mesh creation descriptor.
+pub struct MeshDescriptor<'a> {
+    /// One or more vertex/instance buffer bindings (`1..=MAX_VERTEX_BINDINGS`).
+    pub vertex_buffers: &'a [MeshBufferInit<'a>],
+    /// Optional index buffer.
+    pub indices: Option<MeshIndexInit<'a>>,
+}
+
+impl<'a> MeshDescriptor<'a> {
+    /// Describe a non-indexed mesh with `vertex_buffers`.
+    pub const fn new(vertex_buffers: &'a [MeshBufferInit<'a>]) -> Self {
+        Self {
+            vertex_buffers,
+            indices: None,
+        }
+    }
+
+    /// Attach an index buffer to this descriptor.
+    pub const fn with_indices(mut self, indices: MeshIndexInit<'a>) -> Self {
+        self.indices = Some(indices);
+        self
+    }
+}
+
+/// Why a retained GPU [`MeshRef`] operation was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+// no wire: refusal of a local client retained mesh operation.
+pub enum MeshError {
+    /// No GPU renderer is available in this context.
+    Unavailable,
+    /// The handle was destroyed, its owner mod was disabled, the world closed, or resources
+    /// reloaded. Retired handles never become valid again.
+    Stale,
+    /// The calling mod does not own this mesh.
+    NotOwned,
+    /// Empty vertex buffer list, `> MAX_VERTEX_BINDINGS`, or binding index out of range.
+    InvalidBinding,
+    /// `write_indices` was called on a mesh that has no index buffer.
+    NoIndexBuffer,
+    /// A vertex buffer stride is zero or not a multiple of 4.
+    InvalidStride,
+    /// Byte offset, buffer size, or write length violates 4-byte, stride, or index alignment.
+    InvalidAlignment,
+    /// Buffer length is zero, or `byte_offset + data.len()` exceeds the buffer capacity.
+    OutOfRange,
+    /// Requested buffer size exceeds `device.limits().max_buffer_size`.
+    ExceedsDeviceLimit,
+}
+
+impl std::fmt::Display for MeshError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unavailable => "GPU renderer is unavailable",
+            Self::Stale => "mesh handle is stale or destroyed",
+            Self::NotOwned => "mesh handle is owned by another mod",
+            Self::InvalidBinding => "invalid vertex buffer binding",
+            Self::NoIndexBuffer => "mesh has no index buffer",
+            Self::InvalidStride => "vertex buffer stride must be non-zero and a multiple of 4",
+            Self::InvalidAlignment => "mesh buffer size, offset, or data length is misaligned",
+            Self::OutOfRange => "mesh buffer write or size is out of range",
+            Self::ExceedsDeviceLimit => "mesh buffer size exceeds device max_buffer_size",
+        })
+    }
+}
+
+impl std::error::Error for MeshError {}
+
+impl crate::NoBackend for MeshError {
+    fn no_backend() -> Self {
+        Self::Unavailable
+    }
+}
+
+/// A live client context that can operate on retained GPU [`MeshRef`] handles.
+pub trait MeshContext {
+    /// The scoped engine access used by [`MeshRef`] methods.
+    // hidden: internal trait method opening the retained-mesh backend for MeshRef.
+    #[doc(hidden)]
+    fn mesh_backend(&self) -> Option<MeshBackendRef<'_>> {
+        None
+    }
+}
+
+/// Opaque access to retained-mesh operations, not to the world or other client services.
+// hidden: only the handle can open the mesh backend.
+// exhaustive: private field; only constructed inside this crate.
+// no wire: scoped backend borrow.
+#[doc(hidden)]
+pub struct MeshBackendRef<'a>(&'a dyn crate::prelude::ClientRenderClientBackend);
+
+impl<H: crate::ClientHost + ?Sized> MeshContext for H {
+    fn mesh_backend(&self) -> Option<MeshBackendRef<'_>> {
+        self.backend().map(|backend| MeshBackendRef(backend.open()))
+    }
+}
+
+/// Generational handle to retained GPU vertex and optional index buffers, created via
+/// [`crate::prelude::ClientRenderClientHost::create_mesh`].
+///
+/// Drawing a [`MeshRef`] via [`crate::WorldDrawContext::draw_mesh`] records a small POD draw
+/// command with zero CPU vertex copying per frame. Handles are owner-checked and retired
+/// automatically on mod disable, world close, resource reload, or [`Self::destroy`].
+// no wire: process-local generational handle to retained GPU buffers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+// exhaustive: only the engine creates handles.
+pub struct MeshRef(pub(crate) u64, pub(crate) u32);
+
+impl MeshRef {
+    pub(crate) fn from_parts(generation: u64, slot: u32) -> Result<Self, &'static str> {
+        if generation == 0 {
+            return Err("unpublished mesh generation");
+        }
+        Ok(Self(generation, slot))
+    }
+
+    /// Partially or fully update vertex buffer `binding` starting at `byte_offset` (both
+    /// `byte_offset` and `data.len()` must be 4-byte aligned and in bounds).
+    pub fn write_vertices(
+        self,
+        host: &(impl MeshContext + ?Sized),
+        binding: u8,
+        byte_offset: u64,
+        data: &[u8],
+    ) -> Result<(), MeshError> {
+        host.mesh_backend()
+            .ok_or(MeshError::Unavailable)?
+            .0
+            .mesh_write_vertices(self, binding, byte_offset, data)
+    }
+
+    /// Partially or fully update this mesh's index buffer starting at `byte_offset` (both
+    /// `byte_offset` and `data.len()` must be 4-byte aligned and in bounds).
+    pub fn write_indices(
+        self,
+        host: &(impl MeshContext + ?Sized),
+        byte_offset: u64,
+        data: &[u8],
+    ) -> Result<(), MeshError> {
+        host.mesh_backend()
+            .ok_or(MeshError::Unavailable)?
+            .0
+            .mesh_write_indices(self, byte_offset, data)
+    }
+
+    /// Reallocate backing GPU buffer(s) in place without churning this handle. If `desc` is
+    /// refused, the previous buffers remain intact.
+    pub fn replace(
+        self,
+        host: &(impl MeshContext + ?Sized),
+        desc: &MeshDescriptor<'_>,
+    ) -> Result<(), MeshError> {
+        host.mesh_backend()
+            .ok_or(MeshError::Unavailable)?
+            .0
+            .mesh_replace(self, desc)
+    }
+
+    /// Immediately free this mesh's GPU buffers and retire the handle ([`MeshError::Stale`]
+    /// thereafter).
+    pub fn destroy(self, host: &(impl MeshContext + ?Sized)) -> Result<(), MeshError> {
+        host.mesh_backend()
+            .ok_or(MeshError::Unavailable)?
+            .0
+            .mesh_destroy(self)
+    }
+}
+
+impl crate::__private::game::Fields for MeshRef {
+    type Fields<'a> = crate::__private::game::ModelRefFields;
+    fn fields(&self) -> Self::Fields<'_> {
+        crate::__private::game::ModelRefFields {
+            generation: self.0,
+            slot: self.1,
+        }
+    }
+}
+
+/// Vertex or index range for [`MeshDraw`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+// no wire: local client mesh draw range.
+pub enum DrawRange {
+    /// Non-indexed draw over vertex indices `start..end`. For [`PrimitiveTopology::Quads`] and
+    /// [`PrimitiveTopology::Lines`], `end - start` must be a multiple of 4 and is expanded via
+    /// the engine's shared quad index buffer; for [`PrimitiveTopology::TriangleFan`], it is
+    /// expanded via the engine's shared fan index buffer.
+    Vertices(std::ops::Range<u32>),
+    /// Indexed draw over `indices` in the bound index buffer, adding `base_vertex` to each index.
+    Indexed {
+        indices: std::ops::Range<u32>,
+        base_vertex: i32,
+    },
+}
+
+/// Draw parameters for [`crate::WorldDrawContext::draw_mesh`] and
+/// [`crate::WorldDrawContext::draw_vertices`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+// no wire: local client mesh draw parameters.
+pub struct MeshDraw {
+    /// Vertex or index range to draw.
+    pub range: DrawRange,
+    /// Instance range to draw (`0..1` by default).
+    pub instances: std::ops::Range<u32>,
+}
+
+impl MeshDraw {
+    /// Non-indexed draw of `range` vertices with a single instance (`0..1`).
+    pub const fn vertices(range: std::ops::Range<u32>) -> Self {
+        Self {
+            range: DrawRange::Vertices(range),
+            instances: 0..1,
+        }
+    }
+
+    /// Indexed draw of `indices` with `base_vertex` and a single instance (`0..1`).
+    pub const fn indexed(indices: std::ops::Range<u32>, base_vertex: i32) -> Self {
+        Self {
+            range: DrawRange::Indexed {
+                indices,
+                base_vertex,
+            },
+            instances: 0..1,
+        }
+    }
+
+    /// Set the instance range (`0..count`).
+    pub const fn with_instances(mut self, instances: std::ops::Range<u32>) -> Self {
+        self.instances = instances;
+        self
+    }
+}
+
+/// Per-draw set-1 resource bindings passed to [`crate::WorldDrawContext::draw_mesh`] and
+/// [`crate::WorldDrawContext::draw_vertices`] (extended with custom uniform buffers, samplers,
+/// and texel buffers in `#5428`). Pass `&DrawBindings::EMPTY` for pipelines with no custom
+/// bind-group entries.
+#[derive(Clone, Copy, Debug, Default)]
+#[non_exhaustive]
+// no wire: local client per-draw resource bindings.
+pub struct DrawBindings<'a> {
+    _marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl DrawBindings<'_> {
+    /// Empty bind-group bindings for pipelines that use only vanilla set-0 bindings.
+    pub const EMPTY: Self = Self {
+        _marker: std::marker::PhantomData,
+    };
 }
 
 /// Maximum number of colour targets a [`RenderPipeline`] can declare
@@ -1792,6 +2641,19 @@ pub enum PipelineDrawError {
     /// The pipeline's effective [`PrimitiveTopology`] does not match the draw call (for example,
     /// submitting a non-[`PrimitiveTopology::Quads`] pipeline to `pipeline_quads`).
     TopologyMismatch,
+    /// The retained [`MeshRef`] handle was stale, not owned, or unavailable.
+    Mesh(MeshError),
+    /// The provided vertex buffer count or per-binding stride does not match the pipeline's
+    /// declared [`VertexFormat`] bindings.
+    VertexFormatMismatch,
+    /// [`DrawRange::Indexed`] was requested without an index buffer.
+    MissingIndexBuffer,
+    /// The vertex, index, or instance range is inverted, out of bounds, or (for `Quads`/`Lines`
+    /// non-indexed draws) not a multiple of 4 vertices.
+    InvalidRange,
+    /// Transient vertex or index bytes are not aligned to 4 bytes, the binding stride, or the
+    /// index element size.
+    InvalidAlignment,
 }
 
 impl crate::RegisterRenderPipelinesEvent<'_> {
@@ -2302,5 +3164,205 @@ mod tests {
         assert_eq!(PrimitiveTopology::DebugLines.index_count(4), 4);
         assert_eq!(PrimitiveTopology::DebugLineStrip.index_count(4), 4);
         assert_eq!(PrimitiveTopology::Points.index_count(3), 3);
+    }
+
+    #[test]
+    fn vertex_format_builder_validates_alignment_stride_names_count_and_step_rate() {
+        // Valid compact 8-byte vertex format (4B uvec4 + 4B unorm8x4).
+        let compact = VertexFormat::builder(VertexStepMode::Vertex)
+            .attribute("PackedPos", VertexAttributeFormat::Uint8x4)
+            .attribute("PackedColor", VertexAttributeFormat::Unorm8x4)
+            .build()
+            .unwrap();
+        assert_eq!(compact.stride, 8);
+        assert_eq!(compact.attributes.len(), 2);
+        assert_eq!(compact.attributes[0].offset, 0);
+        assert_eq!(compact.attributes[1].offset, 4);
+        assert_eq!(compact.attributes[0].format.glsl_type(), "uvec4");
+        assert_eq!(compact.attributes[1].format.glsl_type(), "vec4");
+
+        // Unaligned offset refused.
+        assert!(matches!(
+            VertexFormat::builder(VertexStepMode::Vertex)
+                .attribute_at("Pos", 2, VertexAttributeFormat::Float32x3)
+                .stride(16)
+                .build(),
+            Err(VertexFormatError::UnalignedOffset {
+                offset: 2,
+                alignment: 4,
+                ..
+            })
+        ));
+
+        // Non-multiple-of-4 stride refused.
+        assert_eq!(
+            VertexFormat::builder(VertexStepMode::Vertex)
+                .attribute("Uv", VertexAttributeFormat::Unorm8x2)
+                .build(),
+            Err(VertexFormatError::InvalidStride(2))
+        );
+        // Zero stride refused.
+        assert_eq!(
+            VertexFormat::builder(VertexStepMode::Vertex).build(),
+            Err(VertexFormatError::InvalidStride(0))
+        );
+
+        // Duplicate attribute name refused.
+        assert_eq!(
+            VertexFormat::builder(VertexStepMode::Vertex)
+                .attribute("Pos", VertexAttributeFormat::Float32x3)
+                .attribute("Pos", VertexAttributeFormat::Float32)
+                .build(),
+            Err(VertexFormatError::DuplicateAttributeName("Pos".to_owned()))
+        );
+
+        // Invalid and gl_-prefixed names refused.
+        for bad in ["", "1bad", "bad-name", "gl_Position"] {
+            assert!(matches!(
+                VertexFormat::builder(VertexStepMode::Vertex)
+                    .attribute(bad, VertexAttributeFormat::Float32)
+                    .build(),
+                Err(VertexFormatError::InvalidAttributeName(_))
+            ));
+        }
+
+        // More than 16 attributes refused.
+        let mut too_many = VertexFormat::builder(VertexStepMode::Vertex);
+        for i in 0..=MAX_VERTEX_ELEMENTS {
+            too_many = too_many.attribute(format!("a{i}"), VertexAttributeFormat::Float32);
+        }
+        assert_eq!(
+            too_many.build(),
+            Err(VertexFormatError::TooManyAttributes(
+                MAX_VERTEX_ELEMENTS + 1
+            ))
+        );
+
+        // Step rate divisor > 1 refused (VulkanRenderPipeline.java:177-182).
+        assert_eq!(
+            VertexFormat::builder_with_step_rate(2)
+                .attribute("InstOffset", VertexAttributeFormat::Float32x3)
+                .build(),
+            Err(VertexFormatError::UnsupportedStepRate(2))
+        );
+        assert_eq!(
+            VertexFormat::builder_with_step_rate(1)
+                .attribute("InstOffset", VertexAttributeFormat::Float32x3)
+                .build()
+                .unwrap()
+                .step_mode,
+            VertexStepMode::Instance
+        );
+
+        // Pipeline-level validation: binding >= 16, duplicate binding, cross-binding duplicate name,
+        // and > 16 total attributes across bindings all refused.
+        assert!(
+            pipeline("example:bad_binding")
+                .vertex_binding(MAX_VERTEX_BINDINGS as u8, compact.clone())
+                .validate_vertex_bindings()
+                .is_err()
+        );
+        assert!(
+            pipeline("example:dup_binding")
+                .vertex_binding(0, compact.clone())
+                .vertex_binding(0, compact.clone())
+                .validate_vertex_bindings()
+                .is_err()
+        );
+        assert!(
+            pipeline("example:dup_attr")
+                .vertex_binding(0, compact.clone())
+                .vertex_binding(1, compact.clone())
+                .validate_vertex_bindings()
+                .is_err()
+        );
+        let mut nine_a = VertexFormat::builder(VertexStepMode::Vertex);
+        let mut eight_b = VertexFormat::builder(VertexStepMode::Instance);
+        for i in 0..9 {
+            nine_a = nine_a.attribute(format!("v{i}"), VertexAttributeFormat::Float32);
+        }
+        for i in 0..8 {
+            eight_b = eight_b.attribute(format!("i{i}"), VertexAttributeFormat::Float32);
+        }
+        assert!(
+            pipeline("example:too_many_total")
+                .vertex_binding(0, nine_a.build().unwrap())
+                .vertex_binding(1, eight_b.build().unwrap())
+                .validate_vertex_bindings()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn mesh_ref_routes_through_backend_and_refuses_without_one() {
+        struct Bare;
+        impl crate::Host for Bare {}
+        crate::impl_host_areas!(Bare);
+        impl crate::ClientHost for Bare {}
+        crate::impl_client_host_areas!(Bare);
+
+        let mesh = MeshRef::from_parts(1, 0).unwrap();
+        let init = [MeshBufferInit::empty(8, 32)];
+        let desc = MeshDescriptor::new(&init);
+        assert_eq!(
+            mesh.write_vertices(&Bare, 0, 0, &[0; 8]),
+            Err(MeshError::Unavailable)
+        );
+        assert_eq!(
+            mesh.write_indices(&Bare, 0, &[0; 4]),
+            Err(MeshError::Unavailable)
+        );
+        assert_eq!(mesh.replace(&Bare, &desc), Err(MeshError::Unavailable));
+        assert_eq!(mesh.destroy(&Bare), Err(MeshError::Unavailable));
+
+        struct Recording {
+            calls: std::cell::RefCell<Vec<&'static str>>,
+        }
+        impl crate::Host for Recording {
+            fn backend(&self) -> Option<crate::BackendRef<'_>> {
+                Some(crate::BackendRef::of(self))
+            }
+        }
+        crate::impl_host_areas!(Recording);
+        impl crate::ClientHost for Recording {}
+        crate::impl_client_host_areas!(Recording);
+        impl crate::Backend for Recording {}
+        crate::impl_backend_areas!(Recording, except(client_render));
+        impl crate::prelude::ClientRenderClientBackend for Recording {
+            fn mesh_write_vertices(
+                &self,
+                _: MeshRef,
+                _: u8,
+                _: u64,
+                _: &[u8],
+            ) -> Result<(), MeshError> {
+                self.calls.borrow_mut().push("write_vertices");
+                Ok(())
+            }
+            fn mesh_write_indices(&self, _: MeshRef, _: u64, _: &[u8]) -> Result<(), MeshError> {
+                self.calls.borrow_mut().push("write_indices");
+                Ok(())
+            }
+            fn mesh_replace(&self, _: MeshRef, _: &MeshDescriptor<'_>) -> Result<(), MeshError> {
+                self.calls.borrow_mut().push("replace");
+                Ok(())
+            }
+            fn mesh_destroy(&self, _: MeshRef) -> Result<(), MeshError> {
+                self.calls.borrow_mut().push("destroy");
+                Ok(())
+            }
+        }
+
+        let host = Recording {
+            calls: std::cell::RefCell::new(Vec::new()),
+        };
+        mesh.write_vertices(&host, 0, 0, &[0; 8]).unwrap();
+        mesh.write_indices(&host, 0, &[0; 4]).unwrap();
+        mesh.replace(&host, &desc).unwrap();
+        mesh.destroy(&host).unwrap();
+        assert_eq!(
+            *host.calls.borrow(),
+            vec!["write_vertices", "write_indices", "replace", "destroy"]
+        );
     }
 }

@@ -499,6 +499,33 @@ impl WorldDrawContext for GameWorldDrawContext<'_, '_> {
         self.game
             .native_world_draw_pipeline_quads(&mut *self.surface, pipeline, quads)
     }
+    fn draw_mesh(
+        &mut self,
+        pipeline: RenderPipelineRef,
+        mesh: MeshRef,
+        draw: MeshDraw,
+        bindings: &DrawBindings<'_>,
+    ) -> Result<(), PipelineDrawError> {
+        self.game
+            .native_world_draw_mesh(&mut *self.surface, pipeline, mesh, draw, bindings)
+    }
+    fn draw_vertices(
+        &mut self,
+        pipeline: RenderPipelineRef,
+        vertices: &[&[u8]],
+        indices: Option<(IndexFormat, &[u8])>,
+        draw: MeshDraw,
+        bindings: &DrawBindings<'_>,
+    ) -> Result<(), PipelineDrawError> {
+        self.game.native_world_draw_vertices(
+            &mut *self.surface,
+            pipeline,
+            vertices,
+            indices,
+            draw,
+            bindings,
+        )
+    }
     fn name_tag(
         &mut self,
         at: [f64; 3],
@@ -616,16 +643,6 @@ impl PrepareRenderBuffersContext for GamePrepareRenderBuffersContext<'_, '_> {
             .mod_pipelines
             .slot(pipeline)
             .map_err(PipelineDrawError::Pipeline)?;
-        let base_topology = self
-            .game
-            .pack
-            .render
-            .mod_pipelines
-            .topology(slot)
-            .unwrap_or(PrimitiveTopology::Quads);
-        if self.surface.effective_topology(base_topology) != PrimitiveTopology::Quads {
-            return Err(PipelineDrawError::TopologyMismatch);
-        }
         if stage.oit_stage().is_some() && !self.game.pack.render.mod_pipelines.is_oit_eligible(slot)
         {
             self.game
@@ -636,8 +653,75 @@ impl PrepareRenderBuffersContext for GamePrepareRenderBuffersContext<'_, '_> {
             return Err(PipelineDrawError::Pipeline(RenderPipelineError::Invalid));
         }
         self.surface.prepare_draw(stage, |surface| {
-            surface.pipeline_quads(slot, quads);
-            Ok(())
+            self.game
+                .native_world_draw_pipeline_quads(surface, pipeline, quads)
+        })
+    }
+
+    fn draw_mesh(
+        &mut self,
+        stage: RenderLevelStage,
+        pipeline: RenderPipelineRef,
+        mesh: MeshRef,
+        draw: MeshDraw,
+        bindings: &DrawBindings<'_>,
+    ) -> Result<PreparedWorldDraw, PipelineDrawError> {
+        if !stage.has_render_pass() {
+            return Err(PipelineDrawError::Pipeline(RenderPipelineError::Invalid));
+        }
+        let slot = self
+            .game
+            .pack
+            .render
+            .mod_pipelines
+            .slot(pipeline)
+            .map_err(PipelineDrawError::Pipeline)?;
+        if stage.oit_stage().is_some() && !self.game.pack.render.mod_pipelines.is_oit_eligible(slot)
+        {
+            self.game
+                .pack
+                .render
+                .mod_pipelines
+                .warn_oit_ineligible(slot);
+            return Err(PipelineDrawError::Pipeline(RenderPipelineError::Invalid));
+        }
+        self.surface.prepare_draw(stage, |surface| {
+            self.game
+                .native_world_draw_mesh(surface, pipeline, mesh, draw, bindings)
+        })
+    }
+
+    fn draw_vertices(
+        &mut self,
+        stage: RenderLevelStage,
+        pipeline: RenderPipelineRef,
+        vertices: &[&[u8]],
+        indices: Option<(IndexFormat, &[u8])>,
+        draw: MeshDraw,
+        bindings: &DrawBindings<'_>,
+    ) -> Result<PreparedWorldDraw, PipelineDrawError> {
+        if !stage.has_render_pass() {
+            return Err(PipelineDrawError::Pipeline(RenderPipelineError::Invalid));
+        }
+        let slot = self
+            .game
+            .pack
+            .render
+            .mod_pipelines
+            .slot(pipeline)
+            .map_err(PipelineDrawError::Pipeline)?;
+        if stage.oit_stage().is_some() && !self.game.pack.render.mod_pipelines.is_oit_eligible(slot)
+        {
+            self.game
+                .pack
+                .render
+                .mod_pipelines
+                .warn_oit_ineligible(slot);
+            return Err(PipelineDrawError::Pipeline(RenderPipelineError::Invalid));
+        }
+        self.surface.prepare_draw(stage, |surface| {
+            self.game
+                .native_world_draw_vertices(surface, pipeline, vertices, indices, draw, bindings)
         })
     }
 }

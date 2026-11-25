@@ -353,6 +353,10 @@ pub mod built {
     pub fn pipeline_modifier_ref(slot: u32) -> crate::PipelineModifierRef {
         crate::PipelineModifierRef::from_slot(slot)
     }
+    /// Wrap a slot in the retained GPU mesh store.
+    pub fn mesh_ref(generation: u64, slot: u32) -> crate::MeshRef {
+        crate::MeshRef::from_parts(generation, slot).expect("published mesh generation")
+    }
 }
 
 /// What the game reads of handles and calls on the API's own types.

@@ -250,12 +250,12 @@ fn mod_pack_program_draws_aux_depth_and_tracks_previous_uniform() {
 
     // GL NDC z = -0.5 maps to window depth 0.25 (< 0.7).
     let (vbuf, ibuf) = mod_quad_buffers(&gpu.device, -0.5);
-    post.set_mod_draws(vec![ModDrawChunk {
-        slot: 0,
-        vertices: vbuf.clone(),
-        indices: ibuf.clone(),
-        quads: 0..1,
-    }]);
+    post.set_mod_draws(vec![ModDrawChunk::quads(
+        0,
+        vbuf.clone(),
+        ibuf.clone(),
+        0..1,
+    )]);
 
     // Frame 1: prev equals current (`0.25` -> ~64).
     assert!(post.set_mod_uniform("modScale", ModUniformValue::Float(0.25)));
@@ -275,12 +275,7 @@ fn mod_pack_program_draws_aux_depth_and_tracks_previous_uniform() {
     );
 
     // Frame 2: resubmit per-frame mod draws; current updates to `0.75` (~191) and prev retains Frame 1's `0.25` (~64).
-    post.set_mod_draws(vec![ModDrawChunk {
-        slot: 0,
-        vertices: vbuf,
-        indices: ibuf,
-        quads: 0..1,
-    }]);
+    post.set_mod_draws(vec![ModDrawChunk::quads(0, vbuf, ibuf, 0..1)]);
     assert!(post.set_mod_uniform("modScale", ModUniformValue::Float(0.75)));
     let px2 = run_frame_and_sample_center(&gpu, &mut post, &color, &depth);
     assert!(px2[0] >= 250, "frame 2 aux depth lost: {px2:?}");
@@ -344,12 +339,7 @@ fn mod_pack_falls_back_to_gbuffers_terrain_when_custom_program_absent() {
         post.notes
     );
     let (vbuf, ibuf) = mod_quad_buffers(&gpu.device, 0.0);
-    post.set_mod_draws(vec![ModDrawChunk {
-        slot: 0,
-        vertices: vbuf,
-        indices: ibuf,
-        quads: 0..1,
-    }]);
+    post.set_mod_draws(vec![ModDrawChunk::quads(0, vbuf, ibuf, 0..1)]);
     let px = run_frame_and_sample_center(&gpu, &mut post, &color, &depth);
     assert!(
         px[1] >= 250 && px[0] <= 5 && px[2] <= 5,
@@ -407,12 +397,7 @@ fn mod_pack_aux_depth_is_lazy_when_pack_never_samples_it() {
     let (mut post, color, depth) = load_with_mods(&gpu, files, requests, &runtime);
     assert!(post.is_mod_pipeline_bound(0));
     let (vbuf, ibuf) = mod_quad_buffers(&gpu.device, 0.0);
-    post.set_mod_draws(vec![ModDrawChunk {
-        slot: 0,
-        vertices: vbuf,
-        indices: ibuf,
-        quads: 0..1,
-    }]);
+    post.set_mod_draws(vec![ModDrawChunk::quads(0, vbuf, ibuf, 0..1)]);
     let px = run_frame_and_sample_center(&gpu, &mut post, &color, &depth);
     assert_eq!(
         post.allocated_mod_depth_targets(),
