@@ -149,7 +149,7 @@ pub(super) struct Parked {
     pub(super) save: Arc<SaveDir>,
     block_ticks: Ticks,
     tick_chunks: TickChunkMembership,
-    tickets: ChunkTickets,
+    pub(super) tickets: ChunkTickets,
     random_tick_sections: RandomTickSections,
     level_events: Vec<LevelEvent>,
     /// Entity portal processes and cooldowns belong to this level's entities.
@@ -2274,7 +2274,7 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::game) mod tests {
     use super::*;
 
     fn dirty_test_chunk(game: &mut Game<'_>) {
@@ -2671,7 +2671,7 @@ mod tests {
 
     /// A game on a scratch world folder, the way `dedicated.rs` opens one
     /// (`load_world` with an absolute folder).
-    fn open_game<'a>(
+    pub(in crate::game) fn open_game<'a>(
         resources: &'a mut Option<std::sync::Arc<crate::game::Resources>>,
         root: &std::path::Path,
         home: &std::path::Path,

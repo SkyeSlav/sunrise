@@ -1,0 +1,26 @@
+ids = [
+    "type:LevelAttachments",
+    "handle:LevelAttachments::get",
+    "handle:LevelAttachments::has",
+    "handle:LevelAttachments::get_existing",
+    "handle:LevelAttachments::with_decoded",
+    "type:LevelAttachmentsMut",
+    "handle:LevelAttachmentsMut::get",
+    "handle:LevelAttachmentsMut::has",
+    "handle:LevelAttachmentsMut::get_existing",
+    "handle:LevelAttachmentsMut::with_decoded",
+    "handle:LevelAttachmentsMut::set",
+    "handle:LevelAttachmentsMut::remove",
+    "handle:LevelAttachmentsMut::sync_data",
+    "handle:LevelRef::attachments",
+    "handle:LevelRef::attachments_mut",
+]
+why = """
+Adds LevelRef::attachments(&self, &dyn Host) -> LevelAttachments and
+LevelRef::attachments_mut(&self, &mut dyn ServerHost) -> LevelAttachmentsMut (#5577) so mods can
+read and write attachments on any open server level (in place or parked) without loading or
+switching levels. Both types implement AttachmentStore for Holder::Level and reach that level's
+own attachment map directly; writes join any open Host transaction and roll back on abort. Also
+allows LevelRef::should_tick_blocks_at and LevelRef::entity_ticking to answer for parked open
+server levels from each level's own tickets and pending entities.
+"""

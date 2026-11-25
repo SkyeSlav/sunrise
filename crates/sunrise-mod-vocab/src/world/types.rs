@@ -1,4 +1,5 @@
 // Types that lived in the API root before the domain split.
+pub use super::level_attachments::{LevelAttachments, LevelAttachmentsMut};
 use crate::*;
 
 /// A saved fluid name no registered fluid has, kept verbatim until its declaring mod returns.

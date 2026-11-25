@@ -251,6 +251,60 @@ impl Game<'_> {
         self.attachment_slot(holder, access)
     }
 
+    fn resolve_server_level_dim(&self, level: mod_api::LevelRef) -> Option<super::Dim> {
+        if !self.is_logical_server() || !self.level_handle_current(level) {
+            return None;
+        }
+        if level.dimension() == self.dim.key() {
+            return Some(self.dim);
+        }
+        self.levels
+            .parked_dims()
+            .into_iter()
+            .find(|dim| dim.key() == level.dimension())
+    }
+
+    /// Read-only access to an open server level's attachments without loading or switching levels.
+    pub(super) fn level_attachments_read(
+        &self,
+        level: mod_api::LevelRef,
+    ) -> Option<&mod_api::Attachments> {
+        self.native_level_world(level)
+            .map(|world| &world.attachments)
+    }
+
+    /// Mutable access to an open server level's attachments without loading or switching levels.
+    /// Inside an open transaction, keeps the level's map on first access so abort restores it.
+    pub(super) fn level_attachments_mut(
+        &mut self,
+        level: mod_api::LevelRef,
+    ) -> Option<&mut mod_api::Attachments> {
+        let dim = self.resolve_server_level_dim(level)?;
+        self.journal_level_attachments(dim);
+        if dim == self.dim {
+            Some(&mut self.world.attachments)
+        } else {
+            self.levels
+                .parked_mut(dim)
+                .map(|parked| &mut parked.world.attachments)
+        }
+    }
+
+    /// Record a sync request for an open server level's attachments without switching levels.
+    pub(super) fn level_attachment_changed(&mut self, level: mod_api::LevelRef, sync: bool) {
+        if !sync {
+            return;
+        }
+        let Some(dim) = self.resolve_server_level_dim(level) else {
+            return;
+        };
+        if dim == self.dim {
+            world_attachment_changed(&mut self.world, Holder::Level, false, true);
+        } else if let Some(parked) = self.levels.parked_mut(dim) {
+            world_attachment_changed(&mut parked.world, Holder::Level, false, true);
+        }
+    }
+
     /// Bind first-store contents to their real owner, including writes made before
     /// insertion by EntityConstructing listeners. Never invent a temporary owner.
     pub(super) fn bind_resident_entity_attachments(

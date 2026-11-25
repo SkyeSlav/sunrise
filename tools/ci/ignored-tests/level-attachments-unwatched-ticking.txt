@@ -1,0 +1,5 @@
+# LevelRef::attachments / attachments_mut, parked-level ticking reads, and parked-level block_changed (#5577).
+sunrise-client game::native_level_ticking::tests::parked_level_ticking_reads_reflect_mod_forced_chunks lib daily resources
+sunrise-client game::native_level_attachments_tests::parked_level_attachments_persist_across_tick_and_reopen lib daily resources
+sunrise-client game::native_level_attachments_tests::parked_level_attachment_write_rolls_back_on_transaction_abort lib daily resources
+sunrise-client game::native_level_attachments_tests::parked_level_block_write_fires_block_changed_naming_that_level lib daily resources

@@ -1814,6 +1814,34 @@ impl<'g> Game<'g> {
             level.attachments.insert(key, kept);
         }
     }
+    /// Keeps `dim`'s level attachment map as it is on first write in the open transaction,
+    /// whether `dim` is in place or parked, so abort restores it.
+    pub(super) fn journal_level_attachments(&mut self, dim: Dim) {
+        let Some(level) = self.transactions.last_mut() else {
+            return;
+        };
+        level
+            .save_gate
+            .get_or_insert_with(sunrise_client::join_seq::visibility::PassLease::enter);
+        let key = AttachmentKey::Level(dim, Holder::Level);
+        if level.attachments.contains_key(&key) {
+            return;
+        }
+        let map = if dim == self.dim {
+            &self.world.attachments
+        } else if let Some(world) = self.levels.parked_world(dim) {
+            &world.attachments
+        } else {
+            return;
+        };
+        let kept = KeptAttachments {
+            contents: map.clone(),
+            indexed: map.has_index_binding(),
+        };
+        if let Some(level) = self.transactions.last_mut() {
+            level.attachments.insert(key, kept);
+        }
+    }
     /// Keeps the inventory of `uuid`, whose state is acting in `Game` now, on its first
     /// write in the open frame.
     pub(super) fn journal_player(&mut self, uuid: u128) {
