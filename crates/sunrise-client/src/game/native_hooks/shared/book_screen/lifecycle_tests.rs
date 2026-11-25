@@ -684,7 +684,7 @@ fn a_moved_slot_takes_its_place_for_drawing_and_input_from_the_next_frame() {
                 builds
             );
             assert_eq!(
-                game.set_screen_slot(MENU, 9, Some([1.0, 1.0])),
+                game.set_screen_slot(MENU, 39, Some([1.0, 1.0])),
                 Err(mod_api::ScreenSlotRefusal::NoSuchSlot)
             );
             assert_eq!(geometry(game), after);
@@ -804,7 +804,8 @@ fn a_hidden_slot_leaves_the_screen_and_comes_back_where_put() {
 
             // Refusals, each by name, and nothing changes.
             let before = geometry(game);
-            assert_eq!(game.set_screen_slot(MENU, 3, None), Err(NoSuchSlot));
+            // Three container slots and the 36 player slots: 39 is the first past the menu.
+            assert_eq!(game.set_screen_slot(MENU, 39, None), Err(NoSuchSlot));
             assert_eq!(
                 game.set_screen_slot(MENU, 0, Some([f32::NAN, 0.0])),
                 Err(BadPosition)
@@ -818,6 +819,132 @@ fn a_hidden_slot_leaves_the_screen_and_comes_back_where_put() {
             game.screen = Screen::Playing;
             assert_eq!(game.set_screen_slot(MENU, 0, None), Err(NoScreen));
             assert_eq!(game.screen_slot(MENU, 0), None);
+        });
+    });
+}
+
+/// The player's slots take hides and moves like the container slots, in menu order after them
+/// (the main inventory's rows, then the hotbar): a hidden one is not hovered, listed, drawn or
+/// reached by the pointer, so a drag does not pick it up and a number key over it finds no slot,
+/// and a screen opened again has every slot back. What the server does with a shift-click is not
+/// decided here: nothing on the client filters it.
+#[test]
+#[ignore = "daily"]
+fn hidden_player_slots_are_no_target_and_come_back_on_reopen() {
+    use mod_api::prelude::ScreensClientHost;
+    let mods: mod_api::Mods = Vec::<mod_api::ModEntry>::new().into();
+    mod_platform::testing::with_mods(mods, || {
+        crate::game::native_entity_refs::tests::with_client_game(|game| {
+            let generation = seed_native_menu(game, 1, MENU);
+            game.settings.gui_scale = 1;
+            game.recipe_ui.test_viewport = Some([1280, 720]);
+            game.screen = Screen::Inventory;
+            game.title = None;
+            game.container = Some((i32::MIN, 0, 0));
+            let open = || OpenNativeScreen {
+                menu: OpenNativeMenu {
+                    key: (i32::MIN, 0, 0),
+                    window: 1,
+                    generation,
+                    name: MENU.into(),
+                    title: None,
+                    block: Some(STONE.into()),
+                    pos: None,
+                    mod_type: None,
+                    data: Vec::new(),
+                },
+                slot_moves: Default::default(),
+                layout_revision: 0,
+                shown: true,
+                detached: false,
+                screen: mod_api::__private::OwnedMenuScreen::new(
+                    "geometry",
+                    0,
+                    mod_api::MenuScreen::new(mod_api::MenuScreenLayout {
+                        width: 176.0,
+                        height: 166.0,
+                        slots: vec![
+                            Some(mod_api::ScreenSlot {
+                                position: [8.0, 18.0],
+                                ..Default::default()
+                            }),
+                            Some(mod_api::ScreenSlot {
+                                position: [26.0, 18.0],
+                                ..Default::default()
+                            }),
+                        ],
+                        inventory_y: 84.0,
+                        inventory_x: 8.0,
+                        ..Default::default()
+                    }),
+                ),
+            };
+            game.mod_screen = Some(open());
+            game.build_screen();
+            let batch =
+                sunrise_client::hud::HudBatch::new([1280, 720], game.settings.gui_scale_inputs());
+            // Origin (552, 277): the main inventory's first slot (inventory slot 9) is at (8, 84)
+            // and the hotbar's first (inventory slot 0) at (8, 142).
+            assert_eq!(game.slot_at(&batch, 561.0, 362.0), Some(9));
+            assert_eq!(game.slot_at(&batch, 561.0, 420.0), Some(0));
+            assert_eq!(game.slot_count(), 38);
+
+            // Two container slots, so menu slot 2 is the main inventory's first and 29 the hotbar's.
+            assert_eq!(game.screen_slot(MENU, 2), Some([8.0, 84.0]));
+            assert_eq!(game.screen_slot(MENU, 29), Some([8.0, 142.0]));
+            assert_eq!(game.set_screen_slot(MENU, 2, None), Ok(()));
+            assert_eq!(game.set_screen_slot(MENU, 29, None), Ok(()));
+            assert_eq!(ScreensClientHost::screen_slot(game, MENU, 2), None);
+            // Still there this frame, gone from the next build.
+            assert_eq!(game.slot_at(&batch, 561.0, 362.0), Some(9));
+            game.build_screen();
+            // Hover, and with it the hit test of a click, of a drag across it (which adds the slot
+            // under the pointer) and of a number key over it (which swaps the slot under it).
+            assert_eq!(game.slot_at(&batch, 561.0, 362.0), None);
+            assert_eq!(game.slot_at(&batch, 561.0, 420.0), None);
+            assert_eq!(game.slot_at(&batch, 579.0, 362.0), Some(10));
+            assert_eq!(game.slot_at(&batch, 579.0, 420.0), Some(1));
+            assert!(!geometry(game).1.iter().any(|(id, _)| *id == 9 || *id == 0));
+            assert!(!game.slots().contains(&9) && !game.slots().contains(&0));
+            assert_eq!(game.slot_count(), 36);
+            let pad: Vec<[f32; 4]> = game
+                .pad_slot_targets(&batch)
+                .iter()
+                .map(|t| t.rect)
+                .collect();
+            assert!(!pad.contains(&[560.0, 361.0, 16.0, 16.0]));
+            assert!(!pad.contains(&[560.0, 419.0, 16.0, 16.0]));
+            // The container slots are untouched.
+            assert_eq!(game.slot_at(&batch, 560.0, 295.0), Some(300));
+
+            // The hotbar's first slot shown elsewhere, the main inventory's where it was.
+            assert_eq!(game.set_screen_slot(MENU, 29, Some([100.0, 20.0])), Ok(()));
+            assert_eq!(game.set_screen_slot(MENU, 2, Some([8.0, 84.0])), Ok(()));
+            game.build_screen();
+            assert_eq!(game.slot_position(0), (100.0, 20.0));
+            assert_eq!(game.slot_at(&batch, 653.0, 298.0), Some(0));
+            assert_eq!(game.slot_at(&batch, 561.0, 420.0), None);
+            assert_eq!(game.slot_at(&batch, 561.0, 362.0), Some(9));
+
+            // Past the menu's slots there is nothing to move.
+            assert_eq!(
+                game.set_screen_slot(MENU, 38, None),
+                Err(mod_api::ScreenSlotRefusal::NoSuchSlot)
+            );
+
+            // Hidden again, then the screen is closed and opened again: every slot is back.
+            assert_eq!(game.set_screen_slot(MENU, 2, None), Ok(()));
+            assert_eq!(game.set_screen_slot(MENU, 29, None), Ok(()));
+            game.build_screen();
+            assert_eq!(game.slot_at(&batch, 561.0, 362.0), None);
+            game.mod_screen = Some(open());
+            game.build_screen();
+            assert_eq!(game.slot_count(), 38);
+            assert_eq!(game.slot_position(0), (8.0, 142.0));
+            assert_eq!(game.slot_at(&batch, 561.0, 362.0), Some(9));
+            assert_eq!(game.slot_at(&batch, 561.0, 420.0), Some(0));
+            assert_eq!(game.screen_slot(MENU, 2), Some([8.0, 84.0]));
+            assert_eq!(game.screen_slot(MENU, 29), Some([8.0, 142.0]));
         });
     });
 }

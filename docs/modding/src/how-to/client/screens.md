@@ -265,13 +265,19 @@ assert_eq!(host.screen_slot(MENU, 3), Some([62.0, 18.0]));
 ```
 
 `menu` is the menu type whose screen is open, so a call made for another screen refuses. Any mod can
-read, move, activate, or hide slots of the open screen for `menu`. `slot` is the index into
-`MenuScreenLayout::slots` (including slots declared `None` at open, which start inactive and can be
-activated later with `Some([x, y])`). A position is GUI pixels from the screen's top-left corner and names the item's top-left
+read, move, activate, or hide slots of the open screen for `menu`. `slot` ranges over
+`0..(container_len + player_slots)`, where `container_len` is `MenuScreenLayout::slots.len()` and
+`player_slots` is what the menu declared (`MenuScreenOpen::player_slots`, 0 for a menu with no player
+inventory). `0..container_len` indexes `MenuScreenLayout::slots` (including slots declared `None` at open, which
+start inactive and can be activated later with `Some([x, y])`). The menu's player slots follow in menu order, the
+main inventory's three rows and then the hotbar, as the menu appends them
+(`AbstractContainerMenu.addStandardInventorySlots`); each starts at its place on the `inventory_x`/`inventory_y`
+grid. A position is GUI pixels from the screen's top-left corner and names the item's top-left
 corner, as in `MenuScreenLayout::slots`; `None` hides the slot. The call takes `&self`, so a screen hook such as
 `screen_render_post` can move slots every frame; a call that repeats a slot's current place changes nothing and
-costs no layout work. The change lasts for that opening. A replacement starts from its declared layout,
-even when the server reuses the same window id without a close packet. `ClientHost::screen_slot(menu, slot)` reads where a slot will be from the next frame, `None` when it is
+costs no layout work. The change lasts for that opening, for container and player slots alike: closing the
+screen and opening it again, or a replacement even when the server reuses the same window id without a close
+packet, starts from the declared layout with every slot shown. `ClientHost::screen_slot(menu, slot)` reads where a slot will be from the next frame, `None` when it is
 hidden.
 
 From the next frame a moved slot is a vanilla slot at that position, which is what the screen reads live:
@@ -282,7 +288,7 @@ From the next frame a moved slot is a vanilla slot at that position, which is wh
 - its item, count and decorations, and its empty-slot icon, are drawn there;
 - the recipe book's ghost items are drawn there.
 
-A hidden slot is none of these: it is not hovered, drawn or listed until the mod puts it somewhere again. A move
+A hidden slot is none of these, and it is not a drag target or swapped by a number key either: it is not hovered, drawn or listed until the mod puts it somewhere again. A move
 or a hide never touches the recipe book: a bound book keeps its catalogue and its placement. The recipe book and
 `screen_room` still move the whole image, and every slot with it; a slot's own position never changes for them. A
 position outside the image is allowed and is not clamped, and a slot there takes the click instead of making it a
@@ -290,19 +296,21 @@ click outside the screen.
 
 The call is client-side only: nothing is sent, and server-side slot rules never change. A locally hidden
 slot keeps its item and a shift-click may still fill it, as a deactivated Java slot (`Slot.isActive()`)
-does. Slots declared `None` at open start inactive and can be activated later with `Some([x, y])`.
+does. The server never consults it, so a shift-click from another slot can still fill a hidden player or
+container slot: that is the menu's own quick-move answer, and the client adds no filter. Slots declared `None` at
+open start inactive and can be activated later with `Some([x, y])`.
 
 Each refusal changes nothing and is named by `ScreenSlotRefusal`:
 
 | Refusal | When |
 |---|---|
 | `NoScreen` | No mod screen is shown, or the shown one belongs to another menu type |
-| `NoSuchSlot` | `slot` is outside the menu's container backing |
+| `NoSuchSlot` | `slot` is `container_len + player_slots` or more (a menu with no player inventory has no player slots) |
 | `BadPosition` | An `x` or `y` that is NaN or infinite |
 | `Unavailable` | No game backend: screens are the client's |
 
-It moves only the slots a mod screen declares; the player's inventory stays under `inventory_x` and
-`inventory_y`.
+A hidden player slot keeps its item. The inventory label stays where the screen puts it; a screen that hides the
+player's inventory sets `own_labels` to draw its own.
 
 ## Menu slot icons
 

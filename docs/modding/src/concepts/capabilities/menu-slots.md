@@ -16,8 +16,9 @@ slot in the client layout does not change what the server allows.
 
 Any mod can move, activate, or hide a slot of the open screen for `menu` through
 [`ClientHost::set_screen_slot`](../../how-to/client/screens.md#moving-or-hiding-a-mod-screens-slots)
-while this opening is shown. That change affects only the client; the server can still
-quick-move items into a locally hidden slot, and the slot's acceptance rules still apply.
+while this opening is shown. It addresses the menu's container slots and, after them in menu order, its player
+slots. That change affects only the client and ends when the screen closes; the server never consults it, so
+it can still quick-move items into a locally hidden slot, and the slot's acceptance rules still apply.
 
 ## Mod-created recipe input sets
 
