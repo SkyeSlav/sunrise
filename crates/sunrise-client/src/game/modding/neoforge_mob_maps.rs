@@ -65,15 +65,16 @@ impl Loader<'_, '_> {
         );
         Ok(self.install_and_encode(values, applied, install, encode))
     }
-    fn merge_number<T: Clone>(
+    fn merge_number<T: Clone + PartialEq>(
         &mut self,
         codec: impl Fn(&serde_json::value::RawValue) -> Result<T, String>,
         install: impl FnOnce(&mut NeoForgeMobMaps, BTreeMap<String, T>),
         encode: impl Fn(&T) -> Tag,
+        install_only_if_changed: bool,
     ) -> Result<BTreeMap<String, Tag>, String> {
         let definition = self.definition;
         let field = definition.kind.field();
-        let base = builtin::vanilla_layer(definition.kind)
+        let base: BTreeMap<String, T> = builtin::vanilla_layer(definition.kind)
             .into_iter()
             .map(|(id, raw)| {
                 let number = serde_json::value::RawValue::from_string(raw[field].to_string())
@@ -87,7 +88,7 @@ impl Loader<'_, '_> {
         let (values, applied) = super::data_map_files::load_numeric(
             &self.id,
             definition.registry,
-            base,
+            base.clone(),
             self.overlay,
             move |tag| tags.get(tag).into_iter().flatten(),
             super::data_map_files::NumberCodec {
@@ -96,7 +97,12 @@ impl Loader<'_, '_> {
             },
             |id| (self.known)(definition.registry, id),
         );
-        Ok(self.install_and_encode(values, applied, install, encode))
+        let should_install = if install_only_if_changed {
+            values != base
+        } else {
+            applied
+        };
+        Ok(self.install_and_encode(values, should_install, install, encode))
     }
 }
 pub(super) fn load<'a>(
@@ -121,6 +127,13 @@ pub(super) fn load<'a>(
                 builtin::decode_distance,
                 NeoForgeMobMaps::set_distances,
                 |value| Tag::Float(value.to_bits()),
+                false,
+            ),
+            Kind::MonsterRoomMobs => loader.merge_number(
+                builtin::decode_monster_room_weight,
+                NeoForgeMobMaps::set_monster_room_mobs,
+                |value| Tag::Int(*value),
+                true,
             ),
             Kind::ParrotImitations => loader.merge(
                 |value| builtin::decode_sound(value, |id| known("minecraft:sound_event", id)),
@@ -155,6 +168,7 @@ pub(super) fn load<'a>(
                 builtin::decode_frequency,
                 NeoForgeMobMaps::set_frequencies,
                 |value| Tag::Int(*value),
+                false,
             ),
             Kind::VillagerCompostables => loader.merge(
                 builtin::decode_compostable,
@@ -188,6 +202,10 @@ impl Game<'_> {
             return;
         }
         let snapshot = self.mob_map_snapshot();
+        self.res
+            .behaviours()
+            .monster_room_mobs()
+            .publish(snapshot.monster_room_mobs());
         for terrain in self
             .end
             .locator()
@@ -340,6 +358,88 @@ mod tests {
         assert_eq!(
             loaded.snapshot.parrot_imitation("minecraft:zombie"),
             Some("entity.parrot.imitate.zombie")
+        );
+    }
+
+    #[test]
+    fn monster_room_mobs_keeps_vanilla_when_unchanged_and_overrides_when_modified() {
+        // Re-declaring the exact built-in entries (or adding then removing an entry)
+        // leaves the merged map equal to the built-in seed, so monster_room_mobs stays None.
+        let unchanged_files = vec![(
+            "data_maps/neoforge:entity_type/monster_room_mobs".to_owned(),
+            vec![
+                serde_json::to_vec(&json!({"values": {"minecraft:creeper": 50}})).unwrap(),
+                serde_json::to_vec(&json!({"values": {"minecraft:zombie": {"weight": 200}}, "remove": ["minecraft:creeper"]})).unwrap(),
+            ],
+        )];
+        let unchanged = load(
+            &sunrise_world::loot::PackOverlay {
+                files: &unchanged_files,
+                ..sunrise_world::loot::PackOverlay::default()
+            },
+            |_| None,
+            |_, id| id.starts_with("minecraft:"),
+        )
+        .unwrap();
+        assert!(unchanged.snapshot.monster_room_mobs().is_none());
+        let values = &unchanged
+            .values
+            .iter()
+            .find(|(definition, _)| definition.id == "neoforge:monster_room_mobs")
+            .unwrap()
+            .1;
+        assert_eq!(
+            values.get("minecraft:zombie"),
+            Some(&Tag::compound([("weight", Tag::Int(200))]))
+        );
+        assert_eq!(
+            values.get("minecraft:skeleton"),
+            Some(&Tag::compound([("weight", Tag::Int(100))]))
+        );
+        assert_eq!(
+            values.get("minecraft:spider"),
+            Some(&Tag::compound([("weight", Tag::Int(100))]))
+        );
+
+        // Overriding with a valid layer (both bare int and {"weight": N}) installs the
+        // weighted table; a negative weight in a later layer refuses that layer atomically.
+        let modified_files = vec![(
+            "data_maps/neoforge:entity_type/monster_room_mobs".to_owned(),
+            vec![
+                serde_json::to_vec(&json!({
+                    "replace": true,
+                    "values": {
+                        "minecraft:creeper": 75,
+                        "minecraft:blaze": {"weight": 25}
+                    }
+                }))
+                .unwrap(),
+                serde_json::to_vec(&json!({
+                    "replace": true,
+                    "values": {"minecraft:zombie": -1}
+                }))
+                .unwrap(),
+            ],
+        )];
+        let modified = load(
+            &sunrise_world::loot::PackOverlay {
+                files: &modified_files,
+                ..sunrise_world::loot::PackOverlay::default()
+            },
+            |_| None,
+            |_, id| id.starts_with("minecraft:"),
+        )
+        .unwrap();
+        let table = modified
+            .snapshot
+            .monster_room_mobs()
+            .expect("modified map installs weighted table");
+        assert_eq!(
+            table.entries(),
+            &[
+                ("minecraft:blaze".to_owned(), 25),
+                ("minecraft:creeper".to_owned(), 75),
+            ]
         );
     }
 }
