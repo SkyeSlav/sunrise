@@ -266,6 +266,8 @@ impl DataPacks {
                 && let Ok(id) = Identifier::from_parts(namespace, path)
             {
                 ids.push(id);
+            } else {
+                log::warn!("Sunrise: invalid path {namespace}:{path} in pack, ignored");
             }
         }
         ids.sort();

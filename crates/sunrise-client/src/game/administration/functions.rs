@@ -3464,6 +3464,17 @@ mod tests {
         let tags = sunrise_items::items::load_tags(&dir, "item", &overlay).unwrap();
         assert!(!tags.contains_key("pkg:mod_only"));
         assert!(tags["pkg:good"].contains("pkg:good"));
+        // A key `<kind>/<namespace>:<path>` becomes `data/<namespace>/<kind>/<path>.json`, whatever
+        // the kind's own folders.
+        let data = stack.data_packs(vec![
+            ("data_maps/pkg:item/p".to_owned(), b"{\"a\":1}".to_vec()),
+            ("worldgen/biome/pkg:p".to_owned(), b"{\"b\":2}".to_vec()),
+        ]);
+        let read = |path: &str| {
+            data.read(&sunrise_core::identifier::Identifier::from_parts("pkg", path).unwrap())
+        };
+        assert_eq!(read("data_maps/item/p.json").unwrap(), b"{\"a\":1}");
+        assert_eq!(read("worldgen/biome/p.json").unwrap(), b"{\"b\":2}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
