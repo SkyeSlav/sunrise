@@ -876,6 +876,8 @@ pub struct Items {
     /// Fluid tags in the same order.
     pub fluid_tag_order: HashMap<String, Vec<String>>,
     pub entity_type_tags: Arc<EntityTypeTags>,
+    /// The bound `game_event` tags (`GameEventTags`), which the vibration listeners read.
+    pub game_event_tags: Arc<HashMap<String, HashSet<String>>>,
     loot: Arc<sunrise_world::loot::LootTables>,
     loot_bindings: sunrise_world::loot::types::Bindings,
     loot_modifiers: Arc<HashMap<String, Value>>,
@@ -1618,6 +1620,7 @@ impl Items {
             })?,
         );
         self.set_tags(TagRegistry::Fluid, fluid_tag_list(root, overlay)?);
+        self.game_event_tags = Arc::new(load_tags(root, "game_event", overlay)?);
         Ok(())
     }
 
