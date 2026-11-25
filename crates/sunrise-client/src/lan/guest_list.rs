@@ -117,6 +117,7 @@ impl GuestList {
         std::mem::swap(&mut g.offhand, &mut i.offhand);
         std::mem::swap(&mut g.equipment, &mut i.equipment);
         std::mem::swap(&mut g.carried, &mut i.carried);
+        std::mem::swap(&mut g.ender_items, &mut i.ender_items);
     }
 
     /// Edit rows in join order, through the same bounded mutation scope.
@@ -1095,5 +1096,49 @@ mod tests {
 
         list.clear();
         assert!(list.block_mod_menu_viewers(pos_b).is_empty());
+    }
+
+    #[test]
+    fn swap_loaned_inventory_includes_ender_items() {
+        use crate::items::ItemStack;
+
+        let mut list = GuestList::default();
+        let mut outer = guest(1);
+        outer.inventory[0] = Some(ItemStack::new("minecraft:dirt", 1));
+        outer.ender_items[0] = Some(ItemStack::new("minecraft:diamond", 2));
+        let mut inner = guest(2);
+        inner.inventory[0] = Some(ItemStack::new("minecraft:stone", 3));
+        inner.ender_items[0] = Some(ItemStack::new("minecraft:emerald", 4));
+        list.push(outer);
+        list.push(inner);
+
+        list.swap_loaned_inventory(0, 1);
+        assert_eq!(
+            list[0].inventory[0],
+            Some(ItemStack::new("minecraft:stone", 3))
+        );
+        assert_eq!(
+            list[0].ender_items[0],
+            Some(ItemStack::new("minecraft:emerald", 4))
+        );
+        assert_eq!(
+            list[1].inventory[0],
+            Some(ItemStack::new("minecraft:dirt", 1))
+        );
+        assert_eq!(
+            list[1].ender_items[0],
+            Some(ItemStack::new("minecraft:diamond", 2))
+        );
+        check(&list);
+
+        list.swap_loaned_inventory(0, 1);
+        assert_eq!(
+            list[0].ender_items[0],
+            Some(ItemStack::new("minecraft:diamond", 2))
+        );
+        assert_eq!(
+            list[1].ender_items[0],
+            Some(ItemStack::new("minecraft:emerald", 4))
+        );
     }
 }
