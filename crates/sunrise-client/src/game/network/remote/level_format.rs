@@ -77,20 +77,27 @@ impl crate::game::Game<'_> {
             r.level_pack_environment = None;
             return;
         };
-        let timelines = r.synced_timelines();
-        if let Some(e) = r
-            .level_environments
-            .get_mut(name)
-            .filter(|e| e.json == *json)
+        if r.level_environments
+            .get(name)
+            .is_some_and(|e| e.json == *json)
         {
-            if !same_stacks(e.stacks.as_ref(), stacks) {
-                e.pack = pack_environment(name, json, stacks, &timelines);
-                e.stacks = stacks.map(Arc::downgrade);
+            let stale = r
+                .level_environments
+                .get(name)
+                .is_some_and(|e| !same_stacks(e.stacks.as_ref(), stacks));
+            let rebuilt =
+                stale.then(|| pack_environment(name, json, stacks, &r.synced_timelines()));
+            if let Some(e) = r.level_environments.get_mut(name) {
+                if let Some(pack) = rebuilt {
+                    e.pack = pack;
+                    e.stacks = stacks.map(Arc::downgrade);
+                }
+                r.level_environment = e.own.clone();
+                r.level_pack_environment = e.pack.clone();
             }
-            r.level_environment = e.own.clone();
-            r.level_pack_environment = e.pack.clone();
             return;
         }
+        let timelines = r.synced_timelines();
         let own =
             Environment::with_type(self.res.environment_of(name), json, &timelines).map(Arc::new);
         let pack = pack_environment(name, json, stacks, &timelines);

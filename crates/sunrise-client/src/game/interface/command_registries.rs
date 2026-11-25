@@ -33,12 +33,23 @@ pub(super) fn timelines_and_markers(
 impl Game<'_> {
     /// Active `minecraft:timeline` and `minecraft:world_clock` snapshot for `/time` commands
     /// and `wake_time` (`ServerClockManager.init`, `TimeCommand`).
-    pub(super) fn sync_timeline_registries(&mut self) {
-        let (timelines, markers) = self
-            .world_tables
-            .as_ref()
-            .map(|tables| timelines_and_markers(&tables.timelines))
-            .unwrap_or_default();
+    /// A client without the world's tables (the window of a single-player or multiplayer
+    /// session) takes the server's synchronized `minecraft:timeline` and `minecraft:world_clock`
+    /// entries.
+    pub(in crate::game) fn sync_timeline_registries(&mut self) {
+        let synced;
+        let table = match (&self.world_tables, &self.remote) {
+            (Some(tables), _) => &tables.timelines,
+            (None, Some(remote)) => {
+                synced = remote.synced_timelines();
+                &synced
+            }
+            (None, None) => {
+                synced = Default::default();
+                &synced
+            }
+        };
+        let (timelines, markers) = timelines_and_markers(table);
         self.ui.timelines = timelines;
         self.ui.markers = markers;
         let reg = &mut self.ui.registries;
@@ -58,20 +69,36 @@ impl Game<'_> {
         command_markers.sort();
         command_markers.dedup();
         reg.time_markers = command_markers;
-        if let Some(tables) = &self.world_tables {
-            for (registry, id, admitted) in tables.packed_registries.entries() {
-                if registry == "minecraft:world_clock" && admitted && !reg.clocks.contains(&id) {
-                    reg.clocks.push(id);
-                }
+        let clocks: Vec<String> = if let Some(tables) = &self.world_tables {
+            tables
+                .packed_registries
+                .entries()
+                .filter(|(registry, _, admitted)| *registry == "minecraft:world_clock" && *admitted)
+                .map(|(_, id, _)| id)
+                .collect()
+        } else if let Some(remote) = &self.remote {
+            remote
+                .registries
+                .registries
+                .get("minecraft:world_clock")
+                .map_or_else(Vec::new, |entries| {
+                    entries.iter().map(|(name, _)| name.clone()).collect()
+                })
+        } else {
+            return;
+        };
+        for id in clocks {
+            if !reg.clocks.contains(&id) {
+                reg.clocks.push(id);
             }
-            reg.clocks.sort();
-            reg.clocks.dedup();
-            reg.by_registry
-                .entry("minecraft:world_clock".into())
-                .or_default()
-                .ids
-                .clone_from(&reg.clocks);
         }
+        reg.clocks.sort();
+        reg.clocks.dedup();
+        reg.by_registry
+            .entry("minecraft:world_clock".into())
+            .or_default()
+            .ids
+            .clone_from(&reg.clocks);
     }
 
     /// Active enchantment registry snapshot for command codecs and completions.

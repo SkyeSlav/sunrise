@@ -41,6 +41,7 @@ impl Game<'_> {
                 r.level_environments.clear();
             }
             self.build_level_environments();
+            self.sync_timeline_registries();
         }
     }
 

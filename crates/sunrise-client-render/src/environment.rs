@@ -911,8 +911,11 @@ fn timeline_ids(tags: &BTreeMap<String, Vec<String>>, json: &Json) -> Vec<String
             };
             members.as_slice()
         } else {
-            direct = sunrise_core::identifier::Identifier::parse(id)
-                .map_or_else(|_| id.to_owned(), |parsed| parsed.to_string());
+            let Ok(parsed) = sunrise_core::identifier::Identifier::parse(id) else {
+                log::warn!("timeline {id}: not an identifier");
+                continue;
+            };
+            direct = parsed.to_string();
             std::slice::from_ref(&direct)
         };
         for member in members {
