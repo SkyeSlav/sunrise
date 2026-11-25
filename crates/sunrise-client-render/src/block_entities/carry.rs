@@ -17,13 +17,14 @@ pub struct Carried {
 }
 
 impl BlockEntities {
-    /// Takes the block entity at `from` out of the world for the moving piston
-    /// at `to`. Its slot is freed and the attachment index sees the holder
-    /// leave, but it is not removed: no side effects run, so nothing it holds
-    /// drops. False when there is none, or it is out for its own tick.
-    pub fn carry(&mut self, from: Pos, to: Pos) -> bool {
+    /// Takes the block entity at `from` out of this store without running
+    /// removal side effects, freeing its slot and unloading its attachments
+    /// from this store's index so it can be installed in this level or another
+    /// through [`BlockEntities::land_carried`]. Returns `None` when there is no
+    /// resident block entity at `from` or it is taken out for its own tick.
+    pub fn take_for_carry(&mut self, from: Pos) -> Option<Carried> {
         if !self.map.contains_key(&from) {
-            return false;
+            return None;
         }
         let attachments = self.attachments.remove(&from);
         if attachments.is_some()
@@ -31,36 +32,42 @@ impl BlockEntities {
         {
             observer.unload(identity(from, &self.generations));
         }
-        let Some(entity) = self.remove(&from) else {
+        let entity = self.remove(&from)?;
+        Some(Carried {
+            entity,
+            position_data: Default::default(),
+            attachments,
+        })
+    }
+    /// Installs `carried` at `at` in this store as a new holder: a new ticker
+    /// slot at the end of the list, and its attachments bound to `at` in this
+    /// store's index.
+    pub fn land_carried(&mut self, at: Pos, carried: Carried) {
+        self.remove(&at);
+        self.insert(at, carried.entity);
+        if let Some(attachments) = carried.attachments {
+            self.restore_attachments(at, attachments);
+        }
+    }
+    /// Takes the block entity at `from` out of the world for the moving piston
+    /// at `to`. Its slot is freed and the attachment index sees the holder
+    /// leave, but it is not removed: no side effects run, so nothing it holds
+    /// drops. False when there is none, or it is out for its own tick.
+    pub fn carry(&mut self, from: Pos, to: Pos) -> bool {
+        let Some(carried) = self.take_for_carry(from) else {
             return false;
         };
-        self.hold_carried(
-            to,
-            Carried {
-                entity,
-                position_data: Default::default(),
-                attachments,
-            },
-        );
+        self.hold_carried(to, carried);
         true
     }
     /// Installs the block entity carried to `at` there as a new holder: a new
     /// ticker slot at the end of the list, and its attachments bound again.
     /// False when none was carried there.
     pub fn land(&mut self, at: Pos) -> bool {
-        let Some(Carried {
-            entity,
-            attachments,
-            ..
-        }) = self.take_carried(&at)
-        else {
+        let Some(carried) = self.take_carried(&at) else {
             return false;
         };
-        self.remove(&at);
-        self.insert(at, entity);
-        if let Some(attachments) = attachments {
-            self.restore_attachments(at, attachments);
-        }
+        self.land_carried(at, carried);
         true
     }
     /// The block entity carried to `at`, for its moving piston's save.
@@ -193,6 +200,59 @@ mod tests {
         assert!(entities.land(retained));
         assert!(
             matches!(entities.get(&retained), Some(BlockEntity::Chest(slots)) if slots.len() == 3)
+        );
+    }
+
+    #[test]
+    fn carried_block_entity_moves_across_stores_with_attachments_and_no_duplicate() {
+        let source_index = Arc::new(Mutex::new(AttachmentIndex::<BlockEntityIdentity>::default()));
+        let dest_index = Arc::new(Mutex::new(AttachmentIndex::<BlockEntityIdentity>::default()));
+        let mut source = BlockEntities::default();
+        let mut dest = BlockEntities::default();
+        source.observe_attachments(Arc::new(IndexedAttachmentObserver::new(
+            &source_index,
+            Some,
+        )));
+        dest.observe_attachments(Arc::new(IndexedAttachmentObserver::new(&dest_index, Some)));
+        source.set_states(vec![Ticking::Yes]);
+        dest.set_states(vec![Ticking::Yes]);
+
+        let (from, to) = ((4, 64, 5), (10, 70, 12));
+        source.insert(from, BlockEntity::Chest(vec![None, None, None]));
+        VALUE
+            .set(source.attachments_mut(from).unwrap(), Holder::Level, 42)
+            .unwrap();
+
+        let carried = source.take_for_carry(from).expect("chest taken for carry");
+        assert!(!source.contains_key(&from));
+        assert!(source.attachments(from).is_none());
+        assert!(
+            source_index
+                .lock()
+                .unwrap()
+                .snapshot(&("carry_test".into(), "value".into()))
+                .is_empty()
+        );
+        assert!(source.take_for_carry(from).is_none());
+
+        dest.land_carried(to, carried);
+        assert!(matches!(dest.get(&to), Some(BlockEntity::Chest(slots)) if slots.len() == 3));
+        assert_eq!(
+            dest_index
+                .lock()
+                .unwrap()
+                .snapshot(&("carry_test".into(), "value".into()))
+                .iter()
+                .map(|row| (row.holder.position, *row.entry.read(&VALUE).unwrap()))
+                .collect::<Vec<_>>(),
+            [([10, 70, 12], 42)]
+        );
+        assert_eq!(
+            dest.tickers(|_| 0)
+                .iter()
+                .map(|(p, _)| *p)
+                .collect::<Vec<_>>(),
+            [to]
         );
     }
 }
