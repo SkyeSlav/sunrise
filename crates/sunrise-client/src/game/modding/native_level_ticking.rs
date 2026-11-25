@@ -1,12 +1,21 @@
 //! Ticking eligibility through the same predicates as the server's tick phases.
 use super::Game;
 use mod_api::LevelRef;
+use sunrise_client::{ticket_levels::ChunkTickets, world::World};
 
 impl Game<'_> {
-    fn native_tick_position(&self, level: LevelRef, pos: [i32; 3]) -> Option<bool> {
-        if !self.level_in_place(level) {
+    fn native_tick_level(&self, level: LevelRef) -> Option<(&World, &ChunkTickets)> {
+        if !self.is_logical_server() || !self.level_handle_current(level) {
             return None;
         }
+        if level.dimension() == self.dim.key() {
+            return Some((&self.world, &self.tickets));
+        }
+        let parked = self.levels.parked_of(level.dimension_id())?;
+        Some((&parked.world, &parked.tickets))
+    }
+
+    fn native_tick_position(&self, level: LevelRef, pos: [i32; 3]) -> Option<bool> {
         Some(
             self.level_in_world_bounds(level, pos)?
                 && self.chunk(level, [pos[0] >> 4, pos[2] >> 4]).is_some(),
@@ -14,7 +23,11 @@ impl Game<'_> {
     }
 
     pub(super) fn level_entity_ticking(&self, level: LevelRef, pos: [i32; 3]) -> Option<bool> {
-        Some(self.native_tick_position(level, pos)? && self.entity_ticking_area()(pos[0], pos[2]))
+        let (_, tickets) = self.native_tick_level(level)?;
+        Some(
+            self.native_tick_position(level, pos)?
+                && tickets.levels().entity_ticking_at(pos[0], pos[2]),
+        )
     }
 
     pub(super) fn level_should_tick_blocks_at(
@@ -22,7 +35,16 @@ impl Game<'_> {
         level: LevelRef,
         pos: [i32; 3],
     ) -> Option<bool> {
-        Some(self.native_tick_position(level, pos)? && self.block_ticking_at(pos[0], pos[2]))
+        let (world, tickets) = self.native_tick_level(level)?;
+        Some(
+            self.native_tick_position(level, pos)?
+                && sunrise_gameplay::block_entity_ticks::block_ticking_at(
+                    &tickets.levels(),
+                    &world.entities_pending,
+                    pos[0],
+                    pos[2],
+                ),
+        )
     }
 }
 
@@ -93,7 +115,7 @@ mod tests {
             let unopened = LevelRef::new(level.epoch(), DimensionKey::NETHER);
             assert_reads(game, unopened, [0, 64, 0], None);
             game.enter_level(crate::game::Dim::Nether).unwrap();
-            assert_reads(game, level, [0, 64, 0], None);
+            assert_reads(game, level, [0, 64, 0], Some(true));
         });
         with_game(|game| {
             let level = game.level("minecraft:overworld").unwrap();

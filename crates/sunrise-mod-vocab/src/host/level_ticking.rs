@@ -14,25 +14,26 @@ pub trait LevelTickingBackend {
     /// client.
     fn level_in_place(&self, level: LevelRef) -> bool;
     /// Side: server.
-    /// `Some(true)` when this resident, in-bounds position has entity-ticking tickets.
+    /// `Some(true)` when this resident, in-bounds position has entity-ticking tickets in this
+    /// open server level (in place or parked).
     /// `Some(false)` for unloaded or out-of-bounds positions or tickets that forbid ticking.
     /// With no ticket system, resident in-bounds chunks tick; an active but empty ticket
     /// system permits none. This reads the current ticket decision, not a tick guarantee.
-    /// `None` for stale handles, a client or a level not currently in place. Parked
-    /// levels cannot answer because the live ticket state belongs to the level in place.
-    /// Does not load chunks. Each call shares the ticket map through a reference count;
-    /// it does not allocate a memo table or refresh a resident-chunk cache.
+    /// `None` for stale handles, unopened or closed levels, or a client.
+    /// Does not load chunks or switch levels. Each call shares the level's ticket map through
+    /// a reference count; it does not allocate a memo table or refresh a resident-chunk cache.
     fn level_entity_ticking(&self, level: LevelRef, pos: [i32; 3]) -> Option<bool>;
     /// Side: server.
-    /// `Some(true)` when scheduled blocks, block events and block entities can tick here:
+    /// `Some(true)` when scheduled blocks, block events and block entities can tick here
+    /// (`ServerLevel.shouldTickBlocksAt`) in this open server level (in place or parked):
     /// a resident, in-bounds position with block-ticking tickets and no pending entities.
     /// `Some(false)` for unloaded or out-of-bounds positions, tickets that forbid ticking,
     /// or a chunk waiting for its entities. With no ticket system, resident in-bounds
     /// chunks with no pending entities tick; an active but empty ticket system permits none.
-    /// `None` for stale handles, a client or a level not currently in place. Parked
-    /// levels cannot answer because the live ticket state belongs to the level in place.
-    /// Does not load chunks. Each call shares the ticket map through a reference count
-    /// and borrows the pending-entity set without copying it or allocating a memo table.
+    /// `None` for stale handles, unopened or closed levels, or a client.
+    /// Does not load chunks or switch levels. Each call shares the level's ticket map through
+    /// a reference count and borrows its pending-entity set without copying it or allocating
+    /// a memo table.
     fn level_should_tick_blocks_at(&self, level: LevelRef, pos: [i32; 3]) -> Option<bool>;
 }
 /// The handles' writes of the `level_ticking` area, implemented by the game and reached through [`BackendMut`].

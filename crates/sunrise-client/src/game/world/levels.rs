@@ -149,7 +149,7 @@ pub(super) struct Parked {
     pub(super) save: Arc<SaveDir>,
     block_ticks: Ticks,
     tick_chunks: TickChunkMembership,
-    tickets: ChunkTickets,
+    pub(super) tickets: ChunkTickets,
     random_tick_sections: RandomTickSections,
     level_events: Vec<LevelEvent>,
     /// Entity portal processes and cooldowns belong to this level's entities.
