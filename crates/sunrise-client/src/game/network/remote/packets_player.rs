@@ -382,9 +382,9 @@ impl Game<'_> {
                             .or_insert_with(|| Arc::new(std::sync::atomic::AtomicI32::new(0)));
                         if let Some(t) = e.properties.iter().find(|p| p.name == "textures") {
                             // Keep the raw property until the services keys settle.
-                            r.skin_textures
-                                .entry(e.uuid)
-                                .or_insert_with(|| Arc::new(PlayerTextures::new(t.clone())));
+                            r.skin_textures.entry(e.uuid).or_insert_with(|| {
+                                Arc::new(PlayerTextures::new(e.uuid, t.clone()))
+                            });
                         }
                     }
                 }

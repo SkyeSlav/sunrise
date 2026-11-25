@@ -239,7 +239,7 @@ impl Game<'_> {
         self.native_client_commands.pending_commands.clear();
         self.native_client_commands.pending_chats.clear();
         let chat_tree = self.chat_tree_for(None);
-        let services_keys = ServicesKeys::fetching();
+        let services_keys = self.fresh_services_keys();
         self.ui.registries.selector_tokens.clear();
         self.remote = Some(Remote {
             selector_metadata_supported: true,
@@ -426,6 +426,12 @@ impl Game<'_> {
         self.stats = Default::default();
         Ok(())
     }
+    /// A joined client's trust keys, fetched off the game thread. Minecraft makes its
+    /// services once per run; a new set ends the skin verdicts made with the old one.
+    fn fresh_services_keys(&mut self) -> Arc<std::sync::Mutex<ServicesKeys>> {
+        self.skin_downloads.borrow_mut().forget_unpacked();
+        ServicesKeys::fetching()
+    }
     /// Prepare a client session and remote state to receive packets from a studio replay.
     /// A replayed or viewed world checks its players' signed properties as a joined
     /// client does.
@@ -435,7 +441,7 @@ impl Game<'_> {
         // has fetched.
         let services_keys = match &self.remote {
             Some(remote) => remote.services_keys.clone(),
-            None => ServicesKeys::fetching(),
+            None => self.fresh_services_keys(),
         };
         self.reset_client_item_use();
         self.realm_session = false;

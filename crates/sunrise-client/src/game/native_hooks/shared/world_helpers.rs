@@ -146,22 +146,24 @@ impl<'g> Game<'g> {
         draw: &mut dyn FnMut(&mut Game<'g>, &mut HudBatch),
     ) {
         self.draw_mod_gui_layers(Some(layer), batch);
-        self.run_gui_layer(
-            layer.id(),
-            batch,
-            gui_layers::order().map_or(&GuiLayerBody::Vanilla, |order| {
-                &order.slots()[order.position(layer)].body
-            }),
-            Some(draw),
-            matches!(
-                layer,
-                VanillaGuiLayer::PlayerHealth
-                    | VanillaGuiLayer::ArmorLevel
-                    | VanillaGuiLayer::FoodLevel
-                    | VanillaGuiLayer::VehicleHealth
-                    | VanillaGuiLayer::AirLevel
-            ),
-        );
+        sunrise_client::spans::time(layer.span_name(), || {
+            self.run_gui_layer(
+                layer.id(),
+                batch,
+                gui_layers::order().map_or(&GuiLayerBody::Vanilla, |order| {
+                    &order.slots()[order.position(layer)].body
+                }),
+                Some(draw),
+                matches!(
+                    layer,
+                    VanillaGuiLayer::PlayerHealth
+                        | VanillaGuiLayer::ArmorLevel
+                        | VanillaGuiLayer::FoodLevel
+                        | VanillaGuiLayer::VehicleHealth
+                        | VanillaGuiLayer::AirLevel
+                ),
+            );
+        });
     }
 
     /// Draws inserted layers not drawn yet this frame, below `until` or to the end with `None`.

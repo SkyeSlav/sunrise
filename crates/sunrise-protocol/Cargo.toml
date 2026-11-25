@@ -38,6 +38,8 @@ name = "item_wire_probe"
 path = "examples/item_wire_probe.rs"
 
 [dev-dependencies]
+# The key tests read the client's offline services-key fixture.
+base64 = "0.22"
 # The isolated retained-allocation integration test installs the census allocator
 # explicitly; no alloc-census feature unification with production consumers.
 sunrise-threads = { path = "../sunrise-threads" }

@@ -84,7 +84,6 @@ use sunrise_protocol::{
         play::{self, Clientbound as C, Serverbound as S},
     },
     registry::{Builtin, DimensionType, Dynamic, SyncedNames, ceil_log2},
-    rsa::RsaPublicKey,
     secure_chat::{self, Signature},
     text::{Language, plain},
 };
@@ -325,41 +324,37 @@ impl ServicesKeys {
 }
 
 /// One `PlayerInfo` property, shared by the list entry and the entities that kept it.
-struct PlayerTextures {
-    property: AccountProperty,
-    unpacked: std::sync::OnceLock<sunrise_client::skins::Textures>,
-}
+struct PlayerTextures(sunrise_client::skins::PackedTextures);
 
 impl PlayerTextures {
-    fn new(property: AccountProperty) -> Self {
-        Self {
-            property,
-            unpacked: std::sync::OnceLock::new(),
-        }
+    fn new(profile: u128, property: AccountProperty) -> Self {
+        Self(sunrise_client::skins::PackedTextures {
+            profile,
+            value: property.value,
+            signature: property.signature,
+        })
     }
 
     /// `SkinManager.createLookup(profile, requireSecure)`: a secure lookup shows
     /// only textures whose signature the keys verified, so it waits for keys that
     /// are still pending; the local player's shows its textures unverified.
+    /// `SkinManager.getOrLoad` unpacks and verifies on a thread of its own, never
+    /// the game thread: `None` until that answers, and the player shows the
+    /// default skin.
     fn unpack(
         &self,
+        downloads: &mut sunrise_client::skins::Downloader,
         services_keys: &ServicesKeys,
-        valid_uris: &[impl AsRef<str>],
         require_secure: bool,
-    ) -> Option<&sunrise_client::skins::Textures> {
-        use sunrise_client::skins;
-        let signature = self.property.signature.as_deref();
-        let property_keys: &[RsaPublicKey] = match services_keys {
+    ) -> Option<Arc<sunrise_client::skins::Textures>> {
+        match services_keys {
             // Never cache an invalid result for a signature the pending keys could verify.
-            ServicesKeys::Pending if signature.is_some() && require_secure => return None,
-            ServicesKeys::Pending => &[],
-            ServicesKeys::Ready(keys) => &keys.profile_property_keys,
-        };
-        Some(self.unpacked.get_or_init(|| {
-            let value = &self.property.value;
-            let signature = skins::property_signature(value, signature, property_keys);
-            skins::unpack(value, signature, valid_uris)
-        }))
+            ServicesKeys::Pending if self.0.signature.is_some() && require_secure => None,
+            // `PlayerInfo.createSkinLookup`: requireSecure is false for the local player, whose
+            // signed property shows unverified. An unsigned one reads the same whatever the keys.
+            ServicesKeys::Pending => downloads.unpacked(&self.0, &[]),
+            ServicesKeys::Ready(keys) => downloads.unpacked(&self.0, &keys.profile_property_keys),
+        }
     }
 }
 
