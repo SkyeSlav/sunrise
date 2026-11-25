@@ -1393,9 +1393,6 @@ pub struct Extra {
     pub drop_chances: Option<Box<[f32; 8]>>,
     /// `Mob.leftHanded`.
     pub left_handed: bool,
-    /// The sound variant: index in the species' `*_sound_variant` registry
-    /// (`finalize::sound_variants`); None is the default, `classic`.
-    pub sound_variant: Option<u8>,
     /// `Wolf.DATA_VARIANT_ID`: the world's `minecraft:wolf_variant` holder
     /// (network id in the world's sync order); `None` before initialization
     /// resolves to `minecraft:pale` (or the registry's first entry).

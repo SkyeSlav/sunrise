@@ -1294,17 +1294,7 @@ pub fn write_mob(
                 map.insert("sound_variant".into(), string(id));
             }
         }
-        _ => {
-            let sounds = crate::mobs::finalize::sound_variants(species);
-            if !sounds.is_empty() {
-                let sound = m.extra.sound_variant.and_then(|i| sounds.get(i as usize));
-                let sound = sound.copied().unwrap_or("classic");
-                map.insert(
-                    "sound_variant".into(),
-                    string(&format!("minecraft:{sound}")),
-                );
-            }
-        }
+        _ => {}
     }
     match id {
         // Fox.addAdditionalSaveData.
@@ -2510,19 +2500,6 @@ fn mob_from_nbt_at(
         && let Some(t) = number(tag.get("EggLayTime"))
     {
         m.extra.egg_time = t as i32;
-    }
-    if !matches!(
-        m.species(),
-        crate::mobs::Species::Wolf
-            | crate::mobs::Species::Cat
-            | crate::mobs::Species::Pig
-            | crate::mobs::Species::Cow
-            | crate::mobs::Species::Chicken
-    ) && let Some(v) = text(tag.get("sound_variant"))
-    {
-        let v = v.trim_start_matches("minecraft:");
-        let sounds = crate::mobs::finalize::sound_variants(m.species());
-        m.extra.sound_variant = sounds.iter().position(|n| *n == v).map(|i| i as u8);
     }
     match m.species() {
         crate::mobs::Species::Fox => {
@@ -7403,32 +7380,25 @@ pub fn apply_item_components(m: &mut Mob, stack: &crate::items::ItemStack) {
     // Pig, Cow, Chicken and Wolf resolve against the world's `VariantTables` in
     // `apply_item_variant_components`.
     let species = m.species();
-    let (variant, sound) = match species {
+    let variant = match species {
         // ZombieNautilus.applyImplicitComponents: the variant only.
-        crate::mobs::Species::ZombieNautilus => (Some("minecraft:zombie_nautilus/variant"), None),
+        crate::mobs::Species::ZombieNautilus => Some("minecraft:zombie_nautilus/variant"),
         // Fox and Frog.applyImplicitComponent: `setVariant` from the component
         // alone, so a spawn egg carrying one hatches that variant.
-        crate::mobs::Species::Fox => (Some("minecraft:fox/variant"), None),
-        crate::mobs::Species::Frog => (Some("minecraft:frog/variant"), None),
+        crate::mobs::Species::Fox => Some("minecraft:fox/variant"),
+        crate::mobs::Species::Frog => Some("minecraft:frog/variant"),
         // Horse.applyImplicitComponent: `setVariant` sets the coat colour and
         // keeps the markings the spawn picked (`getTypeVariant() & -256`),
         // which Sunrise keeps in `extra.variant2` and leaves alone here.
-        crate::mobs::Species::Horse => (Some("minecraft:horse/variant"), None),
+        crate::mobs::Species::Horse => Some("minecraft:horse/variant"),
         // Llama.applyImplicitComponent, which a trader llama inherits.
         crate::mobs::Species::Llama | crate::mobs::Species::TraderLlama => {
-            (Some("minecraft:llama/variant"), None)
+            Some("minecraft:llama/variant")
         }
-        _ => (None, None),
+        _ => None,
     };
     if let Some(name) = variant.and_then(|id| text(components.other(id))) {
         m.extra.variant = crate::mobs::finalize::variant_index(species, &name);
-    }
-    if let Some(name) = sound.and_then(|id| text(components.other(id)))
-        && let Some(i) = crate::mobs::finalize::sound_variants(species)
-            .iter()
-            .position(|v| *v == name.trim_start_matches("minecraft:"))
-    {
-        m.extra.sound_variant = Some(i as u8);
     }
     // MushroomCow.applyImplicitComponents: `Variant.DEFAULT` is red, as the
     // save's `Type` reads it.

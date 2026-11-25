@@ -268,13 +268,6 @@ impl VariantRegistry {
         }
         Some(selected[random.next_int_bound(selected.len() as i32).unwrap_or(0) as usize])
     }
-    /// `Registry.getRandom`: any entry.
-    pub fn random(&self, random: &mut impl RandomSource) -> usize {
-        if self.names.is_empty() {
-            return 0;
-        }
-        random.next_int_bound(self.names.len() as i32).unwrap_or(0) as usize
-    }
 }
 
 /// The registries finalizeSpawn reads.
@@ -2221,10 +2214,6 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
             m.extra.variant = variant_index(m.species(), &name);
         }
     }
-    fn sound(&mut self, m: &mut Mob, registry: fn(&SpawnRegistries) -> &VariantRegistry) {
-        let r = registry(self.level.spawn_data().registries);
-        m.extra.sound_variant = Some(r.random(self.random) as u8);
-    }
 
     /// `finalizeSpawn` of the mob's class.
     pub fn finalize(&mut self, m: &mut Mob, reason: Reason, g: Option<Group>) -> Option<Group> {
@@ -2829,12 +2818,6 @@ pub(crate) fn saves_variant_name(s: Species) -> bool {
             | Species::Chicken
             | Species::ZombieNautilus
     )
-}
-/// The `*_sound_variant` registry of a species, in registry order.
-/// All five species with sound variants (wolf, cat, pig, cow, chicken) now use
-/// `VariantTables`.
-pub fn sound_variants(_s: Species) -> &'static [&'static str] {
-    &[]
 }
 /// The registry name of the game's variant index.
 pub fn variant_name(s: Species, index: u8) -> &'static str {

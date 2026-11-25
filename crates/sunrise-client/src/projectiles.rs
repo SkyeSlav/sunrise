@@ -761,12 +761,13 @@ pub fn egg_chicken_variant(stack: &crate::items::ItemStack) -> Option<String> {
             sunrise_core::nbt::Tag::String(s) => s.to_string().ok(),
             _ => None,
         })
-    {
-        return Some(
+        .and_then(|raw| {
             sunrise_core::identifier::Identifier::parse(&raw)
+                .ok()
                 .map(|id| id.as_str().to_owned())
-                .unwrap_or(raw),
-        );
+        })
+    {
+        return Some(raw);
     }
     // A removed component resolves to absent, not to the item default.
     if stack
