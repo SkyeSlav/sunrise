@@ -634,6 +634,10 @@ pub fn texture(m: &Mob, variants: Option<&super::variants::VariantTables>) -> St
 }
 /// The body model: `ZombieNautilusRenderer` picks the normal or coral model from
 /// the synced variant's `model` field (`ZombieNautilusVariant.ModelType`).
+/// An unresolved holder has no vanilla case (`getVariant().value()` is always
+/// bound), so this is only reached before the tables arrive: the renderer needs
+/// some model key, and the normal model is kept while [`texture`] yields the
+/// missing texture, as the other registry-backed families do.
 pub fn model(m: &Mob, variants: Option<&super::variants::VariantTables>) -> &'static str {
     if zombie(m) {
         return variants
