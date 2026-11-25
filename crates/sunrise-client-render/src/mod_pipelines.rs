@@ -7,17 +7,19 @@
 //! to the renderer (`gfx::mod_pipelines`). A required pipeline the load cannot build fails the
 //! load; an optional one is logged and left out. A frame reads none of this by name.
 use mod_api::{
-    BlendFactor, ColorTargetState, DepthCompare, Identifier, PackGlslInput, PackPassSlot,
-    PackUniformType, PackUniformValue, PipelineBlend, PipelineModifier, PipelineModifierRef,
-    PipelineState, PipelineTexture, PipelineTextureError, PrimitiveTopology, RenderPipeline,
-    RenderPipelineError, RenderPipelineRef,
+    BUILTIN_RENDER_TYPE_IDS, BlendFactor, ColorTargetState, DepthCompare, Identifier,
+    LayeringTransform, PackGlslInput, PackPassSlot, PackUniformType, PackUniformValue,
+    PipelineBlend, PipelineModifier, PipelineModifierRef, PipelineState, PipelineTexture,
+    PipelineTextureError, PrimitiveTopology, RenderPipeline, RenderPipelineError,
+    RenderPipelineRef, RenderSetup, RenderTypeError, RenderTypeRef, TextureTransform,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use sunrise_mod_pipeline::{Options as PipelineOptions, ProgramSources};
 
 static REGISTERED: OnceLock<Vec<RenderPipeline>> = OnceLock::new();
+static REGISTERED_RENDER_TYPES: OnceLock<Vec<RenderSetup>> = OnceLock::new();
 static REGISTERED_MODIFIERS: OnceLock<Vec<PipelineModifier>> = OnceLock::new();
 static PACK_UNIFORMS: OnceLock<HashMap<&'static str, PackUniformType>> = OnceLock::new();
 
@@ -54,6 +56,21 @@ pub enum RegistrationError {
     InvalidPipelineState(String),
     InvalidVertexFormat(String),
     InvalidBindGroupLayout(String),
+    BuiltinRenderTypeCollision {
+        owner: String,
+        id: Identifier,
+    },
+    DuplicateRenderTypeId {
+        earlier: String,
+        owner: String,
+        id: Identifier,
+    },
+    InvalidRenderSetup(String),
+    UnknownRenderTypePipeline {
+        owner: String,
+        id: Identifier,
+        pipeline: Identifier,
+    },
     AlreadyPublished,
 }
 
@@ -96,6 +113,23 @@ impl std::fmt::Display for RegistrationError {
             Self::InvalidPipelineState(reason) => f.write_str(reason),
             Self::InvalidVertexFormat(reason) => f.write_str(reason),
             Self::InvalidBindGroupLayout(reason) => f.write_str(reason),
+            Self::BuiltinRenderTypeCollision { owner, id } => write!(
+                f,
+                "mod {owner}: render type {id} collides with built-in render type"
+            ),
+            Self::DuplicateRenderTypeId { earlier, owner, id } => write!(
+                f,
+                "mod {owner}: render type {id} collides with earlier registration from mod {earlier}"
+            ),
+            Self::InvalidRenderSetup(reason) => f.write_str(reason),
+            Self::UnknownRenderTypePipeline {
+                owner,
+                id,
+                pipeline,
+            } => write!(
+                f,
+                "mod {owner}: render type {id} references unknown pipeline {pipeline}"
+            ),
             Self::AlreadyPublished => f.write_str("pipeline registrations were already published"),
         }
     }
@@ -477,6 +511,225 @@ pub fn register_modifiers(
 /// The registered pipeline modifiers; none until registration publishes them.
 pub fn registered_modifiers() -> &'static [PipelineModifier] {
     REGISTERED_MODIFIERS.get().map_or(&[], Vec::as_slice)
+}
+
+/// Well-known built-in render types matching [`BUILTIN_RENDER_TYPE_IDS`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BuiltinRenderType {
+    Solid,
+    Cutout,
+    Translucent,
+    EntitySolid,
+    EntityCutout,
+    EntityTranslucent,
+    Eyes,
+    EnergySwirl,
+    Lightning,
+    ItemCutout,
+    ItemTranslucent,
+}
+
+impl BuiltinRenderType {
+    /// Resolve a built-in render type from its slot index in [`BUILTIN_RENDER_TYPE_IDS`].
+    pub fn from_slot(slot: u32) -> Option<Self> {
+        match slot {
+            0 => Some(Self::Solid),
+            1 => Some(Self::Cutout),
+            2 => Some(Self::Translucent),
+            3 => Some(Self::EntitySolid),
+            4 => Some(Self::EntityCutout),
+            5 => Some(Self::EntityTranslucent),
+            6 => Some(Self::Eyes),
+            7 => Some(Self::EnergySwirl),
+            8 => Some(Self::Lightning),
+            9 => Some(Self::ItemCutout),
+            10 => Some(Self::ItemTranslucent),
+            _ => None,
+        }
+    }
+
+    /// Whether this built-in render type routes through the translucent sorted/OIT pass.
+    pub fn is_translucent(self) -> bool {
+        matches!(
+            self,
+            Self::Translucent
+                | Self::EntityTranslucent
+                | Self::Eyes
+                | Self::EnergySwirl
+                | Self::Lightning
+                | Self::ItemTranslucent
+        )
+    }
+}
+
+/// Slot index of `id` in [`BUILTIN_RENDER_TYPE_IDS`], if it names a built-in render type.
+pub fn builtin_render_type_slot(id: &Identifier) -> Option<u32> {
+    let text = id.to_string();
+    BUILTIN_RENDER_TYPE_IDS
+        .iter()
+        .position(|&builtin| builtin == text)
+        .map(|index| index as u32)
+}
+
+fn validate_render_types(
+    render_types: &[RenderSetup],
+    mod_pipelines: &[RenderPipeline],
+    vanilla: &VanillaPipelines,
+) -> Result<(), RegistrationError> {
+    let mod_ids: BTreeSet<&Identifier> = mod_pipelines.iter().map(|p| &p.id).collect();
+    let mut seen = BTreeMap::new();
+    for setup in render_types {
+        if builtin_render_type_slot(&setup.id).is_some() {
+            return Err(RegistrationError::BuiltinRenderTypeCollision {
+                owner: setup.owner().to_owned(),
+                id: setup.id.clone(),
+            });
+        }
+        if let Some(earlier) = seen.insert(&setup.id, setup.owner()) {
+            return Err(RegistrationError::DuplicateRenderTypeId {
+                earlier: earlier.to_owned(),
+                owner: setup.owner().to_owned(),
+                id: setup.id.clone(),
+            });
+        }
+        if let Err(reason) = setup.validate() {
+            return Err(RegistrationError::InvalidRenderSetup(format!(
+                "mod {}: render type {}: {reason}",
+                setup.owner(),
+                setup.id
+            )));
+        }
+        let pipeline_str = setup.pipeline.to_string();
+        let known_pipeline = mod_ids.contains(&setup.pipeline)
+            || vanilla.required.contains(&pipeline_str)
+            || vanilla.optional.contains(&pipeline_str);
+        if !known_pipeline {
+            return Err(RegistrationError::UnknownRenderTypePipeline {
+                owner: setup.owner().to_owned(),
+                id: setup.id.clone(),
+                pipeline: setup.pipeline.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Validate and publish the mods' custom render type registrations once at startup, after
+/// [`register`] has published the mod pipelines.
+pub fn register_render_types(
+    render_types: Vec<RenderSetup>,
+    vanilla_root: &Path,
+) -> Result<(), RegistrationError> {
+    if render_types.is_empty() {
+        return Ok(());
+    }
+    let path = vanilla_root.join("render-pipelines.json");
+    let bytes = std::fs::read(&path).map_err(|error| RegistrationError::Read {
+        path: path.clone(),
+        error,
+    })?;
+    let vanilla: VanillaPipelines =
+        serde_json::from_slice(&bytes).map_err(|error| RegistrationError::Parse {
+            path: path.clone(),
+            error,
+        })?;
+    if [&vanilla.required, &vanilla.optional]
+        .into_iter()
+        .any(|ids| {
+            ids.is_empty()
+                || ids
+                    .iter()
+                    .any(|id| Identifier::parse_namespaced(id).is_none())
+        })
+    {
+        return Err(RegistrationError::InvalidIdTable(path));
+    }
+    validate_render_types(&render_types, registered(), &vanilla)?;
+    REGISTERED_RENDER_TYPES
+        .set(render_types)
+        .map_err(|_| RegistrationError::AlreadyPublished)
+}
+
+/// The registered custom render types; none until startup registration publishes them.
+pub fn registered_render_types() -> &'static [RenderSetup] {
+    REGISTERED_RENDER_TYPES.get().map_or(&[], Vec::as_slice)
+}
+
+/// Whether `handle` refers to a translucent render type (either a translucent built-in or a
+/// custom [`RenderSetup`] with `sort_on_upload` enabled and `!force_solid_model_phase`).
+pub fn render_type_is_translucent(handle: RenderTypeRef) -> bool {
+    use mod_api::__private::game::Fields;
+    let slot = handle.fields().slot;
+    if let Some(builtin) = BuiltinRenderType::from_slot(slot) {
+        return builtin.is_translucent();
+    }
+    let Some(custom_index) = (slot as usize).checked_sub(BUILTIN_RENDER_TYPE_IDS.len()) else {
+        return false;
+    };
+    registered_render_types()
+        .get(custom_index)
+        .is_some_and(|setup| setup.sort_on_upload && !setup.force_solid_model_phase)
+}
+
+/// Resolved target of a live [`RenderTypeRef`] handle.
+#[derive(Clone, Copy, Debug)]
+pub enum ResolvedRenderType<'a> {
+    Builtin(BuiltinRenderType),
+    Custom {
+        slot: u32,
+        setup: &'a RenderSetup,
+        mod_pipeline_slot: Option<u32>,
+    },
+}
+
+/// Apply vanilla 26.3's `LayeringTransform` (`LayeringTransform.java` + `ProjectionType.java`)
+/// to `model_view`.
+///
+/// Perspective scales by `1.0 - bias / 4096.0`; orthographic translates Z by `bias / 512.0`,
+/// where `bias = +1.0` for `ViewOffsetZ` and `-1.0` for `ViewOffsetZForward`.
+pub fn layering_transform_matrix(
+    transform: LayeringTransform,
+    model_view: glam::Mat4,
+    orthographic: bool,
+) -> glam::Mat4 {
+    let bias = match transform {
+        LayeringTransform::None => return model_view,
+        LayeringTransform::ViewOffsetZ => 1.0f32,
+        LayeringTransform::ViewOffsetZForward => -1.0f32,
+        _ => return model_view,
+    };
+    if orthographic {
+        model_view * glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, bias / 512.0))
+    } else {
+        let s = 1.0 - bias / 4096.0;
+        model_view * glam::Mat4::from_scale(glam::Vec3::splat(s))
+    }
+}
+
+/// Build vanilla 26.3's `TextureTransform.createMatrix()` (`TextureTransform.java`).
+pub fn texture_transform_matrix(
+    transform: TextureTransform,
+    millis: i64,
+    glint_speed: f64,
+) -> glam::Mat4 {
+    let glint = |scale: f32| {
+        let ticks = (millis as f64 * glint_speed * 8.0) as i64;
+        let u = (ticks.rem_euclid(110_000) as f32) / 110_000.0;
+        let v = (ticks.rem_euclid(30_000) as f32) / 30_000.0;
+        glam::Mat4::from_translation(glam::Vec3::new(-u, v, 0.0))
+            * glam::Mat4::from_rotation_z(std::f32::consts::PI / 18.0)
+            * glam::Mat4::from_scale(glam::Vec3::splat(scale))
+    };
+    match transform {
+        TextureTransform::Default => glam::Mat4::IDENTITY,
+        TextureTransform::Glint => glint(8.0),
+        TextureTransform::EntityGlint => glint(0.5),
+        TextureTransform::ArmorEntityGlint => glint(0.16),
+        TextureTransform::Offset([u, v]) => {
+            glam::Mat4::from_translation(glam::Vec3::new(u, v, 0.0))
+        }
+        _ => glam::Mat4::IDENTITY,
+    }
 }
 
 /// Resolve a registered pipeline modifier by id (static across resource reloads).
@@ -1028,6 +1281,92 @@ impl Pipelines {
             Some(None) => Err(RenderPipelineError::Invalid),
             None => Err(RenderPipelineError::Unknown),
         }
+    }
+
+    /// Resolve a built-in ([`BUILTIN_RENDER_TYPE_IDS`]) or registered custom [`RenderSetup`]
+    /// into a generational [`RenderTypeRef`] for this resource load.
+    pub fn resolve_render_type(&self, id: &Identifier) -> Result<RenderTypeRef, RenderTypeError> {
+        self.resolve_render_type_in(registered_render_types(), id)
+    }
+
+    pub(crate) fn resolve_render_type_in(
+        &self,
+        custom: &[RenderSetup],
+        id: &Identifier,
+    ) -> Result<RenderTypeRef, RenderTypeError> {
+        if let Some(slot) = builtin_render_type_slot(id) {
+            return Ok(mod_api::__private::built::render_type_ref(
+                self.generation,
+                slot,
+            ));
+        }
+        let index = custom
+            .iter()
+            .position(|setup| &setup.id == id)
+            .ok_or(RenderTypeError::Unknown)?;
+        let setup = &custom[index];
+        // If backed by a registered mod pipeline, reflect its build validity in this load.
+        if let Some(pipeline_slot) = self.keys.iter().position(|k| k == &setup.pipeline)
+            && (self.built[pipeline_slot].is_none()
+                || self
+                    .invalid
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains(&pipeline_slot))
+        {
+            return Err(RenderTypeError::Invalid);
+        }
+        Ok(mod_api::__private::built::render_type_ref(
+            self.generation,
+            (BUILTIN_RENDER_TYPE_IDS.len() + index) as u32,
+        ))
+    }
+
+    /// Validate a [`RenderTypeRef`] against this load and return its resolved descriptor.
+    pub fn render_type_slot(
+        &self,
+        handle: RenderTypeRef,
+    ) -> Result<ResolvedRenderType<'static>, RenderTypeError> {
+        self.render_type_slot_in(registered_render_types(), handle)
+    }
+
+    pub(crate) fn render_type_slot_in<'a>(
+        &self,
+        custom: &'a [RenderSetup],
+        handle: RenderTypeRef,
+    ) -> Result<ResolvedRenderType<'a>, RenderTypeError> {
+        use mod_api::__private::game::Fields;
+        let fields = handle.fields();
+        if fields.generation != self.generation {
+            return Err(RenderTypeError::Stale);
+        }
+        if let Some(builtin) = BuiltinRenderType::from_slot(fields.slot) {
+            return Ok(ResolvedRenderType::Builtin(builtin));
+        }
+        let Some(index) = (fields.slot as usize).checked_sub(BUILTIN_RENDER_TYPE_IDS.len()) else {
+            return Err(RenderTypeError::Unknown);
+        };
+        let setup = custom.get(index).ok_or(RenderTypeError::Unknown)?;
+        let mod_pipeline_slot =
+            if let Some(pipeline_slot) = self.keys.iter().position(|k| k == &setup.pipeline) {
+                if self.built[pipeline_slot].is_none()
+                    || self
+                        .invalid
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .contains(&pipeline_slot)
+                {
+                    return Err(RenderTypeError::Invalid);
+                }
+                Some(pipeline_slot as u32)
+            } else {
+                None
+            };
+        Ok(ResolvedRenderType::Custom {
+            slot: index as u32,
+            setup,
+            mod_pipeline_slot,
+        })
     }
 }
 
@@ -1716,8 +2055,10 @@ void main() {
             let mut result = Err(String::new());
             mod_platform::testing::with_mods(mods.into(), || {
                 let mut staged = Vec::new();
+                let mut staged_render_types = Vec::new();
                 mod_api::dispatch_register_render_pipelines(
                     &RegistrationContext::new(),
+                    &mut staged_render_types,
                     &mut staged,
                 );
                 result = validate_pack_bindings(&staged).map(|()| staged);
@@ -2310,5 +2651,124 @@ void main() {
         )
         .color_target(1, Some(ColorTargetState::blended(PipelineBlend::Additive)))];
         assert!(Pipelines::build(&mixed_mrt, 4, read).is_err());
+    }
+
+    #[test]
+    fn custom_render_types_validate_resolve_and_reject_stale_handles() {
+        let read = |file: &str| match file {
+            "assets/example/shaders/core/tri.vsh" => Ok(Some(VSH.to_owned())),
+            "assets/example/shaders/core/tri.fsh" => Ok(Some(GLOW_FSH.to_owned())),
+            other => Ok(stub_asset(other)),
+        };
+        let mod_pipe = RenderPipeline::new(
+            id("example:glow"),
+            id("example:core/tri"),
+            PipelineBlend::Translucent,
+            WorldDepth::Tested,
+        );
+        let vanilla = VanillaPipelines {
+            required: HashSet::from(["minecraft:pipeline/solid".to_owned()]),
+            optional: HashSet::new(),
+        };
+
+        let custom = vec![
+            RenderSetup::new(id("example:glow_rt"), id("example:glow"))
+                .use_lightmap(true)
+                .sort_on_upload(true)
+                .layering(LayeringTransform::ViewOffsetZ)
+                .texture_transform(TextureTransform::Offset([0.25, 0.5])),
+        ];
+        assert!(validate_render_types(&custom, std::slice::from_ref(&mod_pipe), &vanilla).is_ok());
+
+        // Builtin collision fails.
+        let builtin_clash = vec![RenderSetup::new(
+            id("minecraft:item_cutout"),
+            id("example:glow"),
+        )];
+        assert!(matches!(
+            validate_render_types(&builtin_clash, std::slice::from_ref(&mod_pipe), &vanilla),
+            Err(RegistrationError::BuiltinRenderTypeCollision { .. })
+        ));
+
+        // Unknown pipeline fails.
+        let unknown_pipe = vec![RenderSetup::new(
+            id("example:orphan"),
+            id("example:missing_pipeline"),
+        )];
+        assert!(matches!(
+            validate_render_types(&unknown_pipe, std::slice::from_ref(&mod_pipe), &vanilla),
+            Err(RegistrationError::UnknownRenderTypePipeline { .. })
+        ));
+
+        // Duplicate mod render type ID fails.
+        let dup = vec![
+            RenderSetup::new(id("example:dup"), id("example:glow")),
+            RenderSetup::new(id("example:dup"), id("minecraft:pipeline/solid")),
+        ];
+        assert!(matches!(
+            validate_render_types(&dup, std::slice::from_ref(&mod_pipe), &vanilla),
+            Err(RegistrationError::DuplicateRenderTypeId { .. })
+        ));
+
+        let gen1 = Pipelines::build(std::slice::from_ref(&mod_pipe), 1, read).unwrap();
+        let gen2 = Pipelines::build(&[mod_pipe], 2, read).unwrap();
+
+        // Built-in resolves and validates.
+        let item_cutout = gen1
+            .resolve_render_type_in(&custom, &id("minecraft:item_cutout"))
+            .unwrap();
+        assert!(matches!(
+            gen1.render_type_slot_in(&custom, item_cutout),
+            Ok(ResolvedRenderType::Builtin(BuiltinRenderType::ItemCutout))
+        ));
+
+        // Custom resolves in gen1 and is stale in gen2.
+        let glow_rt = gen1
+            .resolve_render_type_in(&custom, &id("example:glow_rt"))
+            .unwrap();
+        assert!(matches!(
+            gen1.render_type_slot_in(&custom, glow_rt),
+            Ok(ResolvedRenderType::Custom {
+                slot: 0,
+                mod_pipeline_slot: Some(0),
+                ..
+            })
+        ));
+        assert_eq!(
+            gen2.render_type_slot_in(&custom, glow_rt).unwrap_err(),
+            RenderTypeError::Stale
+        );
+        assert_eq!(
+            gen1.resolve_render_type_in(&custom, &id("example:nope")),
+            Err(RenderTypeError::Unknown)
+        );
+    }
+
+    #[test]
+    fn layering_and_texture_transform_matrices_match_vanilla_formulas() {
+        let id_mat = glam::Mat4::IDENTITY;
+        assert_eq!(
+            layering_transform_matrix(LayeringTransform::None, id_mat, false),
+            id_mat
+        );
+        let persp_z = layering_transform_matrix(LayeringTransform::ViewOffsetZ, id_mat, false);
+        assert!((persp_z.x_axis.x - (1.0 - 1.0 / 4096.0)).abs() < 1e-6);
+        let persp_fwd =
+            layering_transform_matrix(LayeringTransform::ViewOffsetZForward, id_mat, false);
+        assert!((persp_fwd.x_axis.x - (1.0 + 1.0 / 4096.0)).abs() < 1e-6);
+        let ortho_z = layering_transform_matrix(LayeringTransform::ViewOffsetZ, id_mat, true);
+        assert!((ortho_z.w_axis.z - (1.0 / 512.0)).abs() < 1e-6);
+
+        assert_eq!(
+            texture_transform_matrix(TextureTransform::Default, 1000, 0.5),
+            id_mat
+        );
+        let offset = texture_transform_matrix(TextureTransform::Offset([0.25, -0.5]), 0, 0.5);
+        assert_eq!(offset.w_axis.x, 0.25);
+        assert_eq!(offset.w_axis.y, -0.5);
+        let glint = texture_transform_matrix(TextureTransform::Glint, 0, 0.5);
+        let armor = texture_transform_matrix(TextureTransform::ArmorEntityGlint, 0, 0.5);
+        assert!((glint.x_axis.length() - 8.0).abs() < 1e-5);
+        assert!((armor.x_axis.length() - 0.16).abs() < 1e-5);
     }
 }

@@ -1159,6 +1159,7 @@ mod tests {
             color: 0,
             depth: 0.0,
             glint_uv: [0.0; 2],
+            light: 0,
             text,
         };
         let vertices: Vec<HudVertex> = [0, 0, 1, 1, 1, 0].into_iter().map(vertex).collect();

@@ -1,28 +1,33 @@
 pub use client::render_pipeline::{
-    BindEntry, BindGroupLayout, BindGroupLayoutBuilder, BindGroupLayoutError, BindingKind,
-    BindingValue, BlendEquation, BlendFactor, BlendFunction, BlendOp, BufferError,
-    ColorTargetState,
+    BUILTIN_RENDER_TYPE_IDS, BindEntry, BindGroupLayout, BindGroupLayoutBuilder,
+    BindGroupLayoutError, BindingKind, BindingValue, BlendEquation, BlendFactor, BlendFunction,
+    BlendOp, BufferError,
 };
 pub use client::render_pipeline::{
-    ColorWrite, DepthCompare, DepthState, DrawBindings, DrawRange, IndexFormat, MAX_COLOR_TARGETS,
-    MAX_PUSH_CONSTANT_SIZE, MAX_VERTEX_BINDINGS, MAX_VERTEX_ELEMENTS, MeshBackendRef,
-    MeshBufferInit,
+    ColorTargetState, ColorWrite, DepthCompare, DepthState, DrawBindings, DrawRange, IndexFormat,
+    LayeringTransform, MAX_COLOR_TARGETS, MAX_PUSH_CONSTANT_SIZE, MAX_VERTEX_BINDINGS,
+    MAX_VERTEX_ELEMENTS,
 };
 pub use client::render_pipeline::{
-    MeshContext, MeshDescriptor, MeshDraw, MeshError, MeshIndexInit, MeshRef, PackBinding,
-    PackDepthTarget, PackGlslInput, PackOverrideState, PackPassSlot, PackUniformDecl,
+    MeshBackendRef, MeshBufferInit, MeshContext, MeshDescriptor, MeshDraw, MeshError,
+    MeshIndexInit, MeshRef, OutlineProperty, PackBinding, PackDepthTarget, PackGlslInput,
 };
 pub use client::render_pipeline::{
-    PackUniformType, PackUniformValue, PipelineBlend, PipelineDrawError, PipelineGeometryClass,
-    PipelineModifier, PipelineModifierRef, PipelineQuad, PipelineState, PipelineTexture,
-    PipelineTextureError, PipelineVertexFormat,
+    PackOverrideState, PackPassSlot, PackUniformDecl, PackUniformType, PackUniformValue,
+    PipelineBlend, PipelineDrawError, PipelineGeometryClass, PipelineModifier, PipelineModifierRef,
+    PipelineQuad, PipelineState,
 };
 pub use client::render_pipeline::{
-    PolygonMode, PrimitiveTopology, RenderPipeline, RenderPipelineError, RenderPipelineRef,
-    SamplerAddress, SamplerFilter, TexelBufferFormat, TextureSource, UniformBufferBackendRef,
-    UniformBufferContext, UniformBufferRef,
+    PipelineTexture, PipelineTextureError, PipelineVertexFormat, PolygonMode, PrimitiveTopology,
+    RenderPipeline, RenderPipelineError, RenderPipelineRef, RenderSetup, RenderTypeError,
+    RenderTypeRef, RenderTypeTexture,
 };
 pub use client::render_pipeline::{
-    UniformValue, VANILLA_BIND_GROUP_LAYOUT_NAMES, VERTEX_ALIGNMENT, VertexAttribute,
-    VertexAttributeFormat, VertexFormat, VertexFormatBuilder, VertexFormatError, VertexStepMode,
+    RenderTypeTextureSource, SamplerAddress, SamplerFilter, TexelBufferFormat, TextureSource,
+    TextureTransform, UniformBufferBackendRef, UniformBufferContext, UniformBufferRef,
+    UniformValue, VANILLA_BIND_GROUP_LAYOUT_NAMES, VERTEX_ALIGNMENT,
+};
+pub use client::render_pipeline::{
+    VertexAttribute, VertexAttributeFormat, VertexFormat, VertexFormatBuilder, VertexFormatError,
+    VertexStepMode,
 };

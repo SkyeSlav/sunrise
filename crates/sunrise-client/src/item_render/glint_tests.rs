@@ -97,6 +97,7 @@ fn state(sprite: &str, foil: FoilType, display: DisplayContext) -> ItemRenderSta
             uses_block_light: false,
             extents: Arc::new(vec![]),
             display,
+            submit_options: mod_api::SpecialModelSubmitOptions::default(),
         }],
         oversized_in_gui: false,
         animated: false,

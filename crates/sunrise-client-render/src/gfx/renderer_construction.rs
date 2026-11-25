@@ -1064,6 +1064,7 @@ impl Renderer {
             &atlas_view,
             &glint_view,
             &glint_armor_view,
+            &lightmap_view,
             &glint_sampler,
             hud_coverage,
             hud_pages.map_or_else(Vec::new, |atlas| {

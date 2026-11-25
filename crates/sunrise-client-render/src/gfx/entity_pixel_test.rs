@@ -13,6 +13,7 @@ struct Frame {
     bindings: wgpu::BindGroupLayout,
     atlas: wgpu::TextureView,
     atlas_texture: wgpu::Texture,
+    lightmap: wgpu::TextureView,
 }
 
 /// The software Vulkan adapter (lavapipe, llvmpipe) the pixel tests draw on.
@@ -209,6 +210,7 @@ fn software_frame_lit(
         bindings,
         atlas: atlas_view,
         atlas_texture,
+        lightmap: light_view,
     })
 }
 
@@ -1827,13 +1829,25 @@ pub fn render_hud(
     atlas: &crate::hud::HudAtlas,
     size: [u32; 2],
 ) -> std::result::Result<Vec<u8>, String> {
+    render_hud_lit(batch, atlas, size, &[255u8; 16 * 16 * 4])
+}
+
+/// [`render_hud`] with a custom 16x16 RGBA `lightmap` (block level across, sky level down)
+/// bound to the HUD lightmap slot for lightmapped special-model GUI draws.
+pub fn render_hud_lit(
+    batch: &HudBatch,
+    atlas: &crate::hud::HudAtlas,
+    size: [u32; 2],
+    lightmap: &[u8],
+) -> std::result::Result<Vec<u8>, String> {
     let _gpu = crate::gfx::test_gpu::lock();
-    let frame = software_frame(
+    let frame = software_frame_lit(
         [atlas.width, atlas.height],
         &atlas.pixels(),
         Mat4::IDENTITY,
         0.0,
         size,
+        lightmap,
     )?;
     let sampler = frame.device.create_sampler(&Default::default());
     let mut hud = crate::hud::HudRenderer::new(
@@ -1842,6 +1856,7 @@ pub fn render_hud(
         &frame.atlas,
         &frame.atlas,
         &frame.atlas,
+        &frame.lightmap,
         &sampler,
         false,
         Vec::new(),
@@ -2565,4 +2580,65 @@ pub fn render_entity_world(draw: EntityWorldDraw<'_>) -> std::result::Result<Vec
         }
     }
     readback_texture(&device, &queue, &color, encoder)
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "daily"]
+fn hud_lightmapped_special_item_samples_frame_lightmap_without_disturbing_neighbour() {
+    let atlas = crate::hud::HudAtlas::boot();
+    let r = atlas.white;
+    let uv = [[r.u0, r.v0], [r.u1, r.v0], [r.u1, r.v1], [r.u0, r.v1]];
+    let mut batch = HudBatch::new(
+        [64, 16],
+        crate::hud::GuiScale {
+            requested: 1,
+            unicode: false,
+        },
+    );
+    let light_low = 0x0100_0000u32 | (2u32 * 16) | ((3u32 * 16) << 8);
+    let light_high = 0x0100_0000u32 | (14u32 * 16) | ((15u32 * 16) << 8);
+    // Low explicit packed light (block=2, sky=3).
+    batch.quad_lit(
+        [[0.0, 0.0], [16.0, 0.0], [16.0, 16.0], [0.0, 16.0]],
+        uv,
+        u32::MAX,
+        light_low,
+    );
+    // High explicit packed light (block=14, sky=15).
+    batch.quad_lit(
+        [[16.0, 0.0], [32.0, 0.0], [32.0, 16.0], [16.0, 16.0]],
+        uv,
+        u32::MAX,
+        light_high,
+    );
+    // Default unlightmapped HUD neighbour (`light = 0`): must remain full white.
+    batch.quad(
+        [[32.0, 0.0], [48.0, 0.0], [48.0, 16.0], [32.0, 16.0]],
+        uv,
+        u32::MAX,
+    );
+
+    let pixels = render_hud_lit(&batch, &atlas, [64, 16], &graded_lightmap())
+        .expect("software Vulkan HUD lightmap render");
+    let px = |x: u32, y: u32| {
+        let i = ((y * 64 + x) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    };
+    let low = px(8, 8);
+    let high = px(24, 8);
+    let neighbour = px(40, 8);
+    assert!(
+        low[0] < high[0],
+        "higher packed light must sample brighter from graded lightmap: low={low:?}, high={high:?}"
+    );
+    assert!(
+        high[0] <= neighbour[0],
+        "lightmapped quad cannot exceed full-white neighbour: high={high:?}, neighbour={neighbour:?}"
+    );
+    assert_eq!(
+        neighbour,
+        [255, 255, 255, 255],
+        "default HUD neighbour must remain unaffected by frame lightmap"
+    );
 }

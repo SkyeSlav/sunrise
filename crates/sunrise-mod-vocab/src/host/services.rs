@@ -353,6 +353,17 @@ pub trait RenderAssets {
     }
     /// Side: client.
     /// Published asset/data read: available in Setup, Reloading and World.
+    /// Resolve the handle of a built-in ([`BUILTIN_RENDER_TYPE_IDS`]) or registered custom
+    /// [`RenderSetup`] render type by ID once in `client_setup` and again in
+    /// `client_resources_reloaded`, not each frame. Returns [`RenderTypeError::Unknown`] for an
+    /// unregistered ID, or [`RenderTypeError::Invalid`] when a custom render type's underlying
+    /// optional pipeline failed to build in the current resource load.
+    fn render_type(&self, id: &Identifier) -> Result<RenderTypeRef, RenderTypeError> {
+        let _ = id;
+        unimplemented!("RenderAssets::render_type")
+    }
+    /// Side: client.
+    /// Published asset/data read: available in Setup, Reloading and World.
     /// Resolve the handle of a registered pipeline modifier by ID once in `client_setup`
     /// (also valid in `client_resources_reloaded`). `Unknown` for an ID no mod registered.
     /// Modifiers are static across resource reloads.

@@ -94,6 +94,15 @@ pub struct ItemQuad {
     pub oit: bool,
     /// `RenderTypes.bannerPattern`: translucent blend without depth writes or alpha cutout.
     pub banner_pattern: bool,
+    /// Optional explicit packed light coordinates in vanilla `LightCoordsUtil` layout
+    /// (block byte in bits `0..8`, sky byte in bits `16..24`). `None` inherits draw light and
+    /// `light_emission`.
+    pub packed_light: Option<u32>,
+    /// Skip directional diffuse face shading while still sampling both lightmap channels.
+    pub lightmap_only: bool,
+    /// Explicit item render type override (`ItemCutout` / `ItemTranslucent`), using vanilla's
+    /// `0.1` alpha cutoff in GUI draws and sorting cutout quads before translucent ones.
+    pub explicit_alpha_cutoff: bool,
 }
 /// `TextureTransform.setupGlintTexturing`'s inputs.
 #[derive(Clone, Copy, Debug)]
@@ -308,6 +317,9 @@ pub struct LayerRender {
     /// The display context the layer was resolved for, which its submission follows (a GUI
     /// glint's atlas coordinates): the state's own, except for the layers of a nested stack.
     pub display: DisplayContext,
+    /// Per-submission packed light, render type, and lighting mode from
+    /// `SpecialModelCollector::submit_model` (defaults for ordinary item layers).
+    pub submit_options: mod_api::SpecialModelSubmitOptions,
 }
 /// `ItemStackRenderState`.
 #[derive(Clone, Debug)]
@@ -1036,7 +1048,22 @@ fn submit_quads_with(
         // calibrated sculk sensor's tendrils and amethyst planes, #4856; big
         // dripleaf, #4855; the inside of a held hay block, #4801) and stacks a
         // jelly shell's partial alpha until it looks opaque (#4508).
-        let translucent = translucent || q.material.force_translucent;
+        let (translucent, explicit_alpha_cutoff) = match layer.submit_options.render_type {
+            mod_api::SpecialModelRenderType::Baked => {
+                (translucent || q.material.force_translucent, false)
+            }
+            mod_api::SpecialModelRenderType::ItemCutout => (false, true),
+            mod_api::SpecialModelRenderType::ItemTranslucent => (true, true),
+            mod_api::SpecialModelRenderType::Custom(rt_ref) => (
+                sunrise_client_render::mod_pipelines::render_type_is_translucent(rt_ref),
+                true,
+            ),
+            _ => (translucent || q.material.force_translucent, false),
+        };
+        let lightmap_only = matches!(
+            layer.submit_options.lighting,
+            mod_api::SpecialModelLighting::LightmapOnly
+        );
         let gui_glint_uv = match foil {
             Foil::None | Foil::GlintOnly => None,
             Foil::Standard => {
@@ -1075,6 +1102,9 @@ fn submit_quads_with(
             translucent,
             oit: false,
             banner_pattern: false,
+            packed_light: layer.submit_options.packed_light,
+            lightmap_only,
+            explicit_alpha_cutoff,
         });
     }
 }
@@ -1730,6 +1760,7 @@ impl ItemRenderer {
                 particle: Arc::from(sprite_name(&baked.particle.sprite)),
                 extents,
                 display,
+                submit_options: mod_api::SpecialModelSubmitOptions::default(),
             });
             ControlFlow::Continue(())
         };
@@ -1910,13 +1941,24 @@ fn shaded(color: u32, normal: Vec3, lights: Option<(Vec3, Vec3)>) -> u32 {
 }
 impl ItemSink for WorldSink<'_> {
     fn quad(&mut self, q: ItemQuad) {
-        let color = shaded(q.color, q.normal, self.lights);
-        // `LightCoordsUtil.lightCoordsWithEmission`: block light at least the emission.
-        let emission = u32::from(q.light_emission) * 16;
-        let light = if (self.light >> 8 & 0xFF) < emission {
-            (self.light & 0xFF) | emission << 8
+        let lights = if q.lightmap_only { None } else { self.lights };
+        let color = shaded(q.color, q.normal, lights);
+        let light = if let Some(packed) = q.packed_light {
+            // Vanilla `LightCoordsUtil` layout: block byte in bits 0..8, sky byte in bits 16..24.
+            // Convert to entity vertex order (sky in bits 0..8, block in bits 8..16) and set
+            // `light.z = 1` (bit 16) so `entity.wgsl` bypasses dynamic block light boosts and
+            // uses both submitted coordinates verbatim with no baked emission floor.
+            let block_byte = packed & 0xFF;
+            let sky_byte = (packed >> 16) & 0xFF;
+            sky_byte | (block_byte << 8) | (1 << 16)
         } else {
-            self.light
+            // `LightCoordsUtil.lightCoordsWithEmission`: block light at least the emission.
+            let emission = u32::from(q.light_emission) * 16;
+            if (self.light >> 8 & 0xFF) < emission {
+                (self.light & 0xFF) | emission << 8
+            } else {
+                self.light
+            }
         };
         let glint = (q.foil != Foil::None)
             .then_some(self.glint)
@@ -2485,6 +2527,7 @@ mod tests {
                     Vec3::new(-1.0, -0.5, -0.25),
                     Vec3::new(0.5, 1.0, 0.25),
                 ]),
+                submit_options: mod_api::SpecialModelSubmitOptions::default(),
             }],
             oversized_in_gui: false,
             animated: false,

@@ -1,6 +1,8 @@
 mod api {
     #[derive(Debug, PartialEq, Eq)]
     pub struct RenderPipeline(pub &'static str);
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct RenderSetup(pub &'static str);
 }
 
 #[test]
@@ -16,6 +18,9 @@ fn register_render_pipelines_dispatch_attributes_and_discards_failed_listener_ta
             event
                 .pipelines
                 .push(mod_api::mod_api::RenderPipeline(event.mod_id));
+            event
+                .render_types
+                .push(mod_api::mod_api::RenderSetup(event.mod_id));
             if self.0 {
                 panic!("the fixture's pipeline listener unwinds");
             }
@@ -31,12 +36,24 @@ fn register_render_pipelines_dispatch_attributes_and_discards_failed_listener_ta
         .into(),
     );
     let mut pipelines = Vec::new();
-    dispatch_register_render_pipelines(&RegistrationContext("bootstrap"), &mut pipelines);
+    let mut render_types = Vec::new();
+    dispatch_register_render_pipelines(
+        &RegistrationContext("bootstrap"),
+        &mut render_types,
+        &mut pipelines,
+    );
     assert_eq!(
         pipelines,
         [
             mod_api::mod_api::RenderPipeline("first"),
             mod_api::mod_api::RenderPipeline("second"),
+        ]
+    );
+    assert_eq!(
+        render_types,
+        [
+            mod_api::mod_api::RenderSetup("first"),
+            mod_api::mod_api::RenderSetup("second"),
         ]
     );
 }

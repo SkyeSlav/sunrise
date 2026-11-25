@@ -165,6 +165,7 @@ impl Gpu {
             &view,
             &view,
             &view,
+            &view,
             &device.create_sampler(&Default::default()),
             true,
             Vec::new(),

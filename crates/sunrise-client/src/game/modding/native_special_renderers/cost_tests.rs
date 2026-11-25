@@ -155,7 +155,11 @@ impl SpecialModelRenderer for Stone {
         _: &SpecialModelContext,
         collector: &mut SpecialModelCollector<'_>,
     ) -> Result<(), String> {
-        collector.submit_geometry(&self.0, SpecialModelTints::Untinted)
+        collector.submit_model(
+            &self.0,
+            SpecialModelTints::Untinted,
+            mod_api::SpecialModelSubmitOptions::default(),
+        )
     }
 }
 

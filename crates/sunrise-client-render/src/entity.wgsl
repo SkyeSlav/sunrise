@@ -129,7 +129,9 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     out.clip = globals.view_proj * vec4(position, 1.0);
     out.proj = vec4(out.clip.xy * 0.5 + out.clip.w * 0.5, out.clip.zw);
     out.uv = uv;
-    let l = vec2(max(f32(light.y), dynamic_block_light(position)), f32(light.x));
+    let exact_light = light.z != 0u && overlay != 6u && overlay != 11u && overlay != 12u;
+    let block_light = select(max(f32(light.y), dynamic_block_light(position)), f32(light.y), exact_light);
+    let l = vec2(block_light, f32(light.x));
     let lm = textureSampleLevel(lightmap, lightmap_sampler,
         clamp(l / 256.0 + 0.5 / 16.0, vec2(0.5 / 16.0), vec2(15.5 / 16.0)), 0.0);
     // Celestial bodies, clouds, beacon beams, End portals and breaking cracks are unlit.
