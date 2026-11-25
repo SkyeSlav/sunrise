@@ -7534,7 +7534,7 @@ mod tests {
         std::fs::write(
             folder.join("root.json"),
             format!(
-                r#"{{"display":{},"criteria":{{}}}}"#,
+                r#"{{"display":{},"criteria":{{"never":{{"trigger":"minecraft:impossible"}}}}}}"#,
                 display("minecraft:stone", "Root")
             ),
         )
@@ -7542,7 +7542,7 @@ mod tests {
         std::fs::write(
             folder.join("task.json"),
             format!(
-                r#"{{"parent":"minecraft:root","display":{},"criteria":{{}}}}"#,
+                r#"{{"parent":"minecraft:root","display":{},"criteria":{{"never":{{"trigger":"minecraft:impossible"}}}}}}"#,
                 display("minecraft:dirt", "Task")
             ),
         )
