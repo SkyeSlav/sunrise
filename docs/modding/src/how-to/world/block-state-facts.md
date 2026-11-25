@@ -68,6 +68,13 @@ position).
 
 Option-only queries return `None` for an unknown state or block, including an invalid local ordinal, and on a host with no game behind it (a mod's test double). Queries returning `Result<Option<_>, LevelReadError>` distinguish unknown states (`Ok(None)`) from unavailable metadata (`Err(LevelReadError::Unavailable)`). The ordinal order is defined by the complete canonical property constraints, not by the engine's numeric enumeration.
 
+## Spawn rule
+
+A declared block's `spawn_rule` property (`default`, `always`, `never` or `ocelot_or_parrot`; see
+[content mods](../content-mods.md)) sets the block's mob spawn surface flags, which natural spawning reads as
+`BlockBehaviour.Properties.isValidSpawn` does. The default rule asks for a sturdy top face and light emission below
+14 from the block's own light, which `light_emission` above reports without the cell's dynamic answer.
+
 ## Block sounds
 
 The facts query does not run the block's parts or check loaded sound resources. Read an event by

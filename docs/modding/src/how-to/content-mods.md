@@ -344,6 +344,13 @@ hides model faces against any state of this same block, as glass does; `false` d
 definition skip rule. Leaf and ice graphics options can still hide faces based on the template class.
 Unset values inherit the template. These are load-time properties on both sides, with no new hook.
 
+`spawn_rule` sets which mobs spawn on the block (`BlockBehaviour.Properties.isValidSpawn`): `default` is vanilla's
+(a sturdy top face and light emission below 14), `always` and `never` answer for every mob, and `ocelot_or_parrot`
+only for those two. It is read once at load into the block's spawn tables, so it is one answer per state; `default`
+uses the template's top face and the declared `light` or `state_light` (the template's when none is declared), not a
+`dynamic_light` cell's (sunrise-org/sunrise#5518: a declared shape doesn't change the top face yet). Unset keeps
+the template's rule. In code, `BlockProperties::spawn_rule` takes the same rules as `SpawnRule`.
+
 `destroy_overlay: false` hides the breaking crack (`destroy_stage_0` to `9`) on the block, for one broken by use
 (a feast or a cake taken apart bite by bite). It is read once at load into the block's facts, and only the overlay
 is skipped: the mining progress, the server's progress and the destroy-progress packets other players see stay
