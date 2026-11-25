@@ -109,6 +109,75 @@ fn recipe_priority_layer_is_named_and_applied_through_reload() {
     });
 }
 
+/// `InstrumentItem.use`: the horn plays the world's instrument, a data pack's new one or its
+/// override of a vanilla one, at the sound and range the pack gives it.
+#[test]
+#[ignore = "daily"]
+fn goat_horn_use_plays_the_data_pack_instrument() {
+    let _publication = sunrise_client::datapack_net::isolate_server_publication();
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path();
+    let pack = root.join("datapacks/horns");
+    write(
+        &pack.join("pack.mcmeta"),
+        r#"{"pack":{"description":"fixture","min_format":94,"max_format":94}}"#,
+    );
+    write(
+        &root.join("datapacks.json"),
+        r#"{"enabled":["vanilla","file/horns"],"disabled":[]}"#,
+    );
+    write(
+        &pack.join("data/minecraft/instrument/ponder_goat_horn.json"),
+        r#"{"sound_event":"minecraft:item.goat_horn.sound.1","use_duration":3,"range":32,"description":"override"}"#,
+    );
+    write(
+        &pack.join("data/test/instrument/horn.json"),
+        r#"{"sound_event":"minecraft:item.goat_horn.sound.2","use_duration":5,"range":64,"description":"added"}"#,
+    );
+    let played = |instrument: Option<&str>| {
+        let mut played = Vec::new();
+        with_game(|game| {
+            game.load_world(request(root)).unwrap();
+            // `finish_open_world` clears `self.player`; `play_player_bound_sound` looks up the
+            // player entity's state before emitting the bound sound on the server path.
+            game.player = Some(
+                sunrise_client::motion::PlayerMotion::new(
+                    game.motion,
+                    sunrise_core::geometry::Vec3::new(0.5, 200.0, 0.5),
+                )
+                .unwrap(),
+            );
+            let mut horn = sunrise_client::items::ItemStack::new("minecraft:goat_horn", 1);
+            if let Some(id) = instrument {
+                horn.data_mut()
+                    .set_other("minecraft:instrument", Some(Tag::String(id.into())));
+            }
+            game.selected = 0;
+            game.inventory[0] = Some(horn);
+            game.offhand = None;
+            game.audio.capture = Some(Vec::new());
+            assert!(game.use_item().unwrap().is_some());
+            played = game
+                .audio
+                .capture
+                .take()
+                .unwrap()
+                .into_iter()
+                .map(|sound| (sound.event, sound.volume))
+                .collect::<Vec<_>>();
+        });
+        played
+    };
+    // The default horn is the overridden ponder one: range 32 is volume 32 / 16.
+    assert_eq!(
+        played(None),
+        [("minecraft:item.goat_horn.sound.1".to_owned(), 2.0)]
+    );
+    assert_eq!(
+        played(Some("test:horn")),
+        [("minecraft:item.goat_horn.sound.2".to_owned(), 4.0)]
+    );
+}
 fn power(game: &crate::game::Game<'_>) -> DatapackValue {
     let set = game.mods.datapack_registries.as_ref().unwrap();
     set.get("registry_test:spell", "registry_test:fire")
