@@ -329,7 +329,11 @@ impl PackRegistryDefinitions {
                     let file = format!("data/{}/{kind}/{}.json", id.namespace(), id.path());
                     let value: Value = serde_json::from_slice(PackOverlay::top(files))
                         .map_err(|error| format!("{file}: {error}"))?;
-                    if overlay.conditions.allows_file_isolated(&value, &file)? {
+                    if overlay
+                        .conditions
+                        .allows_file_isolated(&value, &file)
+                        .map_err(|error| format!("{file}: {error}"))?
+                    {
                         *definition = Some((
                             (table.decode)(&mut decoder, &id.to_string(), value)
                                 .map_err(|error| format!("{file}: {error}"))?,
@@ -448,10 +452,10 @@ impl PackRegistryDefinitions {
                     Ok(())
                 });
                 if let Err(error) = result {
-                    errors
-                        .entry("minecraft:enchantment")
-                        .or_default()
-                        .insert(id, error);
+                    errors.entry("minecraft:enchantment").or_default().insert(
+                        id.clone(),
+                        format!("{}: {error}", registry_file_path("enchantment", &id)),
+                    );
                     rejected.push(key);
                 }
             }
@@ -529,7 +533,13 @@ impl PackRegistryDefinitions {
                     errors
                         .entry("minecraft:enchantment_provider")
                         .or_default()
-                        .insert(id, error);
+                        .insert(
+                            id.clone(),
+                            format!(
+                                "{}: {error}",
+                                registry_file_path("enchantment_provider", &id)
+                            ),
+                        );
                     rejected.push(key.clone());
                 }
             }
@@ -2456,11 +2466,13 @@ mod tests {
                 .to_owned()
         };
         assert!(
-            group("chat_type").contains("test:bad: chat.parameters: unknown parameter"),
+            group("chat_type").contains(
+                "test:bad: data/test/chat_type/bad.json: chat.parameters: unknown parameter"
+            ),
             "{error}"
         );
         assert!(
-            group("painting_variant").contains("test:bad:")
+            group("painting_variant").contains("test:bad: data/test/painting_variant/bad.json:")
                 && group("painting_variant").contains("width"),
             "{error}"
         );

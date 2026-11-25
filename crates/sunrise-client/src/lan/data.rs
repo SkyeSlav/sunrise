@@ -1357,9 +1357,9 @@ mod tests {
             panic!("staged malformed typed registries")
         };
         for diagnostic in [
-            "minecraft:dialog:\n  test:bad: unknown load conditions [absent:dialog]",
-            "minecraft:dimension_type:\n  test:bad: unknown load conditions [minecraft:unknown]",
-            "minecraft:world_clock:\n  test:bad: not a map",
+            "minecraft:dialog:\n  test:bad: data/test/dialog/bad.json: unknown load conditions [absent:dialog]",
+            "minecraft:dimension_type:\n  test:bad: data/test/dimension_type/bad.json: unknown load conditions [minecraft:unknown]",
+            "minecraft:world_clock:\n  test:bad: data/test/world_clock/bad.json: not a map",
         ] {
             assert!(typed.contains(diagnostic), "{typed}");
         }
