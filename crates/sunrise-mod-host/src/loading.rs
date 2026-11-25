@@ -133,12 +133,7 @@ pub fn main_with(
                 .filter(|&i| code_ids.contains(manifests[i].id.as_str()))
                 .map(|i| {
                     let entry = entries.remove(manifests[i].id.as_str()).unwrap();
-                    let mod_side = match manifests[i].side {
-                        Side::Client => mod_api::Side::Client,
-                        Side::Server => mod_api::Side::Server,
-                        Side::Both => mod_api::Side::Both,
-                    };
-                    mod_api::__private::with_mod_side(entry, mod_side)
+                    mod_api::__private::with_mod_side(entry, manifests[i].side)
                 })
                 .collect();
             mod_api::__private::install_dependencies(order.effective);
