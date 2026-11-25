@@ -995,6 +995,11 @@ crate::block::block_states::impl_block_states_without_tables!(FakeHost {
         Ok(self.registries.fluid_sound(fluid, false))
     }
 });
+impl crate::prelude::ModStateBackend for FakeHost {
+    fn level_attachments_read(&self, level: LevelRef) -> Option<&crate::Attachments> {
+        (level == self.level.level()).then_some(&self.attachments)
+    }
+}
 crate::impl_backend_areas!(
     FakeHost,
     except(
@@ -1006,6 +1011,7 @@ crate::impl_backend_areas!(
         keys,
         level_blocks,
         level_ticking,
+        mod_state,
         player_inventory,
         player_modes,
         player_session,
@@ -1378,6 +1384,12 @@ impl crate::prelude::LevelEffectsBackendMut for FakeHost {
         true
     }
 }
+impl crate::prelude::ModStateBackendMut for FakeHost {
+    fn level_attachments_mut(&mut self, level: LevelRef) -> Option<&mut crate::Attachments> {
+        (level == self.level.level()).then_some(&mut self.attachments)
+    }
+    fn level_attachment_changed(&mut self, _: LevelRef, _: bool) {}
+}
 crate::impl_backend_mut_areas!(
     FakeHost,
     except(
@@ -1386,6 +1398,7 @@ crate::impl_backend_mut_areas!(
         items,
         level_effects,
         level_ticking,
+        mod_state,
         player_messages
     )
 );

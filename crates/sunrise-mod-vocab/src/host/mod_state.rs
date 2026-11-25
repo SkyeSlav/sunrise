@@ -75,3 +75,28 @@ pub trait ModStateServerHost {
     /// caller.
     fn cancel_task(&mut self, id: TaskId) -> bool;
 }
+/// The handles' reads of the `mod_state` area, implemented by the game and reached through [`Backend`].
+// hidden: a handle's backend, reached through `Backend`; mods call the handle, never this trait
+#[doc(hidden)]
+#[sunrise_mod_api_macros::host_area]
+pub trait ModStateBackend {
+    /// Side: server.
+    /// Read-only access to an open server level's attachment map without loading or switching levels.
+    #[manual_handle]
+    fn level_attachments_read(&self, level: LevelRef) -> Option<&Attachments>;
+}
+/// The handles' writes of the `mod_state` area, implemented by the game and reached through [`BackendMut`].
+// hidden: a handle's backend, reached through `BackendMut`; mods call the handle, never this trait
+#[doc(hidden)]
+#[sunrise_mod_api_macros::host_area]
+pub trait ModStateBackendMut {
+    /// Side: server.
+    /// Mutable access to an open server level's attachment map without loading or switching levels,
+    /// journaling into any open transaction.
+    #[manual_handle]
+    fn level_attachments_mut(&mut self, level: LevelRef) -> Option<&mut Attachments>;
+    /// Side: server.
+    /// Record that an open server level's attachments changed and need synchronization.
+    #[manual_handle]
+    fn level_attachment_changed(&mut self, level: LevelRef, sync: bool);
+}
