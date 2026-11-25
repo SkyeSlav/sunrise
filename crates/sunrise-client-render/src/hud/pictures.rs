@@ -309,6 +309,10 @@ impl HudRenderer {
                             binding: 6,
                             resource: wgpu::BindingResource::TextureView(&self.atlas_view),
                         },
+                        wgpu::BindGroupEntry {
+                            binding: 7,
+                            resource: wgpu::BindingResource::TextureView(&self.atlas_view),
+                        },
                     ],
                 });
                 (picture.clone(), group)

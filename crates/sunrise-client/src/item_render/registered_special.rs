@@ -12,7 +12,7 @@ use mod_api::{
     __private::{BakedSpecialModelRenderer, SpecialModelSubmission, game::CallbackOwner},
     ItemDisplayContext, ItemStack, SpecialModelBakeContext, SpecialModelCollector,
     SpecialModelConfig, SpecialModelFactory, SpecialModelGeometry, SpecialModelQuad,
-    SpecialModelStack, SpecialModelTints,
+    SpecialModelStack, SpecialModelSubmitOptions, SpecialModelTints,
 };
 use serde_json::{Map, Value};
 use std::{
@@ -422,10 +422,11 @@ impl SpecialModelSubmission for PoseWriter<'_, '_, '_> {
         result
     }
 
-    fn submit_geometry(
+    fn submit_model(
         &mut self,
         geometry: &SpecialModelGeometry,
         tints: SpecialModelTints,
+        options: SpecialModelSubmitOptions,
     ) -> Result<(), String> {
         if self.layer.failure.is_some() {
             return Err("the special layer was already refused".into());
@@ -453,6 +454,7 @@ impl SpecialModelSubmission for PoseWriter<'_, '_, '_> {
             particle: self.layer.base.particle.clone(),
             extents: geometry.extents.clone(),
             display: self.layer.ctx.display,
+            submit_options: options,
         });
         Ok(())
     }

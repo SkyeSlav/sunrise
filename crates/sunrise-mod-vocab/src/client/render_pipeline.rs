@@ -3239,6 +3239,302 @@ pub enum PipelineDrawError {
     Buffer(BufferError),
 }
 
+/// Well-known built-in vanilla render type identifiers resolved through
+/// [`RenderAssets::render_type`](crate::RenderAssets::render_type).
+///
+/// Indices into this slice are their fixed slot IDs; custom render types registered via
+/// [`RegisterRenderPipelinesEvent::register_render_type`](crate::RegisterRenderPipelinesEvent::register_render_type)
+/// follow immediately after.
+pub const BUILTIN_RENDER_TYPE_IDS: &[&str] = &[
+    "minecraft:solid",
+    "minecraft:cutout",
+    "minecraft:translucent",
+    "minecraft:entity_solid",
+    "minecraft:entity_cutout",
+    "minecraft:entity_translucent",
+    "minecraft:eyes",
+    "minecraft:energy_swirl",
+    "minecraft:lightning",
+    "minecraft:item_cutout",
+    "minecraft:item_translucent",
+];
+
+/// Model-view Z layering transform applied to a [`RenderSetup`] (vanilla 26.3
+/// `LayeringTransform.java`). Depth bias belongs to [`DepthState`] on [`RenderPipeline`], not here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-type setup descriptor.
+pub enum LayeringTransform {
+    /// `LayeringTransform.NO_LAYERING`: no model-view Z offset.
+    #[default]
+    None,
+    /// `LayeringTransform.VIEW_OFFSET_Z_LAYERING`: offsets toward the camera along view Z (`+1.0`).
+    ViewOffsetZ,
+    /// `LayeringTransform.VIEW_OFFSET_Z_LAYERING_FORWARD`: offsets away from the camera along view Z (`-1.0`).
+    ViewOffsetZForward,
+}
+
+/// Texture-matrix transform applied to a [`RenderSetup`] (vanilla 26.3 `TextureTransform.java`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[non_exhaustive]
+// no wire: local client render-type setup descriptor.
+pub enum TextureTransform {
+    /// `TextureTransform.DEFAULT_TEXTURING`: identity texture matrix.
+    #[default]
+    Default,
+    /// `TextureTransform.GLINT_TEXTURING`: animated item enchantment glint matrix (scale `8.0`).
+    Glint,
+    /// `TextureTransform.ENTITY_GLINT_TEXTURING`: animated entity glint matrix (scale `0.5`).
+    EntityGlint,
+    /// `TextureTransform.ARMOR_ENTITY_GLINT_TEXTURING`: animated armor glint matrix (scale `0.16`).
+    ArmorEntityGlint,
+    /// `TextureTransform.OffsetTextureTransform`: static UV translation `[u_offset, v_offset]`.
+    Offset([f32; 2]),
+}
+
+/// How a [`RenderSetup`] participates in entity outline rendering (vanilla 26.3
+/// `RenderSetup.OutlineProperty`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-type setup descriptor.
+pub enum OutlineProperty {
+    /// `OutlineProperty.NONE`: does not participate in outline rendering.
+    #[default]
+    None,
+    /// `OutlineProperty.IS_OUTLINE`: this render type is itself an outline pass.
+    IsOutline,
+    /// `OutlineProperty.AFFECTS_OUTLINE`: draws to the outline pass using `texture` (or
+    /// `"Sampler0"` when `None`).
+    AffectsOutline {
+        /// Optional sampler name for the outline mask texture (`None` uses `"Sampler0"`).
+        texture: Option<String>,
+    },
+}
+
+/// One named texture binding on a [`RenderSetup`] (vanilla 26.3 `RenderSetup.TextureBinding`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+// no wire: local client render-type texture binding descriptor.
+pub struct RenderTypeTexture {
+    /// GLSL sampler name (for example `"Sampler0"`).
+    pub name: String,
+    /// Texture source bound to this sampler.
+    pub source: TextureSource,
+    /// Sampler filtering mode.
+    pub filter: SamplerFilter,
+    /// Sampler address/wrap mode.
+    pub address: SamplerAddress,
+}
+
+impl RenderTypeTexture {
+    /// Describe one named texture binding for a [`RenderSetup`].
+    pub fn new(
+        name: impl Into<String>,
+        source: TextureSource,
+        filter: SamplerFilter,
+        address: SamplerAddress,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            source,
+            filter,
+            address,
+        }
+    }
+}
+
+/// Declarative custom render type registered in `Hooks::register_render_pipelines` (vanilla 26.3
+/// `RenderSetup` / `RenderType.create`).
+///
+/// Wraps a [`RenderPipeline`] identifier with texture bindings, lightmap/overlay toggles,
+/// crumbling/sorting/solid-phase flags, [`LayeringTransform`], [`TextureTransform`], and
+/// [`OutlineProperty`].
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+// no wire: local client render-type registration descriptor.
+pub struct RenderSetup {
+    owner: String,
+    /// Unique namespaced identifier for this render type (for example `mymod:glowing_cutout`).
+    pub id: Identifier,
+    /// Registered mod or built-in vanilla [`RenderPipeline`] identifier.
+    pub pipeline: Identifier,
+    /// Named texture bindings (`RenderSetup.textures`), e.g. `"Sampler0"`.
+    pub textures: Vec<RenderTypeTexture>,
+    /// Bind the engine lightmap texture to `Sampler2` (`RenderSetup.useLightmap`).
+    pub use_lightmap: bool,
+    /// Bind the hurt/white-flash overlay texture to `Sampler1` (`RenderSetup.useOverlay`).
+    pub use_overlay: bool,
+    /// Whether geometry drawn with this render type participates in mining-crack crumbling
+    /// (`RenderSetup.affectsCrumbling`).
+    pub affects_crumbling: bool,
+    /// Whether translucent quads sort far-to-near on upload (`RenderSetup.sortOnUpload`).
+    pub sort_on_upload: bool,
+    /// Force the solid model phase even when the underlying pipeline blends
+    /// (`RenderSetup.forceSolidModelPhase`).
+    pub force_solid_model_phase: bool,
+    /// Model-view Z layering offset (`RenderSetup.layeringTransform`).
+    pub layering: LayeringTransform,
+    /// Texture-coordinate matrix transform (`RenderSetup.textureTransform`).
+    pub texture_transform: TextureTransform,
+    /// Entity outline pass participation (`RenderSetup.outlineProperty` + `outlineTextureName`).
+    pub outline: OutlineProperty,
+}
+
+impl RenderSetup {
+    /// Start a render type setup with `id` backed by `pipeline`, matching
+    /// `RenderSetup.builder(pipeline)` defaults (no lightmap, no overlay, no crumbling, no sort,
+    /// `LayeringTransform::None`, `TextureTransform::Default`, `OutlineProperty::None`).
+    pub fn new(id: Identifier, pipeline: Identifier) -> Self {
+        Self {
+            owner: String::new(),
+            id,
+            pipeline,
+            textures: Vec::new(),
+            use_lightmap: false,
+            use_overlay: false,
+            affects_crumbling: false,
+            sort_on_upload: false,
+            force_solid_model_phase: false,
+            layering: LayeringTransform::None,
+            texture_transform: TextureTransform::Default,
+            outline: OutlineProperty::None,
+        }
+    }
+
+    /// Bind a named texture sampler (`RenderSetupBuilder.withTexture`).
+    pub fn with_texture(
+        mut self,
+        name: impl Into<String>,
+        source: TextureSource,
+        filter: SamplerFilter,
+        address: SamplerAddress,
+    ) -> Self {
+        self.textures
+            .push(RenderTypeTexture::new(name, source, filter, address));
+        self
+    }
+
+    /// Enable or disable binding the engine lightmap to `Sampler2` (`RenderSetupBuilder.useLightmap`).
+    pub fn use_lightmap(mut self, enabled: bool) -> Self {
+        self.use_lightmap = enabled;
+        self
+    }
+
+    /// Enable or disable binding the overlay texture to `Sampler1` (`RenderSetupBuilder.useOverlay`).
+    pub fn use_overlay(mut self, enabled: bool) -> Self {
+        self.use_overlay = enabled;
+        self
+    }
+
+    /// Enable or disable mining-crack crumbling participation (`RenderSetupBuilder.affectsCrumbling`).
+    pub fn affects_crumbling(mut self, enabled: bool) -> Self {
+        self.affects_crumbling = enabled;
+        self
+    }
+
+    /// Enable or disable far-to-near quad sorting on upload (`RenderSetupBuilder.sortOnUpload`).
+    pub fn sort_on_upload(mut self, enabled: bool) -> Self {
+        self.sort_on_upload = enabled;
+        self
+    }
+
+    /// Force the solid model phase (`RenderSetupBuilder.withForcedSolidModelPhase`).
+    pub fn force_solid_model_phase(mut self, enabled: bool) -> Self {
+        self.force_solid_model_phase = enabled;
+        self
+    }
+
+    /// Set the model-view layering transform (`RenderSetupBuilder.setLayeringTransform`).
+    pub fn layering(mut self, layering: LayeringTransform) -> Self {
+        self.layering = layering;
+        self
+    }
+
+    /// Set the texture-coordinate transform (`RenderSetupBuilder.setTextureTransform`).
+    pub fn texture_transform(mut self, transform: TextureTransform) -> Self {
+        self.texture_transform = transform;
+        self
+    }
+
+    /// Set the outline pass participation (`RenderSetupBuilder.setOutline`).
+    pub fn outline(mut self, outline: OutlineProperty) -> Self {
+        self.outline = outline;
+        self
+    }
+
+    /// The mod that registered this render type, stamped by
+    /// [`RegisterRenderPipelinesEvent::register_render_type`](crate::RegisterRenderPipelinesEvent::register_render_type).
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    /// Validate local setup invariants before startup publication.
+    pub fn validate(&self) -> Result<(), String> {
+        if let TextureTransform::Offset([u, v]) = self.texture_transform
+            && (!u.is_finite() || !v.is_finite())
+        {
+            return Err("texture_transform offset must be finite".into());
+        }
+        let mut seen = std::collections::HashSet::with_capacity(self.textures.len());
+        for tex in &self.textures {
+            if tex.name.is_empty() {
+                return Err("texture binding sampler name must not be empty".into());
+            }
+            if !seen.insert(tex.name.as_str()) {
+                return Err(format!("duplicate texture binding sampler {:?}", tex.name));
+            }
+            if self.use_overlay && tex.name == "Sampler1" {
+                return Err(
+                    "texture binding \"Sampler1\" collides with use_overlay (Sampler1)".into(),
+                );
+            }
+            if self.use_lightmap && tex.name == "Sampler2" {
+                return Err(
+                    "texture binding \"Sampler2\" collides with use_lightmap (Sampler2)".into(),
+                );
+            }
+        }
+        if let OutlineProperty::AffectsOutline {
+            texture: Some(name),
+        } = &self.outline
+            && name.is_empty()
+        {
+            return Err("outline texture sampler name must not be empty".into());
+        }
+        Ok(())
+    }
+}
+
+/// Handle to a built-in or custom render type resolved for the current resource load via
+/// [`RenderAssets::render_type`](crate::RenderAssets::render_type).
+///
+/// Generational like [`RenderPipelineRef`]: resolve once in `client_setup` and again in
+/// `client_resources_reloaded`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+// no wire: local client resource-load generational handle.
+pub struct RenderTypeRef(pub(crate) u64, pub(crate) u32);
+
+impl RenderTypeRef {
+    pub(crate) fn from_parts(generation: u64, slot: u32) -> Option<Self> {
+        (generation != 0).then_some(Self(generation, slot))
+    }
+}
+
+/// Why [`RenderAssets::render_type`](crate::RenderAssets::render_type) could not resolve an
+/// identifier, or why a draw rejected a [`RenderTypeRef`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+// no wire: local client render-type error.
+pub enum RenderTypeError {
+    /// No built-in or registered custom render type has that identifier.
+    Unknown,
+    /// The render type's underlying pipeline failed to build in the current resource load.
+    Invalid,
+    /// The handle came from an earlier resource load; resolve it again in
+    /// `client_resources_reloaded`.
+    Stale,
+}
+
 impl crate::RegisterRenderPipelinesEvent<'_> {
     /// Register one render pipeline without exposing earlier registrations.
     ///
@@ -3248,6 +3544,17 @@ impl crate::RegisterRenderPipelinesEvent<'_> {
     pub fn register(&mut self, mut entry: RenderPipeline) {
         entry.owner = self.mod_id.to_owned();
         self.pipelines.push(entry);
+    }
+
+    /// Register one custom render type ([`RenderSetup`]) without exposing earlier registrations.
+    ///
+    /// The entry is attributed to this listener immediately. Duplicate IDs, collisions with
+    /// [`BUILTIN_RENDER_TYPE_IDS`], invalid texture/outline/transform configurations, and
+    /// references to unknown pipelines are refused when the engine freezes registrations at
+    /// startup.
+    pub fn register_render_type(&mut self, mut entry: RenderSetup) {
+        entry.owner = self.mod_id.to_owned();
+        self.render_types.push(entry);
     }
 }
 
@@ -3282,9 +3589,11 @@ mod tests {
     #[test]
     fn stamps_owner_on_new_pipelines_across_namespaces_and_preserves_duplicates_for_freeze() {
         let mut pipelines = Vec::new();
+        let mut render_types = Vec::new();
         let mut event = crate::RegisterRenderPipelinesEvent {
             mod_id: "first_mod",
             pipelines: &mut pipelines,
+            render_types: &mut render_types,
         };
         event.register(pipeline("other:glow"));
         event.mod_id = "owning_mod";
@@ -3311,10 +3620,12 @@ mod tests {
     #[test]
     fn a_mod_can_register_more_than_vanillas_pipeline_count() {
         let mut pipelines = Vec::new();
+        let mut render_types = Vec::new();
         {
             let mut event = crate::RegisterRenderPipelinesEvent {
                 mod_id: "mine",
                 pipelines: &mut pipelines,
+                render_types: &mut render_types,
             };
             for i in 0..131 {
                 event.register(pipeline(&format!("mine:p{i}")));
@@ -3326,6 +3637,7 @@ mod tests {
         crate::RegisterRenderPipelinesEvent {
             mod_id: "next",
             pipelines: &mut pipelines,
+            render_types: &mut render_types,
         }
         .register(pipeline("next:glow"));
         assert_eq!(pipelines.len(), 132);
@@ -4086,5 +4398,86 @@ mod tests {
         buf.write(&host, 0, &[0; 16]).unwrap();
         buf.destroy(&host).unwrap();
         assert_eq!(*host.calls.borrow(), vec!["write", "destroy"]);
+    }
+
+    #[test]
+    fn render_setup_builder_validation_and_registration() {
+        let mut pipelines = Vec::new();
+        let mut render_types = Vec::new();
+        let mut event = crate::RegisterRenderPipelinesEvent {
+            mod_id: "example",
+            pipelines: &mut pipelines,
+            render_types: &mut render_types,
+        };
+        let setup = RenderSetup::new(
+            Identifier::parse("example:glowing").unwrap(),
+            Identifier::parse("example:core/glow").unwrap(),
+        )
+        .with_texture(
+            "Sampler0",
+            TextureSource::Standalone(Identifier::parse("example:textures/glow.png").unwrap()),
+            SamplerFilter::Linear,
+            SamplerAddress::ClampToEdge,
+        )
+        .use_lightmap(true)
+        .use_overlay(true)
+        .affects_crumbling(true)
+        .sort_on_upload(true)
+        .force_solid_model_phase(false)
+        .layering(LayeringTransform::ViewOffsetZForward)
+        .texture_transform(TextureTransform::ArmorEntityGlint)
+        .outline(OutlineProperty::AffectsOutline {
+            texture: Some("Sampler0".into()),
+        });
+        assert!(setup.validate().is_ok());
+        event.register_render_type(setup);
+        assert_eq!(render_types.len(), 1);
+        assert_eq!(render_types[0].owner(), "example");
+        assert_eq!(
+            render_types[0].layering,
+            LayeringTransform::ViewOffsetZForward
+        );
+        assert_eq!(
+            render_types[0].texture_transform,
+            TextureTransform::ArmorEntityGlint
+        );
+
+        let bad_offset = RenderSetup::new(
+            Identifier::parse("example:bad_offset").unwrap(),
+            Identifier::parse("example:core/glow").unwrap(),
+        )
+        .texture_transform(TextureTransform::Offset([f32::NAN, 0.0]));
+        assert!(bad_offset.validate().is_err());
+
+        let sampler2_clash = RenderSetup::new(
+            Identifier::parse("example:clash").unwrap(),
+            Identifier::parse("example:core/glow").unwrap(),
+        )
+        .use_lightmap(true)
+        .with_texture(
+            "Sampler2",
+            TextureSource::Standalone(Identifier::parse("example:textures/a.png").unwrap()),
+            SamplerFilter::Nearest,
+            SamplerAddress::Repeat,
+        );
+        assert!(sampler2_clash.validate().is_err());
+
+        let dup_sampler = RenderSetup::new(
+            Identifier::parse("example:dup").unwrap(),
+            Identifier::parse("example:core/glow").unwrap(),
+        )
+        .with_texture(
+            "Sampler0",
+            TextureSource::Standalone(Identifier::parse("example:textures/a.png").unwrap()),
+            SamplerFilter::Nearest,
+            SamplerAddress::Repeat,
+        )
+        .with_texture(
+            "Sampler0",
+            TextureSource::Standalone(Identifier::parse("example:textures/b.png").unwrap()),
+            SamplerFilter::Nearest,
+            SamplerAddress::Repeat,
+        );
+        assert!(dup_sampler.validate().is_err());
     }
 }

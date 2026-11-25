@@ -139,7 +139,11 @@ impl SpecialModelRenderer for Stick {
         collector: &mut SpecialModelCollector<'_>,
     ) -> Result<(), String> {
         ASKED.lock().unwrap().push(*count);
-        collector.submit_geometry(&self.0, SpecialModelTints::Untinted)
+        collector.submit_model(
+            &self.0,
+            SpecialModelTints::Untinted,
+            mod_api::SpecialModelSubmitOptions::default(),
+        )
     }
 }
 

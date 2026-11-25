@@ -896,8 +896,8 @@ pub(super) fn register_preset_editors(role: ExecutionRole) {
     sunrise_client::title::preset_editors::register(editors);
 }
 
-/// Keep the mods' render pipeline registrations once at startup, before resources load: every
-/// load builds them from its own shader files.
+/// Keep the mods' render pipeline and custom render type registrations once at startup, before
+/// resources load: every load builds them from its own shader files.
 fn register_render_pipelines(
     role: ExecutionRole,
     vanilla_root: &Path,
@@ -906,8 +906,14 @@ fn register_render_pipelines(
         return Ok(());
     }
     let mut pipelines = Vec::new();
-    Game::native_register_render_pipelines(&RegistrationContext::new(), &mut pipelines);
+    let mut render_types = Vec::new();
+    Game::native_register_render_pipelines(
+        &RegistrationContext::new(),
+        &mut pipelines,
+        &mut render_types,
+    );
     sunrise_client_render::mod_pipelines::register(pipelines, vanilla_root)?;
+    sunrise_client_render::mod_pipelines::register_render_types(render_types, vanilla_root)?;
     Ok(())
 }
 

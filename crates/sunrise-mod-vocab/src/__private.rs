@@ -349,6 +349,11 @@ pub mod built {
         crate::RenderPipelineRef::from_parts(generation, slot)
             .expect("published pipeline generation")
     }
+    /// Wrap a slot in the render-type table's published generation.
+    pub fn render_type_ref(generation: u64, slot: u32) -> crate::RenderTypeRef {
+        crate::RenderTypeRef::from_parts(generation, slot)
+            .expect("published render type generation")
+    }
     /// Wrap a registered pipeline modifier slot.
     pub fn pipeline_modifier_ref(slot: u32) -> crate::PipelineModifierRef {
         crate::PipelineModifierRef::from_slot(slot)
@@ -562,6 +567,16 @@ pub mod game {
     }
 
     impl Fields for RenderPipelineRef {
+        type Fields<'a> = ModelRefFields;
+        fn fields(&self) -> ModelRefFields {
+            ModelRefFields {
+                generation: self.0,
+                slot: self.1,
+            }
+        }
+    }
+
+    impl Fields for RenderTypeRef {
         type Fields<'a> = ModelRefFields;
         fn fields(&self) -> ModelRefFields {
             ModelRefFields {

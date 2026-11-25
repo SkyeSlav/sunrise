@@ -83,6 +83,7 @@ impl HudBatch {
             color,
             depth: 0.0,
             glint_uv: [0.0, 0.0],
+            light: 0,
             text: 0,
         });
     }
