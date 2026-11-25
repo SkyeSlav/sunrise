@@ -105,7 +105,7 @@ impl Game<'_> {
             &self.options.resources,
             &self.pack.data_source,
             &self.pack.data_changes,
-            self.cmds.vanilla_disabled,
+            self.level.data_packs.as_ref(),
             &self.level.enabled_features,
             &super::pack_finders::data_packs(&self.mods),
         );
