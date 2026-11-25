@@ -532,8 +532,10 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "dunce",
+ "getrandom 0.4.3",
  "libc",
  "lzma-rust2",
+ "png",
  "ring",
  "rustc-demangle",
  "semver",

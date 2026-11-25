@@ -13,6 +13,8 @@
 //!   and `data/`; a native mod is compiled first (`dev.rs`).
 //! - `release [<version>|patch|minor|major] [--check] [--pull-request]`, `release setup`: prepare or publish a tagged
 //!   release using the registry's shared workflow (`author_release.rs`).
+//! - `collection [--check]`: check a registry collection kept in this folder and propose it from the
+//!   author's fork of the registry (`collection.rs`).
 //! - `run [--game <sunrise-client>] [--resources <folder>] [--jars <dir>] [-- <game args>]`: build, then play with
 //!   the mod.
 //! - `check [--uses] [--release <tag>]` in a mod folder: the package rules, page and render pipeline
@@ -33,6 +35,7 @@ use sunrise_mod_package::{Content, Manifest, Package, manifest::MANIFEST};
 mod author_release;
 mod bounded;
 mod check;
+mod collection;
 mod dev;
 mod help;
 mod internals;
@@ -102,6 +105,7 @@ fn main() -> ExitCode {
         }),
         Some("build") => build_command(entry, &args[1..]).map(drop),
         Some("release") => author_release::run(entry, Path::new("."), &args[1..]),
+        Some("collection") => collection::run(Path::new("."), &args[1..]),
         Some("run") => run(&args[1..]).map_err(|e| e.to_string()),
         Some("check") => match check_args(&args[1..]) {
             Ok(Check::Folder {

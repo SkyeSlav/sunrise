@@ -51,6 +51,10 @@ pub const MOD_REGISTRY_INDEX: &str = "https://sunrise-org.github.io/sunrise-mods
 pub const MOD_REGISTRY_METADATA: &str =
     "https://raw.githubusercontent.com/sunrise-org/sunrise-mods/main/registry";
 
+/// The registry's repository, where `cargo sunrise-mod collection` bases a collection's commit
+/// and opens its pull request.
+pub const MOD_REGISTRY_REPOSITORY: &str = "https://github.com/sunrise-org/sunrise-mods";
+
 /// Where the fork publishes each game build's mod SDK (`sdk-<build id>`) and the game releases
 /// whose `sdk.json` names their build; a release's tag and file follow. `SUNRISE_SDK_BASE`
 /// overrides it.
