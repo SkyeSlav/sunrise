@@ -411,6 +411,7 @@ fn renderer(
         crate::model_library::ParsedModels::load(root.source()).into_item_library(),
         true,
         &data,
+        &sunrise_world::conditions::LoadConditions::vanilla(),
         None,
         ItemProviderTables {
             special: Some(factories),
@@ -714,6 +715,7 @@ fn an_invalid_winning_registered_model_does_not_load_a_lower_pack() {
         crate::model_library::ParsedModels::load(root.source()).into_item_library(),
         true,
         &item_data,
+        &sunrise_world::conditions::LoadConditions::vanilla(),
         None,
         ItemProviderTables {
             special: Some(&factories),

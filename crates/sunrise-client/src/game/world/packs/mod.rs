@@ -827,6 +827,7 @@ pub(super) fn stage_pack_with_emissive(
                         &game,
                         pool,
                         max_atlas_size,
+                        &model_conditions,
                     )
                     .map_err(|e| e.to_string())
                 });
@@ -869,6 +870,7 @@ pub(super) fn stage_pack_with_emissive(
                 // `Game::apply_staged_pack` fills it with the client's setting.
                 splashes: Arc::from(""),
                 plain_texts: Default::default(),
+                model_conditions: model_conditions.clone(),
             };
             progress.set(2);
             let mut pack = PackResources::load(
@@ -879,6 +881,7 @@ pub(super) fn stage_pack_with_emissive(
                 context.biomes.clone(),
                 context.light.clone(),
                 &res.core.item_data,
+                &model_conditions,
             )?;
             pack.additional_data = super::pack_finders::data_packs(mod_sources).into();
             let textures = prepare_renderer_textures(&pack);

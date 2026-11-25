@@ -264,11 +264,11 @@ pub(super) fn load_core(
                         )
                     } else if let Some(document) = entity_models_for_render.as_deref() {
                         sunrise_client::item_render::ItemRenderer::load_with_library_and_entity_models(
-                            resources, library, document, item_data,
+                            resources, library, document, item_data, model_conditions,
                         )
                     } else {
                         sunrise_client::item_render::ItemRenderer::load_with_library(
-                            resources, library, item_data,
+                            resources, library, item_data, model_conditions,
                         )
                     }
                 })
@@ -747,6 +747,9 @@ pub(super) fn load_resources_for_mods_with_limit(
     sunrise_threads::jobs::configure(threads);
     sunrise_client::sprites::set_texture_budget(settings.sunrise.texture_budget_mib);
     sunrise_client::sprites::set_labpbr_maps(shader_packs::picks_material_pack(settings));
+    let inventory = sunrise_mod_package::enabled::EnabledMods::read(&root)?;
+    let conditions = super::load_conditions::conditions_for_mods(mod_sources, &inventory)?;
+    let model_conditions = conditions.with_mod_inventory(inventory.client_ids());
     // Stage A: the menu bundle (atlas and panorama). With a loading screen it is
     // published at once so the title screen can appear while the world bundle
     // loads; the synchronous launch instead carries it in `Loaded`.
@@ -760,7 +763,7 @@ pub(super) fn load_resources_for_mods_with_limit(
             UiResources::server(source)
         } else {
             let limit = max_atlas_size.load(Ordering::Relaxed);
-            UiResources::load_with_limit(source, vanilla_root, limit).map(|ui| {
+            UiResources::load_with_limit(source, vanilla_root, limit, &model_conditions).map(|ui| {
                 ui.with_splashes(
                     source,
                     vanilla_root,
@@ -788,9 +791,6 @@ pub(super) fn load_resources_for_mods_with_limit(
             Some(ui)
         }
     };
-    let inventory = sunrise_mod_package::enabled::EnabledMods::read(&root)?;
-    let conditions = super::load_conditions::conditions_for_mods(mod_sources, &inventory)?;
-    let model_conditions = conditions.with_mod_inventory(inventory.client_ids());
     // The generation's settings, captured once before its reload listeners register: they and
     // the item data read this capture, never the files again.
     let captured = mods::capture_load_settings(&root, role, load_role.owning)?;

@@ -99,13 +99,11 @@ pub(crate) fn installed_loaders() -> Option<&'static ModelLoaderTable> {
 }
 
 /// The client selects a provider before decoding the model's fields.
-pub(crate) fn decode_model(text: &str) -> Result<CuboidModel, sunrise_assets::DecodeError> {
-    decode_model_with_loaders_and_conditions(
-        text,
-        "",
-        installed_loaders(),
-        &sunrise_world::conditions::LoadConditions::vanilla(),
-    )
+pub(crate) fn decode_model(
+    text: &str,
+    conditions: &sunrise_world::conditions::LoadConditions,
+) -> Result<CuboidModel, sunrise_assets::DecodeError> {
+    decode_model_with_loaders_and_conditions(text, "", installed_loaders(), conditions)
 }
 
 pub(crate) fn decode_model_with_loaders_and_conditions(
@@ -342,11 +340,18 @@ mod tests {
                     ModelLoaderSchema::ModelProperties,
                     |_| Ok(vec![quad("side", 1.0)]),
                 );
-                event.register(
-                    Identifier::parse("neoforge:obj").unwrap(),
-                    ModelLoaderSchema::ModelProperties,
-                    |_| Ok(vec![quad("side", 1.0)]),
-                );
+                for builtin in [
+                    "neoforge:obj",
+                    "neoforge:empty",
+                    "neoforge:conditional",
+                    "fusion:model",
+                ] {
+                    event.register(
+                        Identifier::parse(builtin).unwrap(),
+                        ModelLoaderSchema::ModelProperties,
+                        |_| Ok(vec![quad("side", 1.0)]),
+                    );
+                }
             }
         }
         struct Second;

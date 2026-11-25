@@ -252,21 +252,14 @@ impl CuboidModel {
     /// Like the native stream entry point, this reads one value and leaves
     /// trailing input unread. The pinned native entry point uses strict JSON.
     pub fn from_json(json: &str) -> Result<Self> {
-        Self::from_json_with_loaders(json, &|_| None)
-    }
-
-    /// Select native loaders at the resource boundary, including for inline composite children.
-    pub fn from_json_with_loaders(
-        json: &str,
-        loaders: &dyn Fn(&str) -> Option<LoaderProvider>,
-    ) -> Result<Self> {
-        Self::from_json_with_loaders_and_conditions(json, "", loaders, &|_, _| {
+        Self::from_json_with_loaders_and_conditions(json, "", &|_| None, &|_, _| {
             Err("neoforge:conditional requires a load-condition evaluator".to_owned())
         })
     }
 
-    /// Decode a model file with both registered native loaders and a load-condition
-    /// evaluator for `neoforge:conditional` (`ConditionalModelLoader`).
+    /// Decode a model file with registered native loaders, selected at the resource boundary
+    /// (including for inline composite children), and a load-condition evaluator for
+    /// `neoforge:conditional` (`ConditionalModelLoader`).
     ///
     /// `name` identifies the model in condition diagnostics and decode errors.
     pub fn from_json_with_loaders_and_conditions(
