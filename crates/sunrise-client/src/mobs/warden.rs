@@ -715,6 +715,7 @@ pub fn listen(
     event: &'static str,
     pos: [f64; 3],
     ctx: &Context,
+    tags: &sculk::EventTags,
     occluded: impl Fn([f64; 3], [f64; 3]) -> bool,
 ) -> bool {
     let eye = [m.position.x, m.position.y + m.kind.eye_height, m.position.z];
@@ -731,16 +732,16 @@ pub fn listen(
         return false;
     }
     // isValidVibration: the warden can trigger avoid vibration.
-    let listens = sculk::warden_can_listen(event);
+    let listens = sculk::warden_can_listen(tags, event);
     if listens
         && ctx.source == Some(Who::Player.into())
         && !ctx.spectator
         && ctx.stepping_carefully
-        && sculk::ignored_when_sneaking(event)
+        && sculk::ignored_when_sneaking(tags, event)
     {
         return true;
     }
-    if !sculk::valid_vibration(listens, event, ctx)
+    if !sculk::valid_vibration(tags, listens, event, ctx)
         || !can_receive_vibration(m, i64::from(m.age), ctx)
         || occluded(pos, eye)
     {
