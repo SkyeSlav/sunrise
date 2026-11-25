@@ -303,6 +303,7 @@ mod fluid_place_block;
 mod fluid_rules;
 mod fluid_tick;
 mod fluid_tooltip;
+mod frame_graph_setup;
 mod friction;
 mod game_rule_changed;
 mod game_shutting_down;

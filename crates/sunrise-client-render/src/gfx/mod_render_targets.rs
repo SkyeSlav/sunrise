@@ -443,12 +443,47 @@ impl super::Renderer {
             .destroy(owner, target)
     }
 
-    /// Retire all mod-owned offscreen render targets (world close, resource reload).
+    /// Retire all mod-owned offscreen render targets and pooled transient targets (world close,
+    /// resource reload).
     pub fn clear_mod_render_targets(&self) {
         self.mod_render_targets
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
+        self.transient_targets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.warned_frame_graph_cycles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
+    /// Maximum 2D texture dimension supported by this renderer's GPU device.
+    pub fn max_texture_dimension_2d(&self) -> u32 {
+        self.device.limits().max_texture_dimension_2d
+    }
+
+    /// Whether this renderer's GPU device supports linear filtering on `R32Float` textures.
+    pub fn float32_filterable(&self) -> bool {
+        self.device
+            .features()
+            .contains(wgpu::Features::FLOAT32_FILTERABLE)
+    }
+
+    /// Record a distinct frame-graph cycle warning once per reload/world session.
+    pub fn warn_frame_graph_cycle_once(&self, passes: &[String]) {
+        let mut warned = self
+            .warned_frame_graph_cycles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if warned.insert(passes.to_vec()) {
+            log::warn!(
+                "Sunrise: frame graph cycle detected between {}",
+                passes.join(", ")
+            );
+        }
     }
 
     /// Retire all mod-owned offscreen render targets owned by any mod in `disabled`.

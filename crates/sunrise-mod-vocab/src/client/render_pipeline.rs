@@ -2316,6 +2316,13 @@ pub enum TextureSource<'a> {
     /// Depth aspect of a mod-owned offscreen [`RenderTargetRef`] (must be bound to a
     /// non-filtering [`SamplerFilter::Nearest`] sampler).
     RenderTargetDepth(RenderTargetRef),
+    /// Colour attachment `attachment` (`0..color_targets.len()`) of a transient per-frame target
+    /// allocated via [`crate::FrameGraphContext::create_transient`].
+    TransientTargetColor(crate::TransientTargetId, u8),
+    /// Depth aspect of a transient per-frame target allocated via
+    /// [`crate::FrameGraphContext::create_transient`] (must be bound to a non-filtering
+    /// [`SamplerFilter::Nearest`] sampler).
+    TransientTargetDepth(crate::TransientTargetId),
 }
 
 /// Colour attachment format for a mod-owned offscreen [`RenderTargetRef`].

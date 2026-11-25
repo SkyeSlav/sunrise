@@ -47,6 +47,7 @@ pub(in crate::gfx) struct PostPassArgs<'a> {
     pub(in crate::gfx) sourced_frame: bool,
     pub(in crate::gfx) sourced_cpu: [usize; 3],
     pub(in crate::gfx) lifts_world: bool,
+    pub(in crate::gfx) frame_graph: Option<mod_frame_graph::FrameGraphRunner>,
 }
 
 pub(in crate::gfx) struct PostPassResult {
@@ -109,6 +110,7 @@ impl Renderer {
             sourced_frame,
             sourced_cpu,
             lifts_world,
+            mut frame_graph,
         } = args;
 
         let mut fg_made = false;
@@ -308,10 +310,30 @@ impl Renderer {
                         let (stage, color, depth) = match boundary {
                             WorldBoundary::AfterSky => {
                                 hooks.on_after_sky(sections, false);
+                                execute_pack_fg_slot(
+                                    &mut frame_graph,
+                                    mod_api::RenderLevelStage::AfterSky,
+                                    &self.device,
+                                    &self.queue,
+                                    encoder,
+                                    self.world_primitives.as_mut(),
+                                    &self.mod_render_targets,
+                                    &self.transient_targets,
+                                );
                                 return false;
                             }
                             WorldBoundary::AfterLevel => {
                                 hooks.on_after_level(sections, false);
+                                execute_pack_fg_slot(
+                                    &mut frame_graph,
+                                    mod_api::RenderLevelStage::AfterLevel,
+                                    &self.device,
+                                    &self.queue,
+                                    encoder,
+                                    self.world_primitives.as_mut(),
+                                    &self.mod_render_targets,
+                                    &self.transient_targets,
+                                );
                                 return false;
                             }
                             WorldBoundary::AfterOpaqueBlocks { color, depth } => {
@@ -341,11 +363,22 @@ impl Renderer {
                             WorldBoundary::CustomGeometry { .. } => unreachable!(),
                         };
                         let draws = hooks.on_render_stage(stage, sections, false);
-                        return self
+                        let drew = self
                             .world_primitives
                             .as_ref()
                             .expect("world primitives")
                             .draw_pack_prepared(encoder, color, depth, draws);
+                        execute_pack_fg_slot(
+                            &mut frame_graph,
+                            stage,
+                            &self.device,
+                            &self.queue,
+                            encoder,
+                            self.world_primitives.as_mut(),
+                            &self.mod_render_targets,
+                            &self.transient_targets,
+                        );
+                        return drew;
                     }
                     false
                 },
@@ -489,6 +522,13 @@ impl Renderer {
         if sourced_frame {
             self.sourced.copy_stats(&mut encoder, serial, sourced_cpu);
         }
+        if let Some(runner) = frame_graph {
+            let mut pool = self
+                .transient_targets
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            runner.finish(&mut pool);
+        }
         if let Some(timer) = &mut self.gpu_timer {
             timer.end(&self.device, &mut encoder, (&view_target, overlay_format));
         }
@@ -501,5 +541,27 @@ impl Renderer {
                 fg_made,
             },
         ))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_pack_fg_slot(
+    frame_graph: &mut Option<mod_frame_graph::FrameGraphRunner>,
+    stage: mod_api::RenderLevelStage,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    world_primitives: Option<&mut world_primitives::WorldPrimitives>,
+    mod_render_targets: &std::sync::Mutex<mod_render_targets::ModRenderTargets>,
+    transient_targets: &std::sync::Mutex<mod_frame_graph::TransientTargetPool>,
+) {
+    let slot = mod_frame_graph::FrameGraphSlot::AfterStage(stage);
+    if let Some(runner) = frame_graph.as_mut()
+        && runner.has_slot(slot)
+        && let Some(wp) = world_primitives
+    {
+        let targets = mod_render_targets.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pool = transient_targets.lock().unwrap_or_else(|e| e.into_inner());
+        runner.execute_slot(slot, device, queue, encoder, wp, &targets, &mut pool);
     }
 }

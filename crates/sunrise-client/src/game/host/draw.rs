@@ -773,6 +773,140 @@ impl RenderLevelStageContext for GameRenderLevelStageContext<'_, '_> {
     }
 }
 
+/// Offscreen pass draw recorder handed to a `FrameGraphContext::add_pass` callback.
+struct GameOffscreenDrawContext<'a, 'g> {
+    game: &'a Game<'g>,
+    pass: &'a mut sunrise_client::gfx::mod_frame_graph::RecordedFramePass,
+    transients: &'a [RenderTargetDescriptor],
+    camera: [f64; 3],
+}
+
+impl OffscreenDrawContext for GameOffscreenDrawContext<'_, '_> {
+    fn draw_mesh(
+        &mut self,
+        pipeline: RenderPipelineRef,
+        mesh: MeshRef,
+        draw: MeshDraw,
+        bindings: &DrawBindings<'_>,
+    ) -> Result<(), PipelineDrawError> {
+        self.game.native_offscreen_draw_mesh(
+            self.pass,
+            self.transients,
+            pipeline,
+            mesh,
+            draw,
+            bindings,
+        )
+    }
+
+    fn draw_vertices(
+        &mut self,
+        pipeline: RenderPipelineRef,
+        vertices: &[&[u8]],
+        indices: Option<(IndexFormat, &[u8])>,
+        draw: MeshDraw,
+        bindings: &DrawBindings<'_>,
+    ) -> Result<(), PipelineDrawError> {
+        self.game.native_offscreen_draw_vertices(
+            self.pass,
+            self.transients,
+            pipeline,
+            vertices,
+            indices,
+            draw,
+            bindings,
+        )
+    }
+
+    fn pipeline_quads(
+        &mut self,
+        pipeline: RenderPipelineRef,
+        quads: &[PipelineQuad],
+    ) -> Result<(), PipelineDrawError> {
+        self.game.native_offscreen_draw_pipeline_quads(
+            self.pass,
+            self.transients,
+            self.camera,
+            pipeline,
+            quads,
+        )
+    }
+}
+
+/// Frame-graph setup context lent to `Hooks::frame_graph_setup` (`FrameGraphSetupEvent`).
+pub(crate) struct GameFrameGraphContext<'a, 'g> {
+    game: &'a Game<'g>,
+    surface: &'a mut crate::world_geometry::FrameGraphSurface,
+}
+
+impl<'a, 'g> GameFrameGraphContext<'a, 'g> {
+    pub(crate) fn new(
+        game: &'a Game<'g>,
+        surface: &'a mut crate::world_geometry::FrameGraphSurface,
+    ) -> Self {
+        Self { game, surface }
+    }
+}
+
+impl FrameGraphContext for GameFrameGraphContext<'_, '_> {
+    fn create_transient(
+        &mut self,
+        desc: &RenderTargetDescriptor,
+    ) -> Result<TransientTargetId, RenderTargetError> {
+        let Some(renderer) = self.game.renderer.as_ref() else {
+            return Err(RenderTargetError::Unavailable);
+        };
+        desc.validate(renderer.max_texture_dimension_2d())?;
+        Ok(self.surface.graph.add_transient(desc.clone()))
+    }
+
+    fn add_pass(
+        &mut self,
+        desc: FramePassDescriptor,
+        record: &mut dyn FnMut(&mut dyn OffscreenDrawContext),
+    ) -> Result<FramePassId, FrameGraphError> {
+        let Some(renderer) = self.game.renderer.as_ref() else {
+            return Err(FrameGraphError::Unavailable);
+        };
+        let owner = mod_api::content::crash::current_native_mod();
+        // Validate imported mod render target ownership/liveness up front.
+        if let FrameTarget::Mod(rt) = desc.target {
+            renderer
+                .render_target_size(owner, rt)
+                .map_err(FrameGraphError::InvalidTarget)?;
+        }
+        for &t in desc.reads.iter().chain(desc.writes.iter()) {
+            if let FrameTarget::Mod(rt) = t {
+                renderer
+                    .render_target_size(owner, rt)
+                    .map_err(FrameGraphError::InvalidTarget)?;
+            }
+        }
+        if let Err(err) = self
+            .surface
+            .graph
+            .validate_new_pass(&desc, self.surface.oit_on)
+        {
+            if let FrameGraphError::Cycle { ref passes } = err {
+                renderer.warn_frame_graph_cycle_once(passes);
+            }
+            return Err(err);
+        }
+        let mut recorded =
+            sunrise_client::gfx::mod_frame_graph::RecordedFramePass::from_descriptor(desc, owner);
+        {
+            let mut ctx = GameOffscreenDrawContext {
+                game: self.game,
+                pass: &mut recorded,
+                transients: &self.surface.graph.transients,
+                camera: self.surface.camera,
+            };
+            record(&mut ctx);
+        }
+        Ok(self.surface.graph.push_pass(recorded))
+    }
+}
+
 #[cfg(test)]
 pub(in crate::game) fn canvas_test_font() -> crate::font::Font {
     use crate::{
