@@ -5,15 +5,15 @@
 //!    `chemlib:empty` + `chemlib:oxygen`.
 //! 2. `boiler` (dependent mod with `chemlib = { version = "^1", optional = true }`): registers
 //!    `boiler:steam` inside `#[cfg(feature = "chemlib")]`, ships `data/boiler/tags/chemlib/gas/hot.json`
-//!    listing `["boiler:steam"]` and a recipe guarded by `neoforge:registered` on `chemlib:gas` =
-//!    `boiler:steam`, and in `server_started` verifies:
+//!    listing `["boiler:steam"]`, and in `server_started` verifies:
 //!    - `host.registry(chemlib::GASES)` reads both `chemlib:oxygen` and `boiler:steam` by
 //!      `EntryKey<Gas>`, by `by_id`, and `id_of`;
 //!    - `host.tags().entries(chemlib::GASES, hot_tag)` contains `[steam]` and
-//!      `host.tags().is_in_custom_tag(chemlib::GASES, steam, hot_tag)` is `Some(true)`;
-//!    - the `neoforge:registered` recipe gated on `chemlib:gas` = `boiler:steam` loaded.
-//! 3. Run 2 (`boiler` alone, optional `chemlib` absent): starts cleanly with zero errors and
-//!    the conditional recipe is absent.
+//!      `host.tags().is_in_custom_tag(chemlib::GASES, steam, hot_tag)` is `Some(true)`.
+//! 3. Run 2 (`boiler` alone, optional `chemlib` absent): starts cleanly with zero errors.
+//!
+//! The `neoforge:registered` and `neoforge:tag_empty` load conditions on a custom registry are
+//! tested with the load conditions that read them (`m2m_load_conditions.rs`).
 
 use std::{
     fs,
