@@ -425,6 +425,15 @@ pub fn pipeline_shaders(
                 .iter()
                 .map(|(n, t)| (n.as_str(), t.as_str()))
                 .collect();
+            let (extracted_bindings, pc_size) =
+                sunrise_mod_pipeline::extract_mod_bindings(&vsh_text, dummy_fsh, textured);
+            let mod_bindings: Vec<sunrise_mod_pipeline::ModBinding<'_>> = extracted_bindings
+                .iter()
+                .map(|(name, kind)| sunrise_mod_pipeline::ModBinding {
+                    name: name.as_str(),
+                    kind: *kind,
+                })
+                .collect();
             let options = sunrise_mod_pipeline::Options {
                 textured,
                 vertex_inputs: if is_default {
@@ -432,6 +441,8 @@ pub fn pipeline_shaders(
                 } else {
                     &custom_refs
                 },
+                mod_bindings: &mod_bindings,
+                push_constant_size: pc_size,
                 check_backends: true,
                 ..Default::default()
             };
@@ -520,6 +531,15 @@ pub fn pipeline_shaders(
             .iter()
             .map(|(n, t)| (n.as_str(), t.as_str()))
             .collect();
+        let (extracted_bindings, pc_size) =
+            sunrise_mod_pipeline::extract_mod_bindings(&vsh_text, &fsh_text, textured);
+        let mod_bindings: Vec<sunrise_mod_pipeline::ModBinding<'_>> = extracted_bindings
+            .iter()
+            .map(|(name, kind)| sunrise_mod_pipeline::ModBinding {
+                name: name.as_str(),
+                kind: *kind,
+            })
+            .collect();
         let options = sunrise_mod_pipeline::Options {
             textured,
             vertex_inputs: if is_default {
@@ -527,6 +547,8 @@ pub fn pipeline_shaders(
             } else {
                 &custom_refs
             },
+            mod_bindings: &mod_bindings,
+            push_constant_size: pc_size,
             check_backends: true,
             ..Default::default()
         };

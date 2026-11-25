@@ -62,12 +62,17 @@ impl Renderer {
             };
             let mod_runtime = crate::mod_pipelines::pack_runtime_specs();
             let mod_vertex_buffers = [Some(mod_pipelines::PipelineVertex::buffer_layout())];
+            let mod_set1_layouts: Vec<Option<&wgpu::BindGroupLayout>> = self
+                .world_primitives
+                .as_ref()
+                .map(|wp| wp.pipelines.set1_bind_group_layouts())
+                .unwrap_or_default();
             pack_post::PackPost::new_with_mods(
                 (&self.device, &self.queue, &self.adapter),
                 post,
                 self.output.frame.format,
                 world,
-                mod_runtime.as_runtime(&mod_vertex_buffers),
+                mod_runtime.as_runtime_with_layouts(&mod_vertex_buffers, &mod_set1_layouts),
                 &std::sync::atomic::AtomicBool::new(false),
             )
         });
@@ -202,12 +207,25 @@ impl Renderer {
         let draws_sections = PackLoading::draws_of(&pack, terrain);
         let clouds = self.cloud_bindings.clone();
         let mod_runtime = crate::mod_pipelines::pack_runtime_specs();
+        let mod_set1_owned: Vec<Option<wgpu::BindGroupLayout>> = self
+            .world_primitives
+            .as_ref()
+            .map(|wp| {
+                wp.pipelines
+                    .set1_bind_group_layouts()
+                    .into_iter()
+                    .map(|l| l.cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let cancelled = cancel.clone();
         let build = move || {
             let buffers = pack_terrain_buffers();
             let buffers = &buffers[..terrain_buffer_count(draws)];
             let mod_vertex_buffers = [Some(mod_pipelines::PipelineVertex::buffer_layout())];
+            let mod_set1_refs: Vec<Option<&wgpu::BindGroupLayout>> =
+                mod_set1_owned.iter().map(Option::as_ref).collect();
             let world = pack_post::World {
                 atlas,
                 sprite_rects: &sprite_rects,
@@ -236,7 +254,7 @@ impl Renderer {
                 pack,
                 format,
                 world,
-                mod_runtime.as_runtime(&mod_vertex_buffers),
+                mod_runtime.as_runtime_with_layouts(&mod_vertex_buffers, &mod_set1_refs),
                 &cancelled,
             )
         };

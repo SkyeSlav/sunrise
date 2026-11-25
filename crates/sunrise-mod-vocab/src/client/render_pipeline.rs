@@ -75,6 +75,14 @@ pub struct RenderPipeline {
     /// defines, and GLSL compatibility bindings. All names are supplied by the mod; the engine
     /// hardcodes none.
     pub pack_binding: Option<PackBinding>,
+    /// Mod-declared set-1 [`BindGroupLayout`] (uniform buffers, combined image samplers, and
+    /// texel buffers). Set 0 remains vanilla's shared layouts (`BindGroupLayouts.java`).
+    pub bind_group_layout: BindGroupLayout,
+    /// Optional per-draw push-constant size in bytes (`RenderPipeline.withPushConstantSize`,
+    /// at most [`MAX_PUSH_CONSTANT_SIZE`] = 128 B, multiple of 4). Backed portably by an inline
+    /// std140 uniform slot at the end of set 1; GLSL `layout(push_constant)` blocks translate
+    /// onto that slot.
+    pub push_constant_size: u32,
 }
 impl RenderPipeline {
     /// Describe a required pipeline that draws [`PipelineVertexFormat::PositionTexColor`]
@@ -102,6 +110,8 @@ impl RenderPipeline {
             texture: None,
             geometry_class: None,
             pack_binding: None,
+            bind_group_layout: BindGroupLayout::default(),
+            push_constant_size: 0,
         }
     }
     /// The owning mod, assigned by the host after registration.
@@ -441,6 +451,74 @@ impl RenderPipeline {
     pub fn pack_binding(mut self, binding: PackBinding) -> Self {
         self.pack_binding = Some(binding);
         self
+    }
+
+    /// Set the pipeline's mod-declared set-1 [`BindGroupLayout`] (set 0 stays vanilla's shared
+    /// layouts from `BindGroupLayouts.java`).
+    pub fn bind_group_layout(mut self, layout: BindGroupLayout) -> Self {
+        self.bind_group_layout = layout;
+        self
+    }
+
+    /// Append a std140 uniform buffer binding to this pipeline's set-1 [`BindGroupLayout`].
+    pub fn uniform_buffer(mut self, name: impl Into<String>, min_size: u32) -> Self {
+        self.bind_group_layout.entries.push(BindEntry {
+            name: name.into(),
+            kind: BindingKind::UniformBuffer { min_size },
+        });
+        self
+    }
+
+    /// Append a combined 2D image sampler binding to this pipeline's set-1 [`BindGroupLayout`].
+    pub fn sampler(
+        mut self,
+        name: impl Into<String>,
+        filter: SamplerFilter,
+        address: SamplerAddress,
+    ) -> Self {
+        self.bind_group_layout.entries.push(BindEntry {
+            name: name.into(),
+            kind: BindingKind::CombinedImageSampler { filter, address },
+        });
+        self
+    }
+
+    /// Append an integer texel buffer binding (`isamplerBuffer` / `usamplerBuffer`) to this
+    /// pipeline's set-1 [`BindGroupLayout`].
+    pub fn texel_buffer(mut self, name: impl Into<String>, format: TexelBufferFormat) -> Self {
+        self.bind_group_layout.entries.push(BindEntry {
+            name: name.into(),
+            kind: BindingKind::TexelBuffer { format },
+        });
+        self
+    }
+
+    /// Declare a per-draw push-constant block size in bytes (`RenderPipeline.withPushConstantSize`,
+    /// at most [`MAX_PUSH_CONSTANT_SIZE`] = 128 B, multiple of 4). Backed portably by an inline
+    /// std140 uniform slot at the end of set 1.
+    pub fn push_constant_size(mut self, bytes: u32) -> Self {
+        self.push_constant_size = bytes;
+        self
+    }
+
+    /// Validate this pipeline's set-1 [`BindGroupLayout`] and [`Self::push_constant_size`]:
+    /// checks valid GLSL identifiers, duplicate names (`BindGroupLayout.ensureCompatible`),
+    /// collisions with vanilla `BindGroupLayouts.java` set-0 names (plus `SpriteRect` when
+    /// `.textured(...)` is set), positive uniform `min_size`, and push-constant bounds
+    /// (`<= 128 B`, 4-byte aligned, `RenderPipeline.java:406`).
+    pub fn validate_bind_group_layout(&self) -> Result<(), BindGroupLayoutError> {
+        self.bind_group_layout.validate(self.texture.is_some())?;
+        if self.push_constant_size > MAX_PUSH_CONSTANT_SIZE {
+            return Err(BindGroupLayoutError::PushConstantTooLarge(
+                self.push_constant_size,
+            ));
+        }
+        if self.push_constant_size % 4 != 0 {
+            return Err(BindGroupLayoutError::PushConstantUnaligned(
+                self.push_constant_size,
+            ));
+        }
+        Ok(())
     }
 
     /// The effective pack-program fallback chain in priority order: any names prepended in
@@ -1786,22 +1864,521 @@ impl MeshDraw {
     }
 }
 
+/// Maximum push-constant block size in bytes (`RenderPipeline.java:406`: `"Maximum push constant
+/// size is 128 bytes"`). Backed portably by an inline std140 uniform slot in set 1.
+pub const MAX_PUSH_CONSTANT_SIZE: u32 = 128;
+
+/// Built-in vanilla set-0 uniform block, texel buffer, and sampler names declared in vanilla
+/// 26.3's `net.minecraft.client.renderer.BindGroupLayouts` (including `Coeff0`..`Coeff1` for
+/// `LevelRenderer.OIT_TRANSMITTANCE_TARGET_COUNT = OIT_COEFFICIENT_COUNT / 4 = 2`).
+/// Mod-declared set-1 bindings may not reuse any of these names.
+pub const VANILLA_BIND_GROUP_LAYOUT_NAMES: &[&str] = &[
+    "DynamicTransforms",
+    "Projection",
+    "ChunkSection",
+    "TerrainUniform",
+    "Fog",
+    "Globals",
+    "Lighting",
+    "Sampler0",
+    "Sampler1",
+    "Sampler2",
+    "CloudInfo",
+    "CloudFaces",
+    "DissolveMaskSampler",
+    "InSampler",
+    "LightmapInfo",
+    "SpriteAnimationInfo",
+    "Sprite",
+    "CurrentSprite",
+    "NextSprite",
+    "GlintSampler",
+    "DepthBoundsSampler",
+    "Coeff0",
+    "Coeff1",
+];
+
+/// Texture filtering mode for a mod-declared [`BindingKind::CombinedImageSampler`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client sampler filter mode.
+pub enum SamplerFilter {
+    #[default]
+    Nearest,
+    Linear,
+}
+
+/// Texture coordinate addressing mode for a mod-declared [`BindingKind::CombinedImageSampler`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client sampler addressing mode.
+pub enum SamplerAddress {
+    #[default]
+    ClampToEdge,
+    Repeat,
+    MirroredRepeat,
+}
+
+/// Integer texel format for a mod-declared [`BindingKind::TexelBuffer`]
+/// (`UniformType.TEXEL_BUFFER`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client texel buffer format.
+pub enum TexelBufferFormat {
+    /// Signed 8-bit integer per texel (`GpuFormat.R8_SINT`), read via `isamplerBuffer`.
+    R8Sint,
+    /// Unsigned 8-bit integer per texel (`GpuFormat.R8_UINT`), read via `usamplerBuffer`.
+    R8Uint,
+    /// Signed 32-bit integer per texel (`GpuFormat.R32_SINT`), read via `isamplerBuffer`.
+    R32Sint,
+    /// Unsigned 32-bit integer per texel (`GpuFormat.R32_UINT`), read via `usamplerBuffer`.
+    R32Uint,
+}
+
+impl TexelBufferFormat {
+    /// Whether this format is signed (`isamplerBuffer`) vs unsigned (`usamplerBuffer`).
+    pub const fn is_signed(self) -> bool {
+        matches!(self, Self::R8Sint | Self::R32Sint)
+    }
+
+    /// Input byte width of one texel element.
+    pub const fn element_bytes(self) -> usize {
+        match self {
+            Self::R8Sint | Self::R8Uint => 1,
+            Self::R32Sint | Self::R32Uint => 4,
+        }
+    }
+
+    /// GLSL sampler type name matching this texel buffer format.
+    pub const fn glsl_type(self) -> &'static str {
+        if self.is_signed() {
+            "isamplerBuffer"
+        } else {
+            "usamplerBuffer"
+        }
+    }
+}
+
+/// Resource kind for one entry in a mod-declared set-1 [`BindGroupLayout`]
+/// (`com.mojang.renderpearl.api.pipeline.UniformType`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client bind-group entry kind.
+pub enum BindingKind {
+    /// A std140 uniform buffer block (`UniformType.UNIFORM_BUFFER`), bound via either a retained
+    /// [`UniformBufferRef`] or inline per-draw bytes ([`UniformValue::Inline`]).
+    UniformBuffer { min_size: u32 },
+    /// A combined 2D image + sampler (`UniformType.COMBINED_IMAGE_SAMPLER`), bound via
+    /// [`TextureSource`].
+    CombinedImageSampler {
+        filter: SamplerFilter,
+        address: SamplerAddress,
+    },
+    /// An integer texel buffer (`UniformType.TEXEL_BUFFER`), backed by a read-only storage
+    /// buffer and rewritten `texelFetch` calls.
+    TexelBuffer { format: TexelBufferFormat },
+}
+
+/// One named binding in a mod-declared set-1 [`BindGroupLayout`]
+/// (`BindGroupLayout.UniformDescription`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client bind-group entry declaration.
+pub struct BindEntry {
+    /// GLSL block or sampler identifier.
+    pub name: String,
+    /// Resource kind and fixed sampler/format parameters.
+    pub kind: BindingKind,
+}
+
+impl BindEntry {
+    /// Construct a new bind-group layout entry.
+    pub fn new(name: impl Into<String>, kind: BindingKind) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+        }
+    }
+}
+
+/// Why a [`BindGroupLayout`] or push-constant declaration was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+// no wire: refusal of a local client bind-group layout declaration.
+pub enum BindGroupLayoutError {
+    /// Binding name is not a valid non-`GL_` ASCII GLSL identifier.
+    InvalidName(String),
+    /// Two bindings in the same pipeline share a name (`BindGroupLayout.ensureCompatible`).
+    DuplicateName(String),
+    /// Binding name collides with a vanilla set-0 name from `BindGroupLayouts.java` (or
+    /// `SpriteRect` on a `.textured(...)` pipeline).
+    ReservedName(String),
+    /// A `UniformBuffer` entry declared `min_size == 0`.
+    ZeroUniformSize(String),
+    /// `push_constant_size` exceeds [`MAX_PUSH_CONSTANT_SIZE`] (`RenderPipeline.java:406`).
+    PushConstantTooLarge(u32),
+    /// `push_constant_size` is not a multiple of 4 bytes.
+    PushConstantUnaligned(u32),
+}
+
+impl std::fmt::Display for BindGroupLayoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidName(name) => write!(f, "invalid GLSL binding name `{name}`"),
+            Self::DuplicateName(name) => write!(f, "duplicate binding name `{name}`"),
+            Self::ReservedName(name) => write!(
+                f,
+                "binding name `{name}` is reserved by vanilla set-0 BindGroupLayouts"
+            ),
+            Self::ZeroUniformSize(name) => {
+                write!(f, "uniform buffer `{name}` must have min_size > 0")
+            }
+            Self::PushConstantTooLarge(size) => write!(
+                f,
+                "push_constant_size {size} exceeds maximum {MAX_PUSH_CONSTANT_SIZE} bytes"
+            ),
+            Self::PushConstantUnaligned(size) => {
+                write!(f, "push_constant_size {size} must be a multiple of 4 bytes")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BindGroupLayoutError {}
+
+/// Mod-declared set-1 bind-group layout on a [`RenderPipeline`]
+/// (`com.mojang.renderpearl.api.pipeline.BindGroupLayout`).
+///
+/// Set 0 holds vanilla's shared uniform blocks and samplers (`BindGroupLayouts.java`); set 1
+/// holds every entry declared here in deterministic declaration order.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client set-1 bind-group layout descriptor.
+pub struct BindGroupLayout {
+    pub entries: Vec<BindEntry>,
+}
+
+impl BindGroupLayout {
+    /// Start building a set-1 [`BindGroupLayout`].
+    pub fn builder() -> BindGroupLayoutBuilder {
+        BindGroupLayoutBuilder::default()
+    }
+
+    /// Whether this layout declares no custom set-1 bindings.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The declared set-1 entries in binding order.
+    pub fn entries(&self) -> &[BindEntry] {
+        &self.entries
+    }
+
+    /// Validate every entry name, uniqueness (`BindGroupLayout.ensureCompatible`), vanilla
+    /// `BindGroupLayouts.java` reservations (plus `SpriteRect` when `textured` is true), and
+    /// positive uniform `min_size`.
+    pub fn validate(&self, textured: bool) -> Result<(), BindGroupLayoutError> {
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in &self.entries {
+            if !is_valid_glsl_identifier(&entry.name) {
+                return Err(BindGroupLayoutError::InvalidName(entry.name.clone()));
+            }
+            if VANILLA_BIND_GROUP_LAYOUT_NAMES.contains(&entry.name.as_str())
+                || (textured && entry.name == "SpriteRect")
+            {
+                return Err(BindGroupLayoutError::ReservedName(entry.name.clone()));
+            }
+            if !seen.insert(entry.name.as_str()) {
+                return Err(BindGroupLayoutError::DuplicateName(entry.name.clone()));
+            }
+            if let BindingKind::UniformBuffer { min_size: 0 } = entry.kind {
+                return Err(BindGroupLayoutError::ZeroUniformSize(entry.name.clone()));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Builder for a set-1 [`BindGroupLayout`] (`BindGroupLayout.Builder`).
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+// no wire: local client bind-group layout builder.
+pub struct BindGroupLayoutBuilder {
+    entries: Vec<BindEntry>,
+}
+
+impl BindGroupLayoutBuilder {
+    /// Add a std140 uniform buffer entry (`UniformType.UNIFORM_BUFFER`).
+    pub fn uniform_buffer(mut self, name: impl Into<String>, min_size: u32) -> Self {
+        self.entries.push(BindEntry {
+            name: name.into(),
+            kind: BindingKind::UniformBuffer { min_size },
+        });
+        self
+    }
+
+    /// Add a combined 2D image sampler entry (`UniformType.COMBINED_IMAGE_SAMPLER`).
+    pub fn sampler(
+        mut self,
+        name: impl Into<String>,
+        filter: SamplerFilter,
+        address: SamplerAddress,
+    ) -> Self {
+        self.entries.push(BindEntry {
+            name: name.into(),
+            kind: BindingKind::CombinedImageSampler { filter, address },
+        });
+        self
+    }
+
+    /// Add an integer texel buffer entry (`UniformType.TEXEL_BUFFER`).
+    pub fn texel_buffer(mut self, name: impl Into<String>, format: TexelBufferFormat) -> Self {
+        self.entries.push(BindEntry {
+            name: name.into(),
+            kind: BindingKind::TexelBuffer { format },
+        });
+        self
+    }
+
+    /// Append a pre-constructed [`BindEntry`].
+    pub fn entry(mut self, entry: BindEntry) -> Self {
+        self.entries.push(entry);
+        self
+    }
+
+    /// Validate and build the [`BindGroupLayout`].
+    pub fn build(self) -> Result<BindGroupLayout, BindGroupLayoutError> {
+        let layout = BindGroupLayout {
+            entries: self.entries,
+        };
+        layout.validate(false)?;
+        Ok(layout)
+    }
+}
+
+/// Why a retained GPU uniform/storage buffer operation was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+// no wire: refusal of a local client GPU buffer operation.
+pub enum BufferError {
+    /// No GPU renderer is available in this context.
+    Unavailable,
+    /// The handle was destroyed, its owner mod was disabled, the world closed, or resources
+    /// reloaded. Retired handles never become valid again.
+    Stale,
+    /// The calling mod does not own this buffer.
+    NotOwned,
+    /// Buffer byte length was zero.
+    Empty,
+    /// Byte offset or byte length is not 4-byte aligned (`wgpu::COPY_BUFFER_ALIGNMENT`).
+    InvalidAlignment,
+    /// `byte_offset + bytes.len()` exceeds the buffer's capacity.
+    OutOfRange,
+    /// Requested buffer size exceeds the active device's uniform/buffer binding limit.
+    ExceedsDeviceLimit,
+}
+
+impl std::fmt::Display for BufferError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unavailable => "GPU renderer is unavailable",
+            Self::Stale => "buffer handle is stale or destroyed",
+            Self::NotOwned => "buffer handle is owned by another mod",
+            Self::Empty => "buffer size must be non-zero",
+            Self::InvalidAlignment => "buffer offset and byte length must be 4-byte aligned",
+            Self::OutOfRange => "buffer write exceeds buffer capacity",
+            Self::ExceedsDeviceLimit => "buffer size exceeds active device limit",
+        })
+    }
+}
+
+impl std::error::Error for BufferError {}
+
+impl crate::NoBackend for BufferError {
+    fn no_backend() -> Self {
+        Self::Unavailable
+    }
+}
+
+/// A live client context that can operate on retained GPU [`UniformBufferRef`] handles.
+pub trait UniformBufferContext {
+    /// The scoped engine access used by [`UniformBufferRef`] methods.
+    // hidden: internal trait method opening the retained-buffer backend for UniformBufferRef.
+    #[doc(hidden)]
+    fn uniform_buffer_backend(&self) -> Option<UniformBufferBackendRef<'_>> {
+        None
+    }
+}
+
+/// Opaque access to retained uniform-buffer operations, not to the world or other client services.
+// hidden: only the handle can open the uniform-buffer backend.
+// exhaustive: private field; only constructed inside this crate.
+// no wire: scoped backend borrow.
+#[doc(hidden)]
+pub struct UniformBufferBackendRef<'a>(&'a dyn crate::prelude::ClientRenderClientBackend);
+
+impl<H: crate::ClientHost + ?Sized> UniformBufferContext for H {
+    fn uniform_buffer_backend(&self) -> Option<UniformBufferBackendRef<'_>> {
+        self.backend()
+            .map(|backend| UniformBufferBackendRef(backend.open()))
+    }
+}
+
+/// Generational handle to a retained GPU std140 uniform buffer, created via
+/// [`crate::prelude::ClientRenderClientHost::create_uniform_buffer`].
+///
+/// Handles are owner-checked and retired automatically on mod disable, world close, resource
+/// reload, or [`Self::destroy`].
+// no wire: process-local generational handle to a retained GPU uniform buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+// exhaustive: only the engine creates handles.
+pub struct UniformBufferRef(pub(crate) u64, pub(crate) u32);
+
+impl UniformBufferRef {
+    pub(crate) fn from_parts(generation: u64, slot: u32) -> Result<Self, &'static str> {
+        if generation == 0 {
+            return Err("unpublished uniform buffer generation");
+        }
+        Ok(Self(generation, slot))
+    }
+
+    /// Partially or fully update this uniform buffer starting at `byte_offset` (both
+    /// `byte_offset` and `bytes.len()` must be 4-byte aligned and in bounds).
+    pub fn write(
+        self,
+        host: &(impl UniformBufferContext + ?Sized),
+        byte_offset: u32,
+        bytes: &[u8],
+    ) -> Result<(), BufferError> {
+        host.uniform_buffer_backend()
+            .ok_or(BufferError::Unavailable)?
+            .0
+            .uniform_buffer_write(self, byte_offset, bytes)
+    }
+
+    /// Immediately free this uniform buffer and retire the handle ([`BufferError::Stale`]
+    /// thereafter).
+    pub fn destroy(self, host: &(impl UniformBufferContext + ?Sized)) -> Result<(), BufferError> {
+        host.uniform_buffer_backend()
+            .ok_or(BufferError::Unavailable)?
+            .0
+            .uniform_buffer_destroy(self)
+    }
+}
+
+impl crate::__private::game::Fields for UniformBufferRef {
+    type Fields<'a> = crate::__private::game::ModelRefFields;
+    fn fields(&self) -> Self::Fields<'_> {
+        crate::__private::game::ModelRefFields {
+            generation: self.0,
+            slot: self.1,
+        }
+    }
+}
+
+/// Value bound to a [`BindingKind::UniformBuffer`] entry in [`DrawBindings`].
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+// no wire: local client per-draw uniform buffer binding.
+pub enum UniformValue<'a> {
+    /// A retained GPU uniform buffer created via
+    /// [`crate::prelude::ClientRenderClientHost::create_uniform_buffer`].
+    Buffer(UniformBufferRef),
+    /// Inline per-draw std140 uniform bytes, sub-allocated from a per-frame ring buffer with
+    /// dynamic offsets (zero per-frame `create_buffer` / `create_bind_group` churn).
+    Inline(&'a [u8]),
+}
+
+/// Texture bound to a [`BindingKind::CombinedImageSampler`] entry in [`DrawBindings`].
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+// no wire: local client per-draw texture binding source.
+pub enum TextureSource<'a> {
+    /// A sprite on the block/item atlas (`minecraft:block/stone`, `mymod:block/custom`).
+    AtlasSprite(&'a Identifier),
+    /// A live dynamic texture registered via
+    /// [`crate::prelude::ClientRenderClientHost::create_dynamic_texture`].
+    DynamicTexture(&'a Identifier),
+    /// A standalone PNG texture asset (`assets/<ns>/textures/<path>.png` or exact `.png` asset
+    /// path) loaded from the active resource packs.
+    StandaloneTexture(&'a Identifier),
+    /// The active world pass's depth texture (usable only when the pipeline does not write
+    /// depth in the same pass).
+    WorldDepth,
+    /// The active world pass's colour snapshot texture when available.
+    WorldColor,
+    /// Vanilla's active 16x16 lightmap texture.
+    Lightmap,
+}
+
+/// Value bound to one set-1 entry in [`DrawBindings`].
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+// no wire: local client per-draw set-1 binding value.
+pub enum BindingValue<'a> {
+    Uniform(UniformValue<'a>),
+    Texture(TextureSource<'a>),
+    /// Raw texel elements matching the entry's [`TexelBufferFormat`] (1 byte/texel for `R8*`,
+    /// 4 bytes/texel for `R32*`).
+    TexelBuffer(&'a [u8]),
+}
+
 /// Per-draw set-1 resource bindings passed to [`crate::WorldDrawContext::draw_mesh`] and
-/// [`crate::WorldDrawContext::draw_vertices`] (extended with custom uniform buffers, samplers,
-/// and texel buffers in `#5428`). Pass `&DrawBindings::EMPTY` for pipelines with no custom
-/// bind-group entries.
-#[derive(Clone, Copy, Debug, Default)]
+/// [`crate::WorldDrawContext::draw_vertices`]. Pass `&DrawBindings::EMPTY` for pipelines with no
+/// custom bind-group entries or push constants.
+#[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 // no wire: local client per-draw resource bindings.
 pub struct DrawBindings<'a> {
-    _marker: std::marker::PhantomData<&'a ()>,
+    /// Named set-1 entries matching the pipeline's [`BindGroupLayout`].
+    pub entries: Vec<(&'a str, BindingValue<'a>)>,
+    /// Inline push-constant bytes when the pipeline declared `push_constant_size > 0`.
+    pub push_constants: Option<&'a [u8]>,
 }
 
-impl DrawBindings<'_> {
+impl<'a> DrawBindings<'a> {
     /// Empty bind-group bindings for pipelines that use only vanilla set-0 bindings.
     pub const EMPTY: Self = Self {
-        _marker: std::marker::PhantomData,
+        entries: Vec::new(),
+        push_constants: None,
     };
+
+    /// Create an empty set-1 bindings builder.
+    pub const fn new() -> Self {
+        Self::EMPTY
+    }
+
+    /// Bind a retained [`UniformBufferRef`] to uniform entry `name`.
+    pub fn uniform_buffer(mut self, name: &'a str, buffer: UniformBufferRef) -> Self {
+        self.entries
+            .push((name, BindingValue::Uniform(UniformValue::Buffer(buffer))));
+        self
+    }
+
+    /// Bind inline std140 uniform `bytes` to uniform entry `name`.
+    pub fn inline_uniform(mut self, name: &'a str, bytes: &'a [u8]) -> Self {
+        self.entries
+            .push((name, BindingValue::Uniform(UniformValue::Inline(bytes))));
+        self
+    }
+
+    /// Bind a [`TextureSource`] to combined image sampler entry `name`.
+    pub fn texture(mut self, name: &'a str, source: TextureSource<'a>) -> Self {
+        self.entries.push((name, BindingValue::Texture(source)));
+        self
+    }
+
+    /// Bind raw texel bytes to texel buffer entry `name`.
+    pub fn texel_buffer(mut self, name: &'a str, bytes: &'a [u8]) -> Self {
+        self.entries.push((name, BindingValue::TexelBuffer(bytes)));
+        self
+    }
+
+    /// Supply inline push-constant bytes (must be `<= push_constant_size`, 4-byte aligned).
+    pub fn push_constants(mut self, bytes: &'a [u8]) -> Self {
+        self.push_constants = Some(bytes);
+        self
+    }
 }
 
 /// Maximum number of colour targets a [`RenderPipeline`] can declare
@@ -2654,6 +3231,12 @@ pub enum PipelineDrawError {
     /// Transient vertex or index bytes are not aligned to 4 bytes, the binding stride, or the
     /// index element size.
     InvalidAlignment,
+    /// Set-1 [`DrawBindings`] is missing a declared entry, supplies an unknown/duplicate entry,
+    /// mismatches kind or `min_size`, references an unknown/unavailable texture, or provides an
+    /// invalid push-constant payload.
+    InvalidBinding,
+    /// A retained [`UniformBufferRef`] in [`DrawBindings`] was stale, not owned, or unavailable.
+    Buffer(BufferError),
 }
 
 impl crate::RegisterRenderPipelinesEvent<'_> {
@@ -3364,5 +3947,144 @@ mod tests {
             *host.calls.borrow(),
             vec!["write_vertices", "write_indices", "replace", "destroy"]
         );
+    }
+
+    #[test]
+    fn bind_group_layout_validation_refuses_duplicates_reserved_zero_size_and_oversize_push_constants()
+     {
+        // Valid layout with uniform buffer, sampler, and texel buffer.
+        let layout = BindGroupLayout::builder()
+            .uniform_buffer("ModParams", 16)
+            .sampler("ModTex", SamplerFilter::Linear, SamplerAddress::Repeat)
+            .texel_buffer("ModLut", TexelBufferFormat::R32Sint)
+            .build()
+            .expect("valid set-1 layout");
+        assert_eq!(layout.entries().len(), 3);
+
+        // Duplicate name refused (BindGroupLayout.ensureCompatible).
+        assert_eq!(
+            BindGroupLayout::builder()
+                .uniform_buffer("ModParams", 16)
+                .sampler(
+                    "ModParams",
+                    SamplerFilter::Nearest,
+                    SamplerAddress::ClampToEdge
+                )
+                .build(),
+            Err(BindGroupLayoutError::DuplicateName("ModParams".to_owned()))
+        );
+
+        // Vanilla BindGroupLayouts.java reserved names refused (including Coeff0/Coeff1).
+        for reserved in [
+            "Globals",
+            "Projection",
+            "DynamicTransforms",
+            "Fog",
+            "Sampler0",
+            "DepthBoundsSampler",
+            "Coeff0",
+            "Coeff1",
+            "CloudFaces",
+        ] {
+            assert_eq!(
+                BindGroupLayout::builder()
+                    .uniform_buffer(reserved, 16)
+                    .build(),
+                Err(BindGroupLayoutError::ReservedName(reserved.to_owned())),
+                "reserved name {reserved} must be refused"
+            );
+        }
+
+        // SpriteRect is reserved only when .textured(...) is set on the pipeline.
+        let untextured = pipeline("test:untextured").uniform_buffer("SpriteRect", 16);
+        assert!(untextured.validate_bind_group_layout().is_ok());
+        let textured = pipeline("test:textured")
+            .textured(PipelineTexture::Sprite(
+                Identifier::parse("minecraft:block/stone").unwrap(),
+            ))
+            .uniform_buffer("SpriteRect", 16);
+        assert_eq!(
+            textured.validate_bind_group_layout(),
+            Err(BindGroupLayoutError::ReservedName("SpriteRect".to_owned()))
+        );
+
+        // Zero min_size refused.
+        assert_eq!(
+            BindGroupLayout::builder()
+                .uniform_buffer("EmptyBlock", 0)
+                .build(),
+            Err(BindGroupLayoutError::ZeroUniformSize(
+                "EmptyBlock".to_owned()
+            ))
+        );
+
+        // Push constants: <= 128 B and 4-byte aligned accepted; > 128 B or unaligned refused.
+        assert!(
+            pipeline("test:pc_ok")
+                .push_constant_size(MAX_PUSH_CONSTANT_SIZE)
+                .validate_bind_group_layout()
+                .is_ok()
+        );
+        assert_eq!(
+            pipeline("test:pc_big")
+                .push_constant_size(MAX_PUSH_CONSTANT_SIZE + 4)
+                .validate_bind_group_layout(),
+            Err(BindGroupLayoutError::PushConstantTooLarge(132))
+        );
+        assert_eq!(
+            pipeline("test:pc_unaligned")
+                .push_constant_size(14)
+                .validate_bind_group_layout(),
+            Err(BindGroupLayoutError::PushConstantUnaligned(14))
+        );
+    }
+
+    #[test]
+    fn uniform_buffer_ref_routes_through_backend_and_refuses_without_one() {
+        struct Bare;
+        impl crate::Host for Bare {}
+        crate::impl_host_areas!(Bare);
+        impl crate::ClientHost for Bare {}
+        crate::impl_client_host_areas!(Bare);
+
+        let buf = UniformBufferRef::from_parts(1, 0).unwrap();
+        assert_eq!(buf.write(&Bare, 0, &[0; 16]), Err(BufferError::Unavailable));
+        assert_eq!(buf.destroy(&Bare), Err(BufferError::Unavailable));
+
+        struct Recording {
+            calls: std::cell::RefCell<Vec<&'static str>>,
+        }
+        impl crate::Host for Recording {
+            fn backend(&self) -> Option<crate::BackendRef<'_>> {
+                Some(crate::BackendRef::of(self))
+            }
+        }
+        crate::impl_host_areas!(Recording);
+        impl crate::ClientHost for Recording {}
+        crate::impl_client_host_areas!(Recording);
+        impl crate::Backend for Recording {}
+        crate::impl_backend_areas!(Recording, except(client_render));
+        impl crate::prelude::ClientRenderClientBackend for Recording {
+            fn uniform_buffer_write(
+                &self,
+                _: UniformBufferRef,
+                _: u32,
+                _: &[u8],
+            ) -> Result<(), BufferError> {
+                self.calls.borrow_mut().push("write");
+                Ok(())
+            }
+            fn uniform_buffer_destroy(&self, _: UniformBufferRef) -> Result<(), BufferError> {
+                self.calls.borrow_mut().push("destroy");
+                Ok(())
+            }
+        }
+
+        let host = Recording {
+            calls: std::cell::RefCell::new(Vec::new()),
+        };
+        buf.write(&host, 0, &[0; 16]).unwrap();
+        buf.destroy(&host).unwrap();
+        assert_eq!(*host.calls.borrow(), vec!["write", "destroy"]);
     }
 }

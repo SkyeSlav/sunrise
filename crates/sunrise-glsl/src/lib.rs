@@ -34,6 +34,22 @@ pub struct Inputs<'a> {
     pub blocks: &'a [(&'a str, u32)],
     /// Samplers by name: the texture's binding in set 0, the sampler object's the next one.
     pub samplers: &'a [(&'a str, u32)],
+    /// Bind group set index for caller-declared extra bindings ([`Self::extra_blocks`],
+    /// [`Self::extra_samplers`], [`Self::extra_texel_buffers`], and
+    /// [`Self::push_constant_binding`]). Defaults to `0` for vanilla callers; mod pipelines
+    /// place their declared `BindGroupLayout` in set `1`.
+    pub extra_set: u32,
+    /// Extra uniform blocks by name with their binding in [`Self::extra_set`].
+    pub extra_blocks: &'a [(&'a str, u32)],
+    /// Extra combined samplers by name: texture at `b`, sampler object at `b + 1` in
+    /// [`Self::extra_set`].
+    pub extra_samplers: &'a [(&'a str, u32)],
+    /// Extra integer texel buffers by name: read-only storage buffer at `b` in
+    /// [`Self::extra_set`].
+    pub extra_texel_buffers: &'a [(&'a str, u32)],
+    /// Optional binding in [`Self::extra_set`] onto which `layout(push_constant) uniform ...`
+    /// blocks are translated as a std140 uniform buffer. `None` refuses `layout(push_constant)`.
+    pub push_constant_binding: Option<u32>,
     /// Loose `uniform T name;` declarations dropped where they stand, as a block already declares
     /// the name (an older version of the block kept in an `#else` branch); any other loose
     /// uniform is an error.
@@ -91,6 +107,8 @@ pub struct Translated {
     /// The resources of set 0 the stages' entry points read, each with those stages
     /// ([`bindings_read`], from the validation that made the program).
     pub read: Vec<(u32, wgpu_types::ShaderStages)>,
+    /// The resources of set 1 the stages' entry points read, each with those stages.
+    pub extra_read: Vec<(u32, wgpu_types::ShaderStages)>,
     /// First set-0 binding assigned to [`Translated::other`], strictly above every binding in
     /// [`Inputs::blocks`] and [`Inputs::samplers`].
     other_base: u32,
@@ -155,12 +173,16 @@ impl Translated {
         other: Vec<String>,
         other_base: u32,
     ) -> Self {
-        let read = bindings_read([(&vertex, &vertex_info), (&fragment, &fragment_info)]);
+        let read =
+            bindings_read_in_group([(&vertex, &vertex_info), (&fragment, &fragment_info)], 0);
+        let extra_read =
+            bindings_read_in_group([(&vertex, &vertex_info), (&fragment, &fragment_info)], 1);
         Self {
             vertex,
             fragment,
             other,
             read,
+            extra_read,
             other_base,
         }
     }
@@ -175,6 +197,35 @@ impl Translated {
     /// for one a stage only declares (or the preprocessor kept but nothing reads).
     pub fn stages_reading(&self, binding: u32) -> wgpu_types::ShaderStages {
         stages_reading(&self.read, binding)
+    }
+
+    /// The stages whose entry points read the resource at `(group, binding)`.
+    pub fn stages_reading_in_group(&self, group: u32, binding: u32) -> wgpu_types::ShaderStages {
+        match group {
+            0 => stages_reading(&self.read, binding),
+            1 => stages_reading(&self.extra_read, binding),
+            _ => wgpu_types::ShaderStages::NONE,
+        }
+    }
+
+    /// Maximum declared std140 byte span of the uniform block at `(group, binding)` across both
+    /// stages, or `None` if neither stage declares a uniform struct at that binding.
+    pub fn uniform_block_size(&self, group: u32, binding: u32) -> Option<u32> {
+        let mut max_span: Option<u32> = None;
+        for module in [&self.vertex, &self.fragment] {
+            for (_, global) in module.global_variables.iter() {
+                let matches = global
+                    .binding
+                    .as_ref()
+                    .is_some_and(|b| b.group == group && b.binding == binding);
+                if matches && global.space == naga::AddressSpace::Uniform {
+                    if let naga::TypeInner::Struct { span, .. } = module.types[global.ty].inner {
+                        max_span = Some(max_span.map_or(span, |prev| prev.max(span)));
+                    }
+                }
+            }
+        }
+        max_span
     }
 
     /// Whether every stage that reads the block at `binding` of set 0 declares it as one float
@@ -247,13 +298,22 @@ impl Translated {
 pub fn bindings_read(
     stages: [(&naga::Module, &naga::valid::ModuleInfo); 2],
 ) -> Vec<(u32, wgpu_types::ShaderStages)> {
+    bindings_read_in_group(stages, 0)
+}
+
+/// The resources of bind group `group` that the entry points of each stage read, through any
+/// function they call, each with the stages reading it.
+pub fn bindings_read_in_group(
+    stages: [(&naga::Module, &naga::valid::ModuleInfo); 2],
+    group: u32,
+) -> Vec<(u32, wgpu_types::ShaderStages)> {
     let mut read: Vec<(u32, wgpu_types::ShaderStages)> = Vec::new();
     for ((module, info), stage) in stages.into_iter().zip([
         wgpu_types::ShaderStages::VERTEX,
         wgpu_types::ShaderStages::FRAGMENT,
     ]) {
         for (handle, global) in module.global_variables.iter() {
-            let Some(binding) = global.binding.as_ref().filter(|b| b.group == 0) else {
+            let Some(binding) = global.binding.as_ref().filter(|b| b.group == group) else {
                 continue;
             };
             let reads =
@@ -739,6 +799,23 @@ fn block_name(line: &str) -> Option<&str> {
         .then_some(name)
 }
 
+/// Whether the `layout(...)` qualifier before `uniform` names `push_constant`.
+fn is_push_constant_block(line: &str) -> bool {
+    let Some(at) = line.find("uniform") else {
+        return false;
+    };
+    let head = line[..at].trim();
+    let Some(open) = head.find('(') else {
+        return false;
+    };
+    let Some(close) = head[open + 1..].rfind(')') else {
+        return false;
+    };
+    head[open + 1..open + 1 + close]
+        .split(',')
+        .any(|item| item.trim() == "push_constant")
+}
+
 /// First set-0 binding strictly above every caller-declared block (`b`) and sampler (`b`, `b + 1`).
 fn other_binding_base(inputs: &Inputs) -> Result<u32, String> {
     let mut base = 0u32;
@@ -753,6 +830,32 @@ fn other_binding_base(inputs: &Inputs) -> Result<u32, String> {
             .checked_add(2)
             .ok_or_else(|| "sampler binding index overflow".to_owned())?;
         base = base.max(next);
+    }
+    if inputs.extra_set == 0 {
+        for &(_, b) in inputs.extra_blocks {
+            let next = b
+                .checked_add(1)
+                .ok_or_else(|| "block binding index overflow".to_owned())?;
+            base = base.max(next);
+        }
+        for &(_, b) in inputs.extra_samplers {
+            let next = b
+                .checked_add(2)
+                .ok_or_else(|| "sampler binding index overflow".to_owned())?;
+            base = base.max(next);
+        }
+        for &(_, b) in inputs.extra_texel_buffers {
+            let next = b
+                .checked_add(1)
+                .ok_or_else(|| "texel buffer binding index overflow".to_owned())?;
+            base = base.max(next);
+        }
+        if let Some(b) = inputs.push_constant_binding {
+            let next = b
+                .checked_add(1)
+                .ok_or_else(|| "push constant binding index overflow".to_owned())?;
+            base = base.max(next);
+        }
     }
     Ok(base)
 }
@@ -839,12 +942,29 @@ fn rewrite(
     for source_line in text.lines() {
         for line in declaration_lines(source_line) {
             if let Some(name) = block_name(line) {
-                let binding = match inputs.blocks.iter().find(|(block, _)| *block == name) {
-                    Some((_, b)) => *b,
-                    None => names.other_binding(name)?,
+                let (set, binding) = if is_push_constant_block(line) {
+                    let Some(b) = inputs.push_constant_binding else {
+                        return Err(format!(
+                            "push_constant block {name} is not declared on this pipeline"
+                        ));
+                    };
+                    (inputs.extra_set, b)
+                } else if let Some((_, b)) = inputs.blocks.iter().find(|(block, _)| *block == name)
+                {
+                    (0, *b)
+                } else if let Some((_, b)) =
+                    inputs.extra_blocks.iter().find(|(block, _)| *block == name)
+                {
+                    (inputs.extra_set, *b)
+                } else {
+                    (0, names.other_binding(name)?)
                 };
                 let tail = line[line.find("uniform").unwrap_or(0)..].trim();
-                writeln!(out, "layout(std140, set = 0, binding = {binding}) {tail}").unwrap();
+                writeln!(
+                    out,
+                    "layout(std140, set = {set}, binding = {binding}) {tail}"
+                )
+                .unwrap();
                 continue;
             }
             let Some(decl) = declaration(line) else {
@@ -855,7 +975,14 @@ fn rewrite(
             let qualifiers = decl.qualifiers.join(" ");
             match decl.storage {
                 "uniform" if matches!(decl.ty, "isamplerBuffer" | "usamplerBuffer") => {
-                    let binding = names.other_binding(decl.name)?;
+                    let (set, binding) = match inputs
+                        .extra_texel_buffers
+                        .iter()
+                        .find(|(buf, _)| *buf == decl.name)
+                    {
+                        Some((_, b)) => (inputs.extra_set, *b),
+                        None => (0, names.other_binding(decl.name)?),
+                    };
                     let name = decl.name;
                     let (scalar, vector) = if decl.ty == "isamplerBuffer" {
                         ("int", "ivec4")
@@ -864,25 +991,32 @@ fn rewrite(
                     };
                     writeln!(
                         out,
-                        "layout(std430, set = 0, binding = {binding}) readonly buffer hz_buffer_{name} {{ {scalar} hz_data_{name}[]; }};\n\
+                        "layout(std430, set = {set}, binding = {binding}) readonly buffer hz_buffer_{name} {{ {scalar} hz_data_{name}[]; }};\n\
                          {vector} hz_fetch_{name}(int i) {{ return {vector}(hz_data_{name}[i], 0, 0, 1); }}"
                     )
                     .unwrap();
                 }
                 "uniform" if decl.ty == "sampler2D" => {
-                    let binding = match inputs
+                    let (set, binding) = match inputs
                         .samplers
                         .iter()
                         .find(|(sampler, _)| *sampler == decl.name)
                     {
-                        Some((_, b)) => *b,
-                        None => names.other_binding(decl.name)?,
+                        Some((_, b)) => (0, *b),
+                        None => match inputs
+                            .extra_samplers
+                            .iter()
+                            .find(|(sampler, _)| *sampler == decl.name)
+                        {
+                            Some((_, b)) => (inputs.extra_set, *b),
+                            None => (0, names.other_binding(decl.name)?),
+                        },
                     };
                     let name = decl.name;
                     writeln!(
                         out,
-                        "layout(set = 0, binding = {binding}) uniform texture2D hz_tex_{name};\n\
-                     layout(set = 0, binding = {}) uniform sampler hz_smp_{name};\n\
+                        "layout(set = {set}, binding = {binding}) uniform texture2D hz_tex_{name};\n\
+                     layout(set = {set}, binding = {}) uniform sampler hz_smp_{name};\n\
                      #define {name} sampler2D(hz_tex_{name}, hz_smp_{name})",
                         binding + 1
                     )
@@ -1146,6 +1280,11 @@ mod tests {
         let inputs = Inputs {
             blocks: &BLOCKS,
             samplers: &SAMPLERS,
+            extra_set: 0,
+            extra_blocks: &[],
+            extra_samplers: &[],
+            extra_texel_buffers: &[],
+            push_constant_binding: None,
             loose: &LOOSE,
             defines,
             includes: &includes(read),
@@ -1734,6 +1873,11 @@ mod tests {
         let inputs = Inputs {
             blocks: &[("Camera", 17), ("Params", 24)],
             samplers: &[("Albedo", 15)],
+            extra_set: 0,
+            extra_blocks: &[],
+            extra_samplers: &[],
+            extra_texel_buffers: &[],
+            push_constant_binding: None,
             loose: &[],
             defines: &[],
             includes: &custom_includes,
@@ -1854,6 +1998,94 @@ mod tests {
                 .all(|(_, f)| f.name.as_deref() != Some("hz_main"))
         );
         assert_eq!(loc1.fragment_writes(), [1]);
+    }
+
+    #[test]
+    fn set1_extra_bindings_and_push_constants_bind_into_group_1() {
+        let read = |_: &str| -> Result<Option<String>, String> { Ok(None) };
+        let inc = Includes {
+            read: &read,
+            namespace: "minecraft",
+            folder: "shaders/include/",
+            once: &[],
+        };
+        let inputs = Inputs {
+            blocks: &BLOCKS,
+            samplers: &[],
+            extra_set: 1,
+            extra_blocks: &[("ModParams", 0)],
+            extra_samplers: &[("ModTex", 1)],
+            extra_texel_buffers: &[("ModLut", 3)],
+            push_constant_binding: Some(4),
+            loose: &[],
+            defines: &[],
+            includes: &inc,
+        };
+        let vsh = "#version 330\n\
+            layout(std140) uniform Projection { mat4 ProjMat; };\n\
+            layout(push_constant) uniform PushData { vec4 Offset; };\n\
+            uniform isamplerBuffer ModLut;\n\
+            out vec2 uv;\n\
+            void main() {\n\
+                int idx = texelFetch(ModLut, 0).r;\n\
+                uv = vec2(float(idx), 0.5);\n\
+                gl_Position = ProjMat * Offset;\n\
+            }\n";
+        let fsh = "#version 330\n\
+            layout(std140) uniform ModParams { vec4 Tint; };\n\
+            uniform sampler2D ModTex;\n\
+            in vec2 uv;\n\
+            out vec4 fragColor;\n\
+            void main() {\n\
+                fragColor = Tint * texture(ModTex, uv);\n\
+            }\n";
+        let stages = Stages {
+            dir: "demo:shaders/core/",
+            vertex: vsh,
+            fragment: fsh,
+        };
+        let glue = Glue {
+            inputs: &[],
+            prelude: "",
+            setup: "",
+            finish: "",
+            vertex_id: "int(gl_VertexIndex)",
+            fragment_finish: None,
+            interface: LIMITS,
+        };
+        let translated = translate(&stages, &inputs, &glue, &|_| false)
+            .expect("set-1 bindings and push_constant must translate");
+        assert!(translated.other.is_empty());
+        assert_eq!(
+            translated.stages_reading_in_group(1, 0),
+            wgpu_types::ShaderStages::FRAGMENT
+        );
+        assert_eq!(
+            translated.stages_reading_in_group(1, 1),
+            wgpu_types::ShaderStages::FRAGMENT
+        );
+        assert_eq!(
+            translated.stages_reading_in_group(1, 2),
+            wgpu_types::ShaderStages::FRAGMENT
+        );
+        assert_eq!(
+            translated.stages_reading_in_group(1, 3),
+            wgpu_types::ShaderStages::VERTEX
+        );
+        assert_eq!(
+            translated.stages_reading_in_group(1, 4),
+            wgpu_types::ShaderStages::VERTEX
+        );
+        assert_eq!(translated.uniform_block_size(1, 4), Some(16));
+
+        // Without push_constant_binding, layout(push_constant) is refused.
+        let no_pc = Inputs {
+            push_constant_binding: None,
+            ..inputs
+        };
+        let err = translate(&stages, &no_pc, &glue, &|_| false)
+            .expect_err("undeclared push_constant must fail");
+        assert!(err.contains("push_constant"), "got: {err}");
     }
 }
 

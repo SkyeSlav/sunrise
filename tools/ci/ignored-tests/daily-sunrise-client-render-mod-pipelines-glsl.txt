@@ -6,4 +6,6 @@ sunrise-client-render gfx::mod_pipelines::tests::custom_blend_invert_produces_ex
 sunrise-client-render gfx::mod_pipelines::tests::depthless_triangles_debug_lines_and_triangle_fan_draw_expected_pixels lib daily gpu
 sunrise-client-render gfx::mod_pipelines::tests::retained_compact_8byte_mesh_draws_two_frames_and_destroy_returns_stale lib daily gpu
 sunrise-client-render gfx::mod_pipelines::tests::instanced_vertex_binding_draws_four_offset_quads_in_one_draw_call lib daily gpu
+sunrise-client-render gfx::mod_pipelines::tests::set1_uniform_buffer_inline_uniform_push_constant_and_texel_buffer_draw_expected_pixels lib daily gpu
+sunrise-client-render gfx::mod_pipelines::tests::set1_dynamic_and_standalone_textures_sample_with_repeat_addressing lib daily gpu
 sunrise-client-render gfx::pack_post::mod_stage_tests::pack_composite_inverts_mod_glsl_quad_drawn_once_after_opaque_blocks lib daily gpu

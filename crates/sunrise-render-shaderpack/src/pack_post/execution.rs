@@ -1558,6 +1558,12 @@ impl PackPost {
                     if chunk.slot != m.slot || chunk.is_empty() {
                         continue;
                     }
+                    if m.has_mod_bind_group {
+                        let Some((ref bg, ref offsets)) = chunk.mod_bind_group else {
+                            continue;
+                        };
+                        rp.set_bind_group(1, bg, offsets);
+                    }
                     for (binding, buffer, range) in &chunk.vertex_buffers {
                         rp.set_vertex_buffer(*binding, buffer.slice(range.clone()));
                     }

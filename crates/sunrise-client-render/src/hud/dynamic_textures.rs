@@ -120,6 +120,9 @@ struct Image {
     size: [u32; 2],
     /// The last pixels given, `size` RGBA: what the atlas gets again after a rebuild.
     pixels: Arc<[u8]>,
+    /// Monotonically bumped on every `create` and `update` so standalone GPU texture caches
+    /// (used by mod pipelines' `TextureSource::DynamicTexture`) know when to re-upload.
+    pixel_revision: u64,
     /// Whether the atlas lacks these pixels yet: set by a create, an update or a rebuilt atlas,
     /// cleared when [`DynamicTextures::patches`] hands them to a frame.
     dirty: bool,
@@ -163,6 +166,13 @@ impl DynamicTextures {
     /// Changes when an image is added, removed or resized; pixel-only updates don't relayout text.
     pub fn geometry_revision(&self) -> u64 {
         self.geometry_revision
+    }
+
+    /// The live pixels, dimensions, and per-image upload revision of dynamic texture `id`
+    /// (`TextureSource::DynamicTexture` in mod render pipelines).
+    pub fn image_data(&self, id: &Identifier) -> Option<([u32; 2], Arc<[u8]>, u64)> {
+        let image = self.images.get(id)?;
+        Some((image.size, Arc::clone(&image.pixels), image.pixel_revision))
     }
 
     /// Mod `owner` (none outside a mod's call) creates image `id` of `size` (width, height) from
@@ -216,6 +226,7 @@ impl DynamicTextures {
                 slot,
                 size,
                 pixels: rgba.into(),
+                pixel_revision: 1,
                 dirty: true,
             },
         );
@@ -266,6 +277,7 @@ impl DynamicTextures {
             names.live.insert(key.to_owned(), rect);
             self.geometry_revision = self.geometry_revision.wrapping_add(1);
         }
+        image.pixel_revision = image.pixel_revision.wrapping_add(1).max(1);
         image.dirty = true;
         Ok(())
     }

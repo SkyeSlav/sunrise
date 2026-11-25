@@ -166,6 +166,9 @@ pub struct ModPackRuntime<'a> {
     pub pipelines: &'a [ModPipelinePackSpec],
     /// Vertex buffer layout for mod pipeline quads when `pipelines` is non-empty.
     pub vertex_buffers: &'a [Option<wgpu::VertexBufferLayout<'a>>],
+    /// Optional per-pipeline-slot set-1 `wgpu::BindGroupLayout` for mod pipelines declaring
+    /// custom uniforms, samplers, texel buffers, or push constants (`#5428`).
+    pub bind_group_layouts: &'a [Option<&'a wgpu::BindGroupLayout>],
 }
 
 /// Owned, `Send` form of [`ModPackRuntime`] for moving into background shader-pack build threads.
@@ -182,11 +185,22 @@ impl OwnedModPackRuntime {
         &'a self,
         vertex_buffers: &'a [Option<wgpu::VertexBufferLayout<'a>>],
     ) -> ModPackRuntime<'a> {
+        self.as_runtime_with_layouts(vertex_buffers, &[])
+    }
+
+    /// Borrow as a [`ModPackRuntime`] paired with `vertex_buffers` and per-slot set-1
+    /// `bind_group_layouts`.
+    pub fn as_runtime_with_layouts<'a>(
+        &'a self,
+        vertex_buffers: &'a [Option<wgpu::VertexBufferLayout<'a>>],
+        bind_group_layouts: &'a [Option<&'a wgpu::BindGroupLayout>],
+    ) -> ModPackRuntime<'a> {
         ModPackRuntime {
             depth_targets: &self.depth_targets,
             uniforms: &self.uniforms,
             pipelines: &self.pipelines,
             vertex_buffers,
+            bind_group_layouts,
         }
     }
 }
@@ -198,6 +212,8 @@ pub struct ModPackPass {
     /// Index into `Targets::mod_depth` when the active pack actually samples this target;
     /// `None` uses the pack's main `depthtex0` (or shadow depth in `Shadow`).
     pub depth_target: Option<usize>,
+    /// Whether this pass's pipeline layout includes a mod-declared set-1 bind group (`#5428`).
+    pub has_mod_bind_group: bool,
     pub pass: Pass,
 }
 
@@ -224,6 +240,8 @@ pub struct ModDrawChunk {
     pub vertex_buffers: Vec<(u32, wgpu::Buffer, std::ops::Range<u64>)>,
     pub kind: ModDrawKind,
     pub instances: std::ops::Range<u32>,
+    /// Optional mod-declared set-1 bind group and dynamic offsets (`#5428`).
+    pub mod_bind_group: Option<(wgpu::BindGroup, Vec<u32>)>,
 }
 
 impl ModDrawChunk {
@@ -246,6 +264,7 @@ impl ModDrawChunk {
                 base_vertex: 0,
             },
             instances: 0..1,
+            mod_bind_group: None,
         }
     }
 
