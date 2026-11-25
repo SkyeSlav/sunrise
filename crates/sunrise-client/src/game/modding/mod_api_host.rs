@@ -441,6 +441,7 @@ pub(super) trait SidedLevel: mod_api::LevelHost {
 }
 
 impl SidedLevel for super::GameLevel<'_> {
+    #[inline]
     fn client_side(&self) -> bool {
         sunrise_world::level::LevelAccess::is_client_side(self)
     }
@@ -459,6 +460,7 @@ impl<
 }
 
 impl SidedLevel for super::native_hooks::HitLevel<'_> {
+    #[inline]
     fn client_side(&self) -> bool {
         self.0.client_side()
     }
@@ -501,6 +503,7 @@ impl FireOddsLevel<'_> {
 }
 
 impl SidedLevel for FireOddsLevel<'_> {
+    #[inline]
     fn client_side(&self) -> bool {
         self.base.client_side()
     }
@@ -536,6 +539,7 @@ impl mod_api::LevelHost for FireOddsLevel<'_> {
         fn sky_darken() -> Option<i32>;
     }
 
+    #[inline]
     fn has_item_capability(&self, pos: [i32; 3], side: Option<mod_api::Direction>) -> Option<bool> {
         let level = self.base.api_level?;
         let at = mod_api::BlockSide { level, pos, side };
@@ -546,15 +550,18 @@ impl mod_api::LevelHost for FireOddsLevel<'_> {
         )?;
         Some(mod_api::__private::item_capability_present(self, site))
     }
+    #[inline]
     fn block_entity(&self, pos: [i32; 3]) -> Option<mod_api::BlockEntityRef> {
         if self.block_entity_removed(pos) {
             return None;
         }
         mod_api::LevelHost::block_entity(self.base, pos)
     }
+    #[inline]
     fn attachment_read_scope(&self) -> mod_api::AttachmentReadScope<'_> {
         mod_api::LevelHost::attachment_read_scope(self.base)
     }
+    #[inline]
     fn block_entity_part_snapshot(
         &self,
         entity: mod_api::BlockEntityRef,
@@ -569,6 +576,7 @@ impl mod_api::LevelHost for FireOddsLevel<'_> {
         }
         mod_api::LevelHost::block_entity_part_snapshot(self.base, entity, namespace, name)
     }
+    #[inline]
     fn block_entity_data(&self, entity: mod_api::BlockEntityRef) -> Option<mod_api::Compound> {
         use mod_api::__private::game::Fields;
         if self.block_entity_removed(entity.fields().position) {
@@ -576,9 +584,11 @@ impl mod_api::LevelHost for FireOddsLevel<'_> {
         }
         mod_api::LevelHost::block_entity_data(self.base, entity)
     }
+    #[inline]
     fn block_state(&self, pos: [i32; 3]) -> Option<mod_api::BlockState> {
         self.block(pos).try_into_api().ok()
     }
+    #[inline]
     fn fluid_state(&self, pos: [i32; 3]) -> Option<mod_api::FluidState> {
         if !self.is_loaded(pos) {
             return None;
@@ -589,6 +599,7 @@ impl mod_api::LevelHost for FireOddsLevel<'_> {
             .ok()
             .flatten()
     }
+    #[inline]
     fn collision_shape(&self, pos: [i32; 3]) -> Option<mod_api::VoxelShape> {
         if !self.is_loaded(pos) {
             return None;
@@ -619,6 +630,7 @@ impl mod_api::LevelHost for FireOddsLevel<'_> {
             shape.unwrap_or_else(|_| sunrise_core::geometry::VoxelShape::empty()),
         ))
     }
+    #[inline]
     fn is_raining_at(&self, [x, y, z]: [i32; 3]) -> bool {
         if let Some(level) = self.prediction {
             self.is_loaded([x, y, z])
@@ -633,9 +645,11 @@ impl mod_api::LevelHost for FireOddsLevel<'_> {
 }
 
 impl mod_api::LevelHost for super::GameLevel<'_> {
+    #[inline]
     fn block_states(&self) -> mod_api::BlockStates<'_> {
         mod_api::BlockStates::of(&self.tables)
     }
+    #[inline]
     fn block_face_sturdy(
         &self,
         pos: [i32; 3],
@@ -654,12 +668,14 @@ impl mod_api::LevelHost for super::GameLevel<'_> {
             support,
         )
     }
+    #[inline]
     fn can_see_sky(&self, pos: [i32; 3]) -> Option<bool> {
         if !self.native_authoritative {
             self.api_level?;
         }
         Some(super::native_world_read::can_see_sky(self.world, pos))
     }
+    #[inline]
     fn has_item_capability(&self, pos: [i32; 3], side: Option<mod_api::Direction>) -> Option<bool> {
         let level = self.api_level?;
         let [x, y, z] = pos;
@@ -669,15 +685,18 @@ impl mod_api::LevelHost for super::GameLevel<'_> {
             .capability_site(at, self.world.block(x, y, z), false)?;
         Some(mod_api::__private::item_capability_present(self, site))
     }
+    #[inline]
     fn block_entity(&self, pos: [i32; 3]) -> Option<mod_api::BlockEntityRef> {
         super::native_block_entity_refs::world_block_entity(self.world, self.api_level?, pos)
     }
+    #[inline]
     fn container_size(&self, at: mod_api::BlockSide) -> Option<usize> {
         if !self.native_authoritative || self.api_level != Some(at.level) {
             return None;
         }
         self.containers().capability_size(at)
     }
+    #[inline]
     fn lend_container_stack(
         &self,
         at: mod_api::BlockSide,
@@ -688,9 +707,11 @@ impl mod_api::LevelHost for super::GameLevel<'_> {
             self.containers().lend_capability_stack(at, slot, read);
         }
     }
+    #[inline]
     fn attachment_read_scope(&self) -> mod_api::AttachmentReadScope<'_> {
         mod_api::__private::game::attachment_read_scope(self.attachment_query_scopes)
     }
+    #[inline]
     fn block_entity_part_snapshot(
         &self,
         entity: mod_api::BlockEntityRef,
@@ -707,6 +728,7 @@ impl mod_api::LevelHost for super::GameLevel<'_> {
             (namespace, name),
         )
     }
+    #[inline]
     fn block_entity_data(&self, entity: mod_api::BlockEntityRef) -> Option<mod_api::Compound> {
         use mod_api::__private::game::Fields;
         let fields = entity.fields();
@@ -725,36 +747,45 @@ impl mod_api::LevelHost for super::GameLevel<'_> {
         )
     }
 
+    #[inline]
     fn block_state_id(&self, name: &str) -> Option<mod_api::BlockState> {
         super::native_block_states::parse(self.block_registries, self.registry, name)?
             .try_into_api()
             .ok()
     }
+    #[inline]
     fn block_state_default(&self, block: mod_api::BlockKey) -> Option<mod_api::BlockState> {
         super::api_values::default_state(block)?.try_into_api().ok()
     }
+    #[inline]
     fn block_state(&self, pos: [i32; 3]) -> Option<mod_api::BlockState> {
         sunrise_world::level::LevelAccess::block_state(self, BlockPos::new(pos[0], pos[1], pos[2]))
             .try_into_api()
             .ok()
     }
+    #[inline]
     fn state_block(&self, state: mod_api::BlockState) -> Option<&str> {
         self.native_state_block(state.try_into_engine(&()).ok()?)
     }
+    #[inline]
     fn state_string(&self, state: mod_api::BlockState) -> Option<String> {
         self.registry
             .state(state.try_into_engine(&()).ok()?)
             .map(super::native_block_states::serialize)
     }
+    #[inline]
     fn min_y(&self) -> i32 {
         self.world.shape.min_y
     }
+    #[inline]
     fn height(&self) -> i32 {
         self.world.shape.height
     }
+    #[inline]
     fn tags(&self) -> &dyn mod_api::Tags {
         self
     }
+    #[inline]
     fn fluid_state(&self, pos: [i32; 3]) -> Option<mod_api::FluidState> {
         let [x, y, z] = pos;
         if !(self.world.shape.contains_y(y) && self.world.loaded(x, z)) {
@@ -765,6 +796,7 @@ impl mod_api::LevelHost for super::GameLevel<'_> {
             .ok()
             .flatten()
     }
+    #[inline]
     fn collision_shape(&self, pos: [i32; 3]) -> Option<mod_api::VoxelShape> {
         let [x, y, z] = pos;
         if !(self.world.shape.contains_y(y) && self.world.loaded(x, z)) {
@@ -779,6 +811,7 @@ impl mod_api::LevelHost for super::GameLevel<'_> {
             ),
         ))
     }
+    #[inline]
     fn state_with_property(
         &self,
         state: mod_api::BlockState,
@@ -789,9 +822,11 @@ impl mod_api::LevelHost for super::GameLevel<'_> {
             .try_into_api()
             .ok()
     }
+    #[inline]
     fn brightness(&self, layer: mod_api::LightLayer, pos: [i32; 3]) -> i32 {
         super::native_level_refs::world_brightness(self.world, layer, pos)
     }
+    #[inline]
     fn raw_brightness(&self, pos: [i32; 3], sky_darken: i32) -> i32 {
         sunrise_world::level::raw_brightness(
             self,
@@ -799,21 +834,26 @@ impl mod_api::LevelHost for super::GameLevel<'_> {
             sky_darken,
         )
     }
+    #[inline]
     fn is_loaded(&self, pos: [i32; 3]) -> bool {
         self.world.is_loaded_at(pos[0], pos[1], pos[2])
     }
+    #[inline]
     fn is_raining_at(&self, pos: [i32; 3]) -> bool {
         self.world.is_loaded_at(pos[0], pos[1], pos[2])
             && self
                 .behaviours
                 .is_raining_at(self, BlockPos::new(pos[0], pos[1], pos[2]))
     }
+    #[inline]
     fn is_raining(&self) -> Option<bool> {
         Some(self.raining)
     }
+    #[inline]
     fn sky_darken(&self) -> Option<i32> {
         Some(self.darken)
     }
+    #[inline]
     fn enabled_features(&self) -> mod_api::FeatureFlags {
         mod_api::FeatureFlags::new(self.enabled_features.clone())
     }
@@ -855,6 +895,7 @@ impl mod_api::AttachmentHost for Game<'_> {
 }
 
 impl mod_api::AttachmentHost for super::GameLevel<'_> {
+    #[inline]
     fn validate_attachment(
         &self,
         namespace: &str,
@@ -863,12 +904,14 @@ impl mod_api::AttachmentHost for super::GameLevel<'_> {
     ) -> Result<(), mod_api::AttachmentError> {
         mod_api::__private::validate_attachment_use(namespace, name, sync)
     }
+    #[inline]
     fn validate_attachment_key(
         &self,
         write: &mod_api::AttachmentStoreKey<'_>,
     ) -> Result<(), mod_api::AttachmentError> {
         mod_api::__private::validate_attachment_key(write)
     }
+    #[inline]
     fn read_attachments(
         &mut self,
         holder: Holder,
@@ -878,9 +921,11 @@ impl mod_api::AttachmentHost for super::GameLevel<'_> {
         }
         world_attachment_ref(self.world, holder)
     }
+    #[inline]
     fn attachment_changed(&mut self, holder: Holder, persist: bool, sync: bool) {
         world_attachment_changed(self.world, holder, persist, sync);
     }
+    #[inline]
     fn attachments(
         &mut self,
         holder: mod_api::Holder,
@@ -894,6 +939,7 @@ impl mod_api::AttachmentHost for super::GameLevel<'_> {
 }
 
 impl mod_api::LevelRandomHost for super::GameLevel<'_> {
+    #[inline]
     fn container_signal(&mut self, pos: [i32; 3]) -> Option<i32> {
         if !self.native_authoritative || !self.world.is_loaded_at(pos[0], pos[1], pos[2]) {
             return None;
@@ -903,9 +949,11 @@ impl mod_api::LevelRandomHost for super::GameLevel<'_> {
             BlockPos::new(pos[0], pos[1], pos[2]),
         ))
     }
+    #[inline]
     fn attachments(&mut self) -> &mut dyn mod_api::AttachmentStore {
         self
     }
+    #[inline]
     fn lend_random(&mut self, draw: mod_api::RandomDraw<'_>) {
         if self.native_authoritative {
             super::api_values::with_live_level_random(&mut self.world.random, draw);
@@ -914,43 +962,53 @@ impl mod_api::LevelRandomHost for super::GameLevel<'_> {
 }
 
 impl mod_api::LevelHost for super::native_hooks::HitLevel<'_> {
+    #[inline]
     fn block_entity_data(&self, _: mod_api::BlockEntityRef) -> Option<mod_api::Compound> {
         None
     }
 
+    #[inline]
     fn block_state_id(&self, name: &str) -> Option<mod_api::BlockState> {
         super::native_block_states::parse(self.0.block_registries()?, self.0.registry(), name)?
             .try_into_api()
             .ok()
     }
+    #[inline]
     fn block_state_default(&self, block: mod_api::BlockKey) -> Option<mod_api::BlockState> {
         self.0.block_registries()?;
         super::api_values::default_state(block)?.try_into_api().ok()
     }
+    #[inline]
     fn tags(&self) -> &dyn mod_api::Tags {
         self
     }
+    #[inline]
     fn block_state(&self, pos: [i32; 3]) -> Option<mod_api::BlockState> {
         self.0.block(pos).try_into_api().ok()
     }
+    #[inline]
     fn state_block(&self, state: mod_api::BlockState) -> Option<&str> {
         self.0
             .registry()
             .state(state.try_into_engine(&()).ok()?)
             .map(|s| &*s.name)
     }
+    #[inline]
     fn state_string(&self, state: mod_api::BlockState) -> Option<String> {
         self.0
             .registry()
             .state(state.try_into_engine(&()).ok()?)
             .map(super::native_block_states::serialize)
     }
+    #[inline]
     fn min_y(&self) -> i32 {
         self.0.shape().min_y
     }
+    #[inline]
     fn height(&self) -> i32 {
         self.0.shape().height
     }
+    #[inline]
     fn state_with_property(
         &self,
         state: mod_api::BlockState,
@@ -969,6 +1027,7 @@ impl mod_api::LevelHost for super::native_hooks::HitLevel<'_> {
 }
 
 impl mod_api::AttachmentHost for super::native_hooks::HitLevel<'_> {
+    #[inline]
     fn validate_attachment(
         &self,
         namespace: &str,
@@ -977,23 +1036,27 @@ impl mod_api::AttachmentHost for super::native_hooks::HitLevel<'_> {
     ) -> Result<(), mod_api::AttachmentError> {
         mod_api::__private::validate_attachment_use(namespace, name, sync)
     }
+    #[inline]
     fn validate_attachment_key(
         &self,
         write: &mod_api::AttachmentStoreKey<'_>,
     ) -> Result<(), mod_api::AttachmentError> {
         mod_api::__private::validate_attachment_key(write)
     }
+    #[inline]
     fn read_attachments(
         &mut self,
         holder: Holder,
     ) -> Result<Option<&Attachments>, AttachmentError> {
         self.0.attachments_read(holder).map(Some)
     }
+    #[inline]
     fn attachment_changed(&mut self, holder: Holder, _: bool, sync: bool) {
         if sync {
             self.0.attachment_sync_queued(holder);
         }
     }
+    #[inline]
     fn attachments(
         &mut self,
         holder: mod_api::Holder,
@@ -1003,6 +1066,7 @@ impl mod_api::AttachmentHost for super::native_hooks::HitLevel<'_> {
         self.0.attachments(holder)
     }
     /// The hit's victim and causing entity lend their maps for reading only.
+    #[inline]
     fn read_only_attachments(
         &self,
         holder: mod_api::Holder,
@@ -1033,15 +1097,18 @@ impl mod_api::AttachmentHost for super::native_hooks::HitLevel<'_> {
 }
 
 impl mod_api::LevelRandomHost for super::native_hooks::HitLevel<'_> {
+    #[inline]
     fn attachments(&mut self) -> &mut dyn mod_api::AttachmentStore {
         self
     }
+    #[inline]
     fn lend_random(&mut self, draw: mod_api::RandomDraw<'_>) {
         super::api_values::with_live_level_random(self.0.random(), draw);
     }
 }
 
 impl mod_api::HitHost for super::native_hooks::HitLevel<'_> {
+    #[inline]
     fn play_sound_at(
         &mut self,
         sound: &str,
@@ -1056,6 +1123,7 @@ impl mod_api::HitHost for super::native_hooks::HitLevel<'_> {
                 .hit_effects()
                 .is_some_and(|hit| hit.play(sound, at, source, volume, pitch, None))
     }
+    #[inline]
     fn play_sound_from(
         &mut self,
         entity: mod_api::EntityRef,
@@ -1072,14 +1140,17 @@ impl mod_api::HitHost for super::native_hooks::HitLevel<'_> {
         };
         super::native_hooks::sound_id(sound) && hit.play(sound, at, source, volume, pitch, Some(id))
     }
+    #[inline]
     fn lend_entity_random(&mut self, entity: mod_api::EntityRef, draw: mod_api::RandomDraw<'_>) {
         if let Some((_, _, random)) = self.0.hit_effects().and_then(|hit| hit.entity(entity)) {
             super::api_values::with_live_level_random(random, draw);
         }
     }
+    #[inline]
     fn victim(&self) -> Option<mod_api::LivingView<'_>> {
         mod_api::LivingView::new(self, mod_api::__private::LivingParty::Victim)
     }
+    #[inline]
     fn causing(&self) -> Option<mod_api::LivingView<'_>> {
         mod_api::LivingView::new(self, mod_api::__private::LivingParty::Causing)
     }
@@ -1111,6 +1182,7 @@ impl super::native_hooks::HitLevel<'_> {
 
 /// A hit's victim and causer, read through the same functions as the `LivingRef` reads.
 impl mod_api::__private::LivingReads for super::native_hooks::HitLevel<'_> {
+    #[inline]
     fn living_entity(&self, party: mod_api::__private::LivingParty) -> Option<mod_api::EntityRef> {
         let reads = self.0.reads()?;
         let id = match self.party_body(party)? {
@@ -1121,6 +1193,7 @@ impl mod_api::__private::LivingReads for super::native_hooks::HitLevel<'_> {
         };
         Some(mod_api::EntityRef::new(reads.epoch, id))
     }
+    #[inline]
     fn living_kind(
         &self,
         party: mod_api::__private::LivingParty,
@@ -1128,18 +1201,23 @@ impl mod_api::__private::LivingReads for super::native_hooks::HitLevel<'_> {
         let keys = self.0.reads()?.living_types;
         super::native_living_body::body_kind(self.party_body(party)?, keys)
     }
+    #[inline]
     fn living_holder(&self, party: mod_api::__private::LivingParty) -> Option<mod_api::Holder> {
         super::native_living_body::body_holder(self.party_body(party)?)
     }
+    #[inline]
     fn living_health(&self, party: mod_api::__private::LivingParty) -> Option<f32> {
         super::native_living_body::body_health(self.party_body(party)?)
     }
+    #[inline]
     fn living_absorption(&self, party: mod_api::__private::LivingParty) -> Option<f32> {
         super::native_living_body::body_absorption(self.party_body(party)?)
     }
+    #[inline]
     fn living_max_health(&self, party: mod_api::__private::LivingParty) -> Option<f32> {
         super::native_living_body::body_max_health(self.party_body(party)?)
     }
+    #[inline]
     fn living_effect(
         &self,
         party: mod_api::__private::LivingParty,
@@ -1149,12 +1227,14 @@ impl mod_api::__private::LivingReads for super::native_hooks::HitLevel<'_> {
             .and_then(sunrise_client_core::potions::effect_by_index)?;
         super::native_living_body::body_effect(self.party_body(party)?, def.index)
     }
+    #[inline]
     fn living_effects(
         &self,
         party: mod_api::__private::LivingParty,
     ) -> Option<Vec<mod_api::ActiveEffect>> {
         super::native_living_body::body_effects(self.party_body(party)?)
     }
+    #[inline]
     fn living_potion_affected(
         &self,
         party: mod_api::__private::LivingParty,
@@ -1167,6 +1247,7 @@ impl mod_api::__private::LivingReads for super::native_hooks::HitLevel<'_> {
                 super::native_living_body::body_potion_affected(body, def.index)
             })
     }
+    #[inline]
     fn living_attribute_value(
         &self,
         party: mod_api::__private::LivingParty,
@@ -1179,6 +1260,7 @@ impl mod_api::__private::LivingReads for super::native_hooks::HitLevel<'_> {
             sunrise_world::attribute_map::ValueKind::Computed,
         )
     }
+    #[inline]
     fn living_hand_item(
         &self,
         party: mod_api::__private::LivingParty,
@@ -1191,6 +1273,7 @@ impl mod_api::__private::LivingReads for super::native_hooks::HitLevel<'_> {
         )?;
         super::native_living_refs::lend_equipment(stack, read)
     }
+    #[inline]
     fn living_no_ai(&self, party: mod_api::__private::LivingParty) -> Option<bool> {
         super::native_living_body::body_no_ai(self.party_body(party)?)
     }

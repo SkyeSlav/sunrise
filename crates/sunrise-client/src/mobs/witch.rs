@@ -55,9 +55,11 @@ impl Default for HealRaiders {
 }
 impl Goal for HealRaiders {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if m.extra.counter2 > 0 || !m.random.next_boolean() {
             return false;
@@ -67,13 +69,16 @@ impl Goal for HealRaiders {
         }
         self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.extra.counter2 = super::goals::reduced(200);
         self.0.start(m, cx);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx);
     }
@@ -107,22 +112,28 @@ impl RangedAttack {
 }
 impl Goal for RangedAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.target_info(cx.w).is_some_and(|t| t.alive)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.can_use(m, cx) || m.target_info(cx.w).is_some_and(|t| t.alive) && !m.ai.nav.is_done()
     }
+    #[inline]
     fn stop(&mut self, _: &mut Mob, _: &mut Cx) {
         self.see_time = 0;
         self.attack_time = -1;
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(who) = m.ai.target else { return };
         let Some(t) = cx.w.target_info(who) else {

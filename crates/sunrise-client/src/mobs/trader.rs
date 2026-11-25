@@ -100,9 +100,11 @@ struct DrinkItem {
 }
 impl Goal for DrinkItem {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // Level.isDarkOutside / isBrightOutside: a dimension with a fixed
         // time (the Nether and the End) is neither dark nor bright outside,
@@ -116,9 +118,11 @@ impl Goal for DrinkItem {
             cx.w.daylight && invisible(m)
         }
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.extra.using_item > 0
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         // The potion of invisibility keeps its contents (the item model tints by them).
         if self.item == "minecraft:potion" {
@@ -130,6 +134,7 @@ impl Goal for DrinkItem {
         }
         m.extra.using_item = 1;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         if m.extra.using_item != 0 {
             m.extra.set_main_hand(None);
@@ -170,9 +175,11 @@ pub(super) fn tick_drink(
 struct TradeWithPlayer;
 impl Goal for TradeWithPlayer {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | JUMP
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // `TradeWithPlayerGoal.canUse`: alive, dry, on the ground, not hurt
         // recently, and within four blocks of the trading player.
@@ -186,6 +193,7 @@ impl Goal for TradeWithPlayer {
                 .selected_player()
                 .is_some_and(|p| m.distance_sqr(p.position) <= 16.0)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.nav_stop();
     }
@@ -195,15 +203,19 @@ impl Goal for TradeWithPlayer {
 struct LookAtTradingPlayer;
 impl Goal for LookAtTradingPlayer {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.extra.flag2 && cx.w.selected_player().is_some()
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(p) = cx.w.selected_player() {
             m.look_at([p.position.x, p.eye[1], p.position.z]);
@@ -225,16 +237,20 @@ fn too_far(m: &Mob, p: [f64; 3], distance: f64) -> bool {
 }
 impl Goal for WanderToPosition {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.extra.point.is_some_and(|p| too_far(m, p, self.stop))
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.extra.point = None;
         m.nav_stop();
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(p) = m.extra.point else { return };
         if !m.ai.nav.is_done() {
@@ -293,9 +309,11 @@ impl MoveTowardsRestriction {
 }
 impl Goal for MoveTowardsRestriction {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         if self.look { MOVE | LOOK } else { MOVE }
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if within_home(m) {
             return false;
@@ -316,9 +334,11 @@ impl Goal for MoveTowardsRestriction {
             None => false,
         }
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         !m.ai.nav.is_done()
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.nav_move_to(cx.w, self.wanted, self.speed);
     }

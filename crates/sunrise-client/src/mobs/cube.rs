@@ -396,15 +396,19 @@ pub fn scale(m: &Mob, alpha: f32) -> glam::Mat4 {
 pub(super) struct CubeFloat;
 impl Goal for CubeFloat {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         JUMP | MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.is_in_liquid()
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
         if m.random.next_float() < 0.8 {
             m.ai.jump = true;
@@ -419,16 +423,20 @@ struct CubeAttack {
 }
 impl Goal for CubeAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.target_info(cx.w)
             .is_some_and(|t| t.alive && !(t.is_player && t.creative))
     }
+    #[inline]
     fn start(&mut self, _: &mut Mob, _: &mut Cx) {
         self.tired = reduced(300);
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !m
             .target_info(cx.w)
@@ -439,9 +447,11 @@ impl Goal for CubeAttack {
         self.tired -= 1;
         self.tired > 0
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(t) = m.target_info(cx.w) {
             m.turn_to([t.position.x, t.eye_y, t.position.z], 10.0, 10.0);
@@ -458,13 +468,16 @@ pub(super) struct CubeRandomDirection {
 }
 impl Goal for CubeRandomDirection {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.ai.target.is_none()
             && (m.ground.on_ground || m.is_in_liquid() || m.has_effect("minecraft:levitation"))
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
         self.next -= 1;
         if self.next <= 0 {
@@ -479,13 +492,16 @@ impl Goal for CubeRandomDirection {
 pub(super) struct CubeKeepJumping;
 impl Goal for CubeKeepJumping {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         JUMP | MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         // `CubeMobKeepOnJumpingGoal.canUse`: not while it is a passenger.
         !m.extra.passenger
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
         set_wanted(m, 1.0);
     }

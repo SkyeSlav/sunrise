@@ -1040,7 +1040,7 @@ impl Screen {
 
     /// The screen with the game's `saves` folder, which `RealmsSelectFileToUploadScreen`
     /// lists (`new RealmsSelectFileToUploadScreen` reads the level list).
-    pub fn with_saves(saves: Option<PathBuf>) -> Self {
+    pub(crate) fn with_saves(saves: Option<PathBuf>) -> Self {
         // `SkinManager`'s cache under the game directory (`assets/skins`).
         let skin_root = saves
             .as_ref()
@@ -1154,7 +1154,7 @@ impl Screen {
         let _ = std::fs::write(&path, json.to_string());
     }
 
-    pub fn layout_state(&self) -> LayoutState {
+    pub(crate) fn layout_state(&self) -> LayoutState {
         match &self.state {
             FetchState::Loading(_) => LayoutState::Loading,
             // A notification entry alone makes the list (`RealmsMainScreen`'s `LIST`).
@@ -1310,7 +1310,7 @@ impl Screen {
     /// button, so [`Self::draw`] cannot have drawn it: the buttons render after. Unread
     /// news shows notification/more; the invite button counts the service's pending
     /// invites, notification/1..5 then more. The main screen only (`draw_main`'s header).
-    pub fn draw_header_badges(&self, atlas: &HudAtlas, batch: &mut HudBatch, w: f32) {
+    pub(crate) fn draw_header_badges(&self, atlas: &HudAtlas, batch: &mut HudBatch, w: f32) {
         // `RealmsHeader` belongs to the main list and the product page alike: both draw
         // the pending-invite and news badges on their buttons.
         if !matches!(self.subscreen, SubScreen::Main | SubScreen::AddRealm { .. }) {
@@ -2281,7 +2281,7 @@ impl Screen {
         }
     }
 
-    pub fn focused_box(&self, (w, h): (f32, f32)) -> Option<[f32; 4]> {
+    pub(crate) fn focused_box(&self, (w, h): (f32, f32)) -> Option<[f32; 4]> {
         match &self.subscreen {
             SubScreen::JoinCode { .. } => {
                 // The field sits at the draw's content y + 13 (`AbstractRealmsCodeScreen`'s
@@ -2337,7 +2337,9 @@ impl Screen {
         }
     }
 
-    pub fn focused_text(&mut self) -> Option<(crate::clipboard::FieldId, &mut String, usize)> {
+    pub(crate) fn focused_text(
+        &mut self,
+    ) -> Option<(crate::clipboard::FieldId, &mut String, usize)> {
         match &mut self.subscreen {
             // `RealmsJoinRealmWithCodeScreen`: `setEditable(false)` while validating.
             SubScreen::JoinCode { code, job, .. } => {
@@ -3744,7 +3746,11 @@ impl Screen {
     /// `RealmsCreateWorldFlow.createWorld`: the Create New World screen's settings become
     /// a temporary world (`createTemporaryWorldFolder`) that is packed and uploaded into
     /// the slot; `AlertScreen` (`mco.create.world.reset.title`) shows while it runs.
-    pub fn start_create_world_upload(&mut self, request: CreateWorldRequest, world: CreatedWorld) {
+    pub(crate) fn start_create_world_upload(
+        &mut self,
+        request: CreateWorldRequest,
+        world: CreatedWorld,
+    ) {
         let progress = Arc::new(upload::UploadProgress::default());
         let job = client().map(|client| {
             let progress = Arc::clone(&progress);
@@ -3775,7 +3781,7 @@ impl Screen {
     /// The Create New World screen's Back for the Generate New World tile
     /// (`CreateWorldScreen.openFresh`'s cancel): the screen the reset screen was opened
     /// from — the configuration screen, or the list for a Realm being created.
-    pub fn cancel_create_world(&mut self, request: CreateWorldRequest) {
+    pub(crate) fn cancel_create_world(&mut self, request: CreateWorldRequest) {
         match request.kind {
             ResetKind::NewRealm => {
                 self.subscreen = SubScreen::Main;
@@ -5804,13 +5810,13 @@ impl Screen {
 
     /// The product page's list is on screen: a Tab stop, and the arrows' target while no
     /// button has the keyboard (`ObjectSelectionList`).
-    pub fn pdp_list(&self) -> bool {
+    pub(crate) fn pdp_list(&self) -> bool {
         matches!(self.subscreen, SubScreen::AddRealm { .. })
     }
 
     /// A list takes the keyboard while no button has it: the server list on the main
     /// screen, the product page's rows behind Add Realm.
-    pub fn list_stop(&self) -> bool {
+    pub(crate) fn list_stop(&self) -> bool {
         // Every `ObjectSelectionList` is a keyboard stop: its Enter is the row's action.
         matches!(
             self.subscreen,
@@ -5823,7 +5829,7 @@ impl Screen {
 
     /// `ObjectSelectionList.nextFocusPath` over the server list: from no row an arrow takes
     /// the near end, as `nextEntry` does.
-    pub fn main_arrow(&mut self, up: bool) -> bool {
+    pub(crate) fn main_arrow(&mut self, up: bool) -> bool {
         if !matches!(self.subscreen, SubScreen::Main) {
             return false;
         }
@@ -5842,7 +5848,7 @@ impl Screen {
 
     /// `ServerEntry.keyPressed`'s Enter: an uninitialized entry creates a Realm, a playable
     /// one plays; any other row does nothing.
-    pub fn activate_selected(&mut self) -> Outcome {
+    pub(crate) fn activate_selected(&mut self) -> Outcome {
         // `ObjectSelectionList.Entry.keyPressed`'s `isSelection` for the other lists.
         if let SubScreen::UploadSelect { .. } = &self.subscreen {
             self.activate_upload_select();
@@ -5874,7 +5880,7 @@ impl Screen {
 
     /// `ObjectSelectionList.nextFocusPath`'s `ArrowNavigation` over the product page: with
     /// no row selected an arrow takes the near end, as `nextEntry` does.
-    pub fn pdp_arrow(&mut self, up: bool) -> bool {
+    pub(crate) fn pdp_arrow(&mut self, up: bool) -> bool {
         if !self.pdp_list() {
             return false;
         }
@@ -5891,7 +5897,7 @@ impl Screen {
 
     /// The click just taken was on a product-page row, so the keyboard focus moves to the
     /// list (`AbstractSelectionList.mouseClicked` → `setFocused`).
-    pub fn take_list_click(&mut self) -> bool {
+    pub(crate) fn take_list_click(&mut self) -> bool {
         std::mem::take(&mut self.list_clicked)
     }
 
@@ -10194,7 +10200,7 @@ impl Screen {
 
     /// `Entry.extractRealmStatus`'s tooltip: the hovered status light names the Realm's
     /// state. Drawn after the buttons, so nothing covers it (as `MultiplayerScreen`'s).
-    pub fn draw_tooltip(
+    pub(crate) fn draw_tooltip(
         &self,
         atlas: &HudAtlas,
         batch: &mut HudBatch,

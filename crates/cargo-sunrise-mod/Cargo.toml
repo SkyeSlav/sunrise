@@ -41,7 +41,7 @@ url = "2"
 # The page bundle is a plain ustar archive.
 tar = { version = "0.4", default-features = false }
 # Reads only an archive's directory, to tell a mod package by its contents.
-zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
+zip = { version = "9.1.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # `self-update` unpacks the rolling tool's `.tar.xz`; its tests write one.
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "encoder", "xz"] }
 

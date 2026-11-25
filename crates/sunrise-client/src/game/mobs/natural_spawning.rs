@@ -730,6 +730,7 @@ impl sunrise_client::mobs::finalize::FinalizeLevel for PassLevel<'_, '_, '_> {
     }
 }
 impl SpawnLevel for GameLevel<'_, '_> {
+    #[inline]
     fn placement_check(
         &self,
         entity: &str,
@@ -760,63 +761,80 @@ impl SpawnLevel for GameLevel<'_, '_> {
             _ => default_result,
         }
     }
+    #[inline]
     fn within_world_border(&self, x: i32, z: i32) -> bool {
         self.game
             .border
             .geometry()
             .is_within_bounds(f64::from(x), f64::from(z), 0.0)
     }
+    #[inline]
     fn state(&self, x: i32, y: i32, z: i32) -> BlockStateId {
         self.w
             .world
             .block_with_chunk(x, y, z, self.chunk_at(x >> 4, z >> 4))
     }
+    #[inline]
     fn facts(&self) -> &BlockFacts {
         self.w.facts
     }
+    #[inline]
     fn mob_data(&self) -> &MobData {
         self.w.data
     }
+    #[inline]
     fn block_tag(&self, tag: &str, block: &str) -> bool {
         self.w.block_tag(tag, block)
     }
     // Level.getBiome: the zoomed biome.
+    #[inline]
     fn biome_tag(&self, tag: &str, x: i32, y: i32, z: i32) -> bool {
         let [x, y, z] = self.game.zoomed_spawn_cell([x, y, z]);
         self.w.spawn_biome_tag(tag, self.noise_biome(x, y, z))
     }
+    #[inline]
     fn sky_light(&self, x: i32, y: i32, z: i32) -> i32 {
         self.w.spawn_sky_light(|| self.light(x, y, z))
     }
+    #[inline]
     fn block_light(&self, x: i32, y: i32, z: i32) -> i32 {
         sunrise_client::mobs::spawn_rules::spawn_block_light(self.light(x, y, z))
     }
+    #[inline]
     fn sky_darken(&self) -> i32 {
         SpawnLevel::sky_darken(&self.w)
     }
+    #[inline]
     fn thundering(&self) -> bool {
         self.w.thundering
     }
+    #[inline]
     fn sea_level(&self) -> i32 {
         self.w.sea_level()
     }
+    #[inline]
     fn world_surface(&self, x: i32, z: i32) -> i32 {
         self.w
             .spawn_world_surface(x, z, self.chunk_at(x >> 4, z >> 4))
     }
+    #[inline]
     fn peaceful(&self) -> bool {
         self.w.peaceful()
     }
+    #[inline]
     fn dimension_type(&self) -> &DimensionFacts {
         self.game.dimension_type()
     }
+    #[inline]
     fn surface_slime_chance(&self, x: i32, y: i32, z: i32) -> f32 {
         self.w.surface_slime_chance(x, y, z)
     }
+    #[inline]
     fn world_seed(&self) -> i64 {
         self.w.world_seed
     }
     /// `getNearestPlayer(x, y, z, distance, true)`, over every player.
+    #[inline]
     fn player_near(&self, x: f64, y: f64, z: f64, distance: f64) -> bool {
         self.search.players.iter().any(|p| {
             p.alive && !p.creative && !p.spectator && p.distance_sqr(x, y, z) < distance * distance
@@ -824,11 +842,13 @@ impl SpawnLevel for GameLevel<'_, '_> {
     }
 }
 impl NaturalLevel for GameLevel<'_, '_> {
+    #[inline]
     fn spawn_hooks(&self) -> bool {
         !mod_api::__private::mods().is_empty()
     }
     /// Lend the actual candidate, then hand it on to the spawn or drop it on refusal.
     /// Constructing the body does not draw from the level's random.
+    #[inline]
     fn position_check(
         &self,
         entity: &str,
@@ -894,11 +914,13 @@ impl NaturalLevel for GameLevel<'_, '_> {
         *self.checked.borrow_mut() = Some(Checked { body, provisional });
         result
     }
+    #[inline]
     fn position_refused(&self) {
         if let Some(refused) = self.checked.take() {
             self.provisional.set(refused.provisional);
         }
     }
+    #[inline]
     fn potential_spawns(&self, category: Category, pos: [i32; 3], entries: &mut Vec<SpawnEntry>) {
         let mut canceled = false;
         self.game.native_potential_spawns(
@@ -914,32 +936,41 @@ impl NaturalLevel for GameLevel<'_, '_> {
     }
     // `Level.getMinY` and `getMaxY`: the level's own range (0..255 in vanilla's
     // Nether and End), not the widened column its chunks hold.
+    #[inline]
     fn min_y(&self) -> i32 {
         self.w.world.shape.min_y
     }
+    #[inline]
     fn max_y(&self) -> i32 {
         self.w.world.shape.max_y() - 1
     }
+    #[inline]
     fn ambient_light(&self) -> f32 {
         self.game.dimension_type().ambient_light
     }
+    #[inline]
     fn has_ceiling(&self) -> bool {
         self.w.world.shape.has_ceiling
     }
+    #[inline]
     fn mob_type(&self, entity: &str) -> Option<&MobType> {
         self.game.res.mob_types().get(entity).map(|t| t.as_ref())
     }
     // The `natural_mob_spawns` attribute reads the zoomed biome
     // (fullResolutionBiomes), the spawn probability the noise cell.
+    #[inline]
     fn biome_spawns(&self, x: i32, y: i32, z: i32) -> Option<&HashMap<String, Vec<SpawnEntry>>> {
         self.zoomed_biome(x, y, z).map(|b| &b.spawns)
     }
+    #[inline]
     fn spawn_cost(&self, entity: &str, x: i32, y: i32, z: i32) -> Option<SpawnCost> {
         self.game.spawn_cost_at(self.costed, entity, [x, y, z])
     }
+    #[inline]
     fn creature_probability(&self, x: i32, y: i32, z: i32) -> f32 {
         self.biome(x, y, z).map_or(0.1, |b| b.creature_probability)
     }
+    #[inline]
     fn structures_at(
         &self,
         x: i32,
@@ -963,12 +994,15 @@ impl NaturalLevel for GameLevel<'_, '_> {
             })
             .collect()
     }
+    #[inline]
     fn structure_spawns(&self) -> &StructureSpawns {
         &self.game.structure_spawns
     }
+    #[inline]
     fn nearest_player_positions(&self) -> &[[f64; 3]] {
         &self.search.nearest
     }
+    #[inline]
     fn player_positions_near(&self, x: f64, z: f64, extent: f64, out: &mut Vec<[f64; 3]>) {
         let search = &self.search;
         if search.nearest.len() <= PLAYERS_SCANNED {
@@ -980,6 +1014,7 @@ impl NaturalLevel for GameLevel<'_, '_> {
             .get_or_init(|| PlayerSquares::new(&search.nearest));
         squares.near(x, z, extent, out);
     }
+    #[inline]
     fn respawn(&self) -> Option<[i32; 3]> {
         // The world spawn point lives in the overworld.
         if self.game.dim != Dim::Overworld {
@@ -994,11 +1029,13 @@ impl NaturalLevel for GameLevel<'_, '_> {
         })
     }
     /// `ServerLevel.canSpawnEntitiesInChunk`: the whole chunk is inside the border.
+    #[inline]
     fn can_spawn_in_chunk(&self, cx: i32, cz: i32) -> bool {
         self.chunk_at(cx, cz).is_some()
             && self.within_world_border(cx << 4, cz << 4)
             && self.within_world_border((cx << 4).wrapping_add(15), (cz << 4).wrapping_add(15))
     }
+    #[inline]
     fn no_collision(&self, bounds: Aabb) -> bool {
         self.game.no_spawn_collision(bounds, |query| {
             self.mobs_near(query)
@@ -1012,6 +1049,7 @@ impl NaturalLevel for GameLevel<'_, '_> {
     }
     /// `EntityGetter.isUnobstructed`: the fresh mob cannot already have a
     /// shared root vehicle or be a candidate in the level's entity query.
+    #[inline]
     fn unobstructed(&self, bounds: Aabb) -> bool {
         let Ok(shape) = VoxelShape::from_box(bounds) else {
             return false;
@@ -1044,6 +1082,7 @@ impl NaturalLevel for GameLevel<'_, '_> {
                 )
                 .any(obstructs)
     }
+    #[inline]
     fn spawn_mobs(&self) -> bool {
         self.game
             .ui
@@ -1053,6 +1092,7 @@ impl NaturalLevel for GameLevel<'_, '_> {
     /// WORLD_SURFACE (every spawn attempt's) is the chunk's kept heightmap.
     /// The others are scanned down the column: sections of air alone are
     /// skipped (air counts for no heightmap). An unloaded column reads as air.
+    #[inline]
     fn heightmap(&self, kind: Heightmap, x: i32, z: i32) -> i32 {
         let world = self.w.world;
         // A heightmap reads at least the level's minimum Y (an empty column of a level
@@ -1071,6 +1111,7 @@ impl NaturalLevel for GameLevel<'_, '_> {
             })
             .map_or(min_y, |y| (y + 1).max(min_y))
     }
+    #[inline]
     fn pathfindable_land(&self, x: i32, y: i32, z: i32) -> bool {
         self.w
             .data
@@ -1079,21 +1120,25 @@ impl NaturalLevel for GameLevel<'_, '_> {
 }
 impl sunrise_client::mobs::spawner::SpawnerLevel for GameLevel<'_, '_> {
     /// `Level.hasNearbyAlivePlayer`, over every player.
+    #[inline]
     fn alive_player_near(&self, x: f64, y: f64, z: f64, range: f64) -> bool {
         self.search
             .players
             .iter()
             .any(|p| p.alive_near(x, y, z, range))
     }
+    #[inline]
     fn spawner_blocks_work(&self) -> bool {
         self.game
             .ui
             .rules
             .bool_at(sunrise_client::gamerules::vanilla::SPAWNER_BLOCKS_WORK)
     }
+    #[inline]
     fn spawner_type(&self, id: &str) -> Option<sunrise_client::mobs::spawner::SpawnerTypeFacts> {
         self.game.res.rest().spawner_types.get(id).copied()
     }
+    #[inline]
     fn count_entities(&self, id: &str, bounds: Aabb) -> usize {
         let mobs = self
             .mobs_near(bounds)

@@ -449,7 +449,7 @@ impl AttrBounds {
     /// The saved base `base` of the attribute `id` as a load takes it
     /// ([`crate::living_attributes::loaded_base`]): clamped into an [`Attr`]'s
     /// bounds when a mod that widened them is gone.
-    pub fn loaded_base(&self, id: &str, base: f64) -> f64 {
+    pub(crate) fn loaded_base(&self, id: &str, base: f64) -> f64 {
         Attr::ALL
             .into_iter()
             .find(|a| a.id() == id)
@@ -552,7 +552,7 @@ pub fn base_value_with(m: &Mob, a: Attr, default: impl FnOnce() -> Option<f64>) 
 ///   when the load finds no owner (a wolf that is tamed in game makes it too).
 /// - `attack_damage`: `Rabbit.setVariant`, and a baby Goat or Hoglin, whose load's
 ///   `setAge` crosses the baby boundary (`ageBoundaryReached`).
-pub fn made_at_load(m: &Mob) -> Vec<Attr> {
+pub(crate) fn made_at_load(m: &Mob) -> Vec<Attr> {
     let s = m.species();
     let mut made = Vec::new();
     if super::doors::is_zombie(s) || matches!(s, Species::Piglin | Species::Enderman) || m.age > 0 {
@@ -567,7 +567,7 @@ pub fn made_at_load(m: &Mob) -> Vec<Attr> {
     made
 }
 /// The base of an instance `made_at_load` lists, as `AttributeMap.pack` writes it.
-pub fn made_base(m: &Mob, a: Attr) -> f64 {
+pub(crate) fn made_base(m: &Mob, a: Attr) -> f64 {
     match (m.species(), a) {
         // `Wolf.applyTamingSideEffects` sets 40 for a tame wolf and 8 for the others;
         // `attrs.max_health` is the value (modifiers included), never the base.
@@ -805,7 +805,7 @@ pub fn value(m: &Mob, a: Attr) -> f64 {
 }
 /// `value` with modifiers no store holds: the ones worn equipment grants, or
 /// those of the mob's own state (a witch's drinking, a strider's suffocation).
-pub fn value_with(m: &Mob, a: Attr, extra: impl Iterator<Item = (f64, Op)> + Clone) -> f64 {
+pub(crate) fn value_with(m: &Mob, a: Attr, extra: impl Iterator<Item = (f64, Op)> + Clone) -> f64 {
     compute(m, a, true, extra)
 }
 /// `AttributeInstance.calculateValue`: the base plus every `ADD_VALUE`, then
@@ -972,7 +972,7 @@ pub fn remove_modifier(m: &mut Mob, a: Attr, id: &str) {
 /// `Mob.finalizeSpawn`, which every mob's own `finalizeSpawn` reaches
 /// through `super`: the `random_spawn_bonus` follow range modifier (once)
 /// and `setLeftHanded(nextFloat() < 0.05F)`.
-pub fn mob_spawn(m: &mut Mob, random: &mut impl RandomSource) {
+pub(crate) fn mob_spawn(m: &mut Mob, random: &mut impl RandomSource) {
     if !has_modifier(m, Attr::FollowRange, "minecraft:random_spawn_bonus") {
         let bonus = random.triangle(0.0, 0.114_850_000_000_000_01);
         add_modifier(
@@ -1042,7 +1042,7 @@ pub fn max_health(m: &Mob) -> f32 {
     value(m, Attr::MaxHealth) as f32
 }
 /// Whether the mob stores a base for `a`: `set_base` or a load made one.
-pub fn has_base(m: &Mob, a: Attr) -> bool {
+pub(crate) fn has_base(m: &Mob, a: Attr) -> bool {
     m.extra
         .attributes
         .as_ref()
@@ -1053,7 +1053,7 @@ pub fn has_base(m: &Mob, a: Attr) -> bool {
 /// above it is lowered (nothing is healed). A wolf with no stored max health
 /// base keeps the cached maximum it was given outside the model; taming
 /// stores the base (`tame::set_tame`), so a tame wolf follows the model.
-pub fn health_boost_changed(m: &mut Mob) {
+pub(crate) fn health_boost_changed(m: &mut Mob) {
     if m.species() == Species::Wolf && !has_base(m, Attr::MaxHealth) {
         return;
     }
@@ -1179,7 +1179,8 @@ fn age_boundary_reached(m: &mut Mob, w: Option<&MobWorld<'_>>) {
 /// `Goat.finalizeSpawn` on a natural spawn (the spawn path in spawning.rs): the ram
 /// cooldowns (`GoatAi.initMemories`), screaming 2 percent of the time and a
 /// horn lost 10 percent of the time, adults only.
-pub fn goat_spawn(m: &mut Mob, r: &mut impl RandomSource) {
+#[cfg(test)]
+pub(crate) fn goat_spawn(m: &mut Mob, r: &mut impl RandomSource) {
     let jump = r.next_int_between_inclusive(600, 1200).unwrap_or(600);
     set_memory(m, "long_jump_cooling_down", i64::from(jump), i64::MAX);
     let ram = r.next_int_between_inclusive(600, 6000).unwrap_or(600);
@@ -1312,7 +1313,7 @@ impl<'a> EquipmentRead<'a> {
 
     /// Whether this stack matches `other` (`ItemStack.matches`), including any
     /// separate gear overlay, without cloning the stack or its components.
-    pub fn matches_stack(&self, other: &ItemStack) -> bool {
+    pub(crate) fn matches_stack(&self, other: &ItemStack) -> bool {
         match self.overlays {
             None => self.base.matches(other),
             Some((gear, index)) => self.base.matches_with_overlay(
@@ -1324,7 +1325,7 @@ impl<'a> EquipmentRead<'a> {
     }
 
     /// `LivingEntity.equipmentHasChanged` negated, for a possibly empty slot.
-    pub fn matches_previous(now: Option<&Self>, previous: Option<&ItemStack>) -> bool {
+    pub(crate) fn matches_previous(now: Option<&Self>, previous: Option<&ItemStack>) -> bool {
         match (now, previous) {
             (Some(now), Some(previous)) => now.matches_stack(previous),
             (None, None) => true,
@@ -1472,7 +1473,7 @@ pub fn finish_equipment_tick(
 
 /// The whole stack a mob keeps in `slot` (damage, name, components, count,
 /// enchantments and trim), when it kept more than the item id.
-pub fn stored_stack(m: &Mob, slot: usize) -> Option<ItemStack> {
+pub(crate) fn stored_stack(m: &Mob, slot: usize) -> Option<ItemStack> {
     let read = equipment_slot(m, *EquipmentSlot::ALL.get(slot)?)?;
     let base = read.base();
     if slot > HEAD || (base.damage == 0 && base.count <= 1 && base.extra.is_none()) {
@@ -1557,7 +1558,7 @@ pub fn set_item(m: &mut Mob, slot: usize, id: &str) {
     gear::set(m, gear_slot(slot), Vec::new());
 }
 /// The enchantments on what `m` has in `slot`.
-pub fn slot_enchantments(m: &Mob, slot: usize) -> gear::Levels {
+pub(crate) fn slot_enchantments(m: &Mob, slot: usize) -> gear::Levels {
     gear::gear(m).map_or_else(Vec::new, |g| g.slots[gear_slot(slot)].clone())
 }
 /// Replace the enchantments of what `m` has in `slot` (after `set_item`).
@@ -1610,7 +1611,7 @@ pub fn stored_drop_chance(m: &Mob, slot: usize) -> f32 {
 }
 
 /// `SpecialDates.isHalloween`: October 31.
-pub fn halloween_date(month: u32, day: u32) -> bool {
+pub(crate) fn halloween_date(month: u32, day: u32) -> bool {
     (month, day) == (10, 31)
 }
 
@@ -2666,7 +2667,7 @@ pub fn goat_init_memories(m: &mut Mob, random: &mut impl RandomSource) {
 }
 /// `Panda.Gene.getRandom` (enum order: normal, lazy, worried, playful,
 /// brown, weak, aggressive).
-pub fn panda_gene(roll: i32) -> u8 {
+pub(crate) fn panda_gene(roll: i32) -> u8 {
     match roll {
         0 => 1,
         1 => 2,
@@ -2678,7 +2679,7 @@ pub fn panda_gene(roll: i32) -> u8 {
     }
 }
 /// `Panda.Gene.getVariantFromGenes`: a recessive gene shows when both match.
-pub fn panda_variant(main: u8, hidden: u8) -> u8 {
+pub(crate) fn panda_variant(main: u8, hidden: u8) -> u8 {
     let recessive = matches!(main, 4 | 5);
     if recessive && main != hidden { 0 } else { main }
 }
@@ -2741,7 +2742,7 @@ pub fn species_variant_component(s: Species, variant: u8) -> Option<(&'static st
 /// fox's and a mooshroom's `Type`) or a packed int (a horse's and a llama's
 /// `Variant`). Only these seven classes call `writeVariant`, so reporting the
 /// component does not mean the save carries the name.
-pub fn saves_variant_name(s: Species) -> bool {
+pub(crate) fn saves_variant_name(s: Species) -> bool {
     matches!(
         s,
         Species::Wolf

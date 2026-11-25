@@ -59,7 +59,7 @@ sunrise-shaders = { path = "../sunrise-shaders", optional = true }
 sunrise-shader-api = { path = "../sunrise-shader-api", optional = true }
 sunrise-friends = { path = "../sunrise-friends", optional = true }
 sunrise-narrator = { path = "../sunrise-narrator", optional = true }
-sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index", "runtime-process"], optional = true }
+sunrise-mod-package = { path = "../sunrise-mod-package", default-features = false, features = ["index-read", "runtime-process"], optional = true }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"], optional = true }
 winit = { version = "0.30.13", optional = true }
 pollster = { version = "0.4", optional = true }
@@ -86,7 +86,7 @@ sunrise-theme = { path = "../sunrise-theme", optional = true }
 sunrise-system = { path = "../sunrise-system", optional = true }
 sunrise-telemetry = { path = "../sunrise-telemetry", default-features = false, optional = true }
 sunrise-bench = { path = "../sunrise-bench", optional = true }
-zip = { version = "9.1.3", default-features = false, features = ["deflate"], optional = true }
+zip = { version = "9.1.3", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
 gilrs = { version = "0.11", optional = true }
 sunrise-dualsense = { path = "../sunrise-dualsense", optional = true }
 ureq = { version = "2", default-features = false, features = ["tls"], optional = true }

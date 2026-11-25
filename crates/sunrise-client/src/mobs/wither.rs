@@ -86,9 +86,11 @@ fn undead(s: Species) -> bool {
 struct DoNothing;
 impl Goal for DoNothing {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | JUMP | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         m.extra.counter > 0
     }

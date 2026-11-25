@@ -506,18 +506,23 @@ impl Charge {
 }
 impl Goal for Charge {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.ai.target.is_some() && m.extra.counter2 <= 0 && m.extra.in_love <= 0
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.still_ok(m, cx)
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.start = m.position;
         let Some(t) = m.ai.target.and_then(|who| cx.w.target_info(who)) else {
@@ -547,12 +552,14 @@ impl Goal for Charge {
             sound(m, name, cx.events);
         }
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.extra.counter2 = TIME_BETWEEN_ATTACKS;
         if let super::TargetChange::Set(target) = cx.w.change_target(m, true, None) {
             m.ai.target = target;
         }
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(who) = m.ai.target else { return };
         let Some(t) = cx.w.target_info(who) else {

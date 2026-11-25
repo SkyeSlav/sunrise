@@ -171,18 +171,23 @@ pub fn cast_particles(m: &Mob, events: &mut Vec<MobEvent>) {
 pub(super) struct CastingSpell;
 impl Goal for CastingSpell {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         m.extra.counter > 0
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _cx: &mut Cx) {
         m.ai.nav.stop();
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         m.extra.variant2 = 0;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let look = match m.target_info(cx.w) {
             Some(t) => Some([t.position.x, t.eye_y, t.position.z]),
@@ -226,9 +231,11 @@ impl UseSpell {
 }
 impl Goal for UseSpell {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let age = i64::from(m.age);
         if self.spell == Spell::Wololo {
@@ -290,12 +297,14 @@ impl Goal for UseSpell {
         }
         true
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if self.spell == Spell::Wololo {
             return m.extra.counter2 != 0 && self.warmup > 0;
         }
         m.target_info(cx.w).is_some_and(|t| t.alive) && self.warmup > 0
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         let (warmup, casting, interval, sound) = self.timing();
         self.warmup = reduced(warmup);
@@ -309,11 +318,13 @@ impl Goal for UseSpell {
         ));
         m.extra.variant2 = self.spell as u8;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         if self.spell == Spell::Wololo {
             m.extra.counter2 = 0;
         }
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.warmup -= 1;
         if self.warmup != 0 {
@@ -521,9 +532,11 @@ fn set_crossbow_charged(m: &mut Mob, charged: bool) {
 }
 impl Goal for CrossbowAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         holding_crossbow(m)
             && m.ai
@@ -531,6 +544,7 @@ impl Goal for CrossbowAttack {
                 .and_then(|t| cx.w.target_info(t))
                 .is_some_and(|t| t.alive && !(t.is_player && t.creative))
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let valid =
             m.ai.target
@@ -538,6 +552,7 @@ impl Goal for CrossbowAttack {
                 .is_some_and(|t| t.alive && !(t.is_player && t.creative));
         valid && holding_crossbow(m)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.ai.aggressive = false;
         m.set_ai_target(cx.w, None);
@@ -547,12 +562,15 @@ impl Goal for CrossbowAttack {
         self.state = Crossbow::Uncharged;
         set_crossbow_charged(m, false);
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.ai.aggressive = true;
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(who) = m.ai.target else {
             return;

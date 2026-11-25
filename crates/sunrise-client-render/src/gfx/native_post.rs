@@ -20,7 +20,7 @@ pub(super) const INTERMEDIATE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16
 /// out as the frame stores them: encoded, as `sunrise_encode`, or where the frame holds linear
 /// light (`linear`, `[frame] blend = "linear"`) as they are. The shadow pass has no prelude, so
 /// these stand alone.
-pub fn line_helpers(api: Api, linear: bool) -> &'static str {
+pub(crate) fn line_helpers(api: Api, linear: bool) -> &'static str {
     match (api, linear) {
         (Api::V0_1, _) => {
             "fn sunrise_line_in(c: vec3<f32>) -> vec3<f32> { return c; }
@@ -435,7 +435,7 @@ fn frame_entry(visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
 }
 
 /// The size of the water mirror for a world of `size`: half of it.
-pub fn reflection_size(size: [u32; 2]) -> [u32; 2] {
+pub(crate) fn reflection_size(size: [u32; 2]) -> [u32; 2] {
     size.map(|s| s.div_ceil(2).max(1))
 }
 
@@ -692,7 +692,7 @@ impl NativeFrame {
     /// colour `color` can be copied (the scaled target, not the window's own), its size and
     /// format; the group is made again when they change. Nothing for a pack that doesn't read
     /// them.
-    pub fn fit_opaque(
+    pub(crate) fn fit_opaque(
         &mut self,
         device: &wgpu::Device,
         depth: &wgpu::Texture,
@@ -723,7 +723,7 @@ impl NativeFrame {
     }
 
     /// Fills `opaque_color` from the world's colour `color`: a copy, under 0.2 decoded.
-    pub fn copy_opaque(
+    pub(crate) fn copy_opaque(
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
@@ -743,7 +743,7 @@ impl NativeFrame {
     }
 
     /// The water mirror `view` as the material reads it: under 0.2 decoded into a copy.
-    pub fn linear_mirror(
+    pub(crate) fn linear_mirror(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
@@ -763,7 +763,7 @@ impl NativeFrame {
     }
 
     /// Sizes the surface target: the world's while a material stage writes it, else a blank.
-    pub fn fit_surface(&mut self, device: &wgpu::Device, size: [u32; 2]) {
+    pub(crate) fn fit_surface(&mut self, device: &wgpu::Device, size: [u32; 2]) {
         if [self.surface.width(), self.surface.height()] != size {
             self.surface = surface_target(device, size);
             self.surface_view = self.surface.create_view(&Default::default());
@@ -772,7 +772,11 @@ impl NativeFrame {
 
     /// Binds `view` as this frame's `reflection` (`None`: the blank). The mirror is drawn
     /// before the stages read it.
-    pub fn set_reflection(&mut self, device: &wgpu::Device, view: Option<&wgpu::TextureView>) {
+    pub(crate) fn set_reflection(
+        &mut self,
+        device: &wgpu::Device,
+        view: Option<&wgpu::TextureView>,
+    ) {
         let view = view.unwrap_or(&self.blank);
         if *view != self.reflection {
             self.reflection = view.clone();
@@ -918,7 +922,7 @@ impl NativeFrame {
 }
 
 /// The option values of `constants` that `module` declares as overrides (wgpu refuses others).
-pub fn present_constants<'a>(
+pub(crate) fn present_constants<'a>(
     module: &naga::Module,
     constants: &'a [(String, f64)],
 ) -> Vec<(&'a str, f64)> {
@@ -1169,7 +1173,7 @@ impl NativePost {
     }
 
     /// Whether the pack has a `[tonemap]` of its own, which replaces Sunrise's tone curve.
-    pub fn tonemaps(&self) -> bool {
+    pub(crate) fn tonemaps(&self) -> bool {
         self.display.as_ref().is_some_and(|d| d.label.is_some())
     }
 
@@ -1520,7 +1524,7 @@ pub(super) fn view_projection(projection: Mat4, bob: Mat4, spin: Mat4) -> Mat4 {
 }
 
 /// The frame as packs read it (docs/api/shaders-reference.md), from the renderer's `Frame`.
-pub fn frame_inputs(
+pub(crate) fn frame_inputs(
     frame: &Frame,
     size: [u32; 2],
     seconds: f32,

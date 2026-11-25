@@ -386,7 +386,7 @@ impl Tile {
             .as_deref()
             .map_or(&self.mesh, |(mesh, _)| mesh)
     }
-    pub fn drawn_mut(&mut self) -> &mut SectionGpu {
+    pub(crate) fn drawn_mut(&mut self) -> &mut SectionGpu {
         match self.previous.as_deref_mut() {
             Some((mesh, _)) => mesh,
             None => &mut self.mesh,
@@ -396,7 +396,7 @@ impl Tile {
     /// mesh's bounds grown by a block, while that mesh is the one drawn
     /// whole (no stand-in, no fade). A fading tile's dither moves its depth
     /// toward the camera (terrain.wgsl's `fade_depth`), out of the box.
-    pub fn cull_bounds(&self, fade: u32) -> Option<[[f32; 3]; 2]> {
+    pub(crate) fn cull_bounds(&self, fade: u32) -> Option<[[f32; 3]; 2]> {
         (fade == 0 && self.previous.is_none()).then(|| {
             [
                 (self.bounds.min - 1.0).to_array(),
@@ -406,16 +406,16 @@ impl Tile {
     }
     /// Whether either mesh it holds is in the compact layout: a stand-in drawn in its place can
     /// hide a compact replacement (`Renderer::follow_packed_layout`).
-    pub fn holds_packed(&self) -> bool {
+    pub(crate) fn holds_packed(&self) -> bool {
         self.mesh.packed || self.previous.as_ref().is_some_and(|p| p.0.packed)
     }
     /// Both meshes it holds in the arena: its own and the stand-in, if any.
-    pub fn meshes_mut(&mut self) -> impl Iterator<Item = &mut SectionGpu> {
+    pub(crate) fn meshes_mut(&mut self) -> impl Iterator<Item = &mut SectionGpu> {
         std::iter::once(&mut *self.mesh).chain(self.previous.as_deref_mut().map(|(mesh, _)| mesh))
     }
     /// `meshes_mut`, each with its own mesh's record's id in sourced geometry's table
     /// (`sourced_ids`), for the moves that compaction makes.
-    pub fn recorded_meshes_mut(
+    pub(crate) fn recorded_meshes_mut(
         &mut self,
         id: Option<u32>,
     ) -> impl Iterator<Item = (&mut SectionGpu, Option<u32>)> {
@@ -438,7 +438,12 @@ impl Tile {
 
     /// `visible` for a tile whose cell is wholly in view (`TileGrid::walk`):
     /// its own box is wholly in view too, so only its distance is left.
-    pub fn visible_inside(&self, key: TileKey, camera: DVec3, now: Instant) -> Option<Visible> {
+    pub(crate) fn visible_inside(
+        &self,
+        key: TileKey,
+        camera: DVec3,
+        now: Instant,
+    ) -> Option<Visible> {
         let at = DVec3::from(key.origin().map(f64::from)) - camera;
         let mut visible = self.draw_state(key, at, now)?;
         visible.distance = self.bounds.distance(at);
@@ -496,7 +501,7 @@ impl Renderer {
     /// one meshed around near chunks or finer tiles that are new (`keep`):
     /// its old mesh stands in while they fade in. A new one waits for the rest of its job
     /// (`upload_lods`), then fades in.
-    pub fn upload_lod(&mut self, key: TileKey, mesh: &SectionMesh, keep: bool) {
+    pub(crate) fn upload_lod(&mut self, key: TileKey, mesh: &SectionMesh, keep: bool) {
         if let Some(copies) = &mut self.capture_copies {
             copies.tile(key, mesh);
         }
@@ -558,7 +563,7 @@ impl Renderer {
         }
     }
 
-    pub fn remove_lod(&mut self, key: TileKey) {
+    pub(crate) fn remove_lod(&mut self, key: TileKey) {
         if let Some(copies) = &mut self.capture_copies {
             copies.forget_tile(key);
         }
@@ -791,7 +796,7 @@ impl Renderer {
 
     /// The chunk columns the resident tiles now leave out (`Lod::take_cutout`).
     /// Removed sections they no longer leave out are released.
-    pub fn set_lod_cutout(&mut self, cutout: crate::fast_hash::FxHashSet<(i32, i32)>) {
+    pub(crate) fn set_lod_cutout(&mut self, cutout: crate::fast_hash::FxHashSet<(i32, i32)>) {
         self.lod_cutout = cutout;
         let released: Vec<_> = self
             .lod_retiring

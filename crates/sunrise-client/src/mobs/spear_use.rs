@@ -485,23 +485,28 @@ impl SpearUse {
 }
 impl Goal for SpearUse {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
     /// `SpearUseGoal.canUse`: able to attack and not using an item.
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         able_to_attack(m, cx.w) && !is_using_item(m)
     }
     /// `SpearUseGoal.canContinueToUse`.
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.state.as_ref().is_some_and(|s| !s.done) && able_to_attack(m, cx.w)
     }
     /// `SpearUseGoal.start`: aggressive, with a new state.
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.ai.aggressive = true;
         self.state = Some(SpearUseState::new());
     }
     /// `SpearUseGoal.stop`: the navigation stops, the spear goes down.
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.nav_stop();
         m.ai.aggressive = false;
@@ -509,6 +514,7 @@ impl Goal for SpearUse {
         stop_using_item(m);
     }
     /// `SpearUseGoal.tick`.
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(mut state) = self.state.take() {
             self.step(&mut state, m, cx);
@@ -779,19 +785,24 @@ impl Default for PiglinSpear {
 }
 impl Goal for PiglinSpear {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         Self::fighting_with_spear(m)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         Self::fighting_with_spear(m)
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
     /// `Behavior.doStop` of the behaviours still running when the fight ends.
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         if self.approach.running {
             self.approach.running = false;
@@ -807,6 +818,7 @@ impl Goal for PiglinSpear {
         }
     }
     /// `Brain.tick`'s `startEachNonRunningBehavior`, then `tickEachRunningBehavior`.
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let now = cx.w.game_time;
         if !self.approach.running
@@ -867,30 +879,39 @@ pub(super) fn holds_non_melee_weapon(m: &Mob) -> bool {
 }
 impl<G: Goal + Clone + 'static> Goal for NoMeleeWithSpear<G> {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn name(&self) -> &'static str {
         self.0.name()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !holds_non_melee_weapon(m) && self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !holds_non_melee_weapon(m) && self.0.can_continue(m, cx)
     }
+    #[inline]
     fn interruptable(&self) -> bool {
         self.0.interruptable()
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         self.0.every_tick()
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx)
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx)
     }

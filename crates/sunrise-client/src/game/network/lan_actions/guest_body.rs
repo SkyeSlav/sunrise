@@ -818,14 +818,17 @@ struct GamePlayerInsideAccess<'a, 'g> {
 }
 
 impl mod_api::InsideEntityAccess for GamePlayerInsideAccess<'_, '_> {
+    #[inline]
     fn id(&self) -> u32 {
         self.game.player.as_ref().map_or(0, |p| p.entity_id as u32)
     }
 
+    #[inline]
     fn kind(&self) -> &str {
         "minecraft:player"
     }
 
+    #[inline]
     fn is_alive(&self) -> bool {
         self.game
             .player
@@ -833,6 +836,7 @@ impl mod_api::InsideEntityAccess for GamePlayerInsideAccess<'_, '_> {
             .is_some_and(|p| !p.health.dead_or_dying())
     }
 
+    #[inline]
     fn position(&self) -> [f64; 3] {
         self.game
             .player
@@ -840,6 +844,7 @@ impl mod_api::InsideEntityAccess for GamePlayerInsideAccess<'_, '_> {
             .map_or([0.0; 3], |p| [p.position.x, p.position.y, p.position.z])
     }
 
+    #[inline]
     fn velocity(&self) -> [f64; 3] {
         self.game
             .player
@@ -847,18 +852,22 @@ impl mod_api::InsideEntityAccess for GamePlayerInsideAccess<'_, '_> {
             .map_or([0.0; 3], |p| [p.velocity.x, p.velocity.y, p.velocity.z])
     }
 
+    #[inline]
     fn fire_ticks(&self) -> i32 {
         self.game.player.as_ref().map_or(0, |p| p.fire_ticks)
     }
 
+    #[inline]
     fn is_on_fire(&self) -> bool {
         self.game.player.as_ref().is_some_and(|p| p.is_on_fire())
     }
 
+    #[inline]
     fn fall_distance(&self) -> f64 {
         self.game.player.as_ref().map_or(0.0, |p| p.fall_distance)
     }
 
+    #[inline]
     fn block_state(&self, pos: [i32; 3]) -> Option<mod_api::BlockState> {
         use crate::game::api_values::TryIntoApi as _;
         let level = self.game.level(self.game.dim.id())?;
@@ -867,6 +876,7 @@ impl mod_api::InsideEntityAccess for GamePlayerInsideAccess<'_, '_> {
             .and_then(|id| id.try_into_api().ok())
     }
 
+    #[inline]
     fn push(&mut self, delta: [f64; 3]) -> bool {
         if !delta.iter().all(|v| v.is_finite()) {
             return false;
@@ -880,6 +890,7 @@ impl mod_api::InsideEntityAccess for GamePlayerInsideAccess<'_, '_> {
         true
     }
 
+    #[inline]
     fn set_velocity(&mut self, velocity: [f64; 3]) -> bool {
         if !velocity.iter().all(|v| v.is_finite()) {
             return false;
@@ -891,6 +902,7 @@ impl mod_api::InsideEntityAccess for GamePlayerInsideAccess<'_, '_> {
         true
     }
 
+    #[inline]
     fn make_stuck_in_block(&mut self, speed_multiplier: [f64; 3]) -> bool {
         if !speed_multiplier.iter().all(|v| v.is_finite()) {
             return false;
@@ -906,18 +918,21 @@ impl mod_api::InsideEntityAccess for GamePlayerInsideAccess<'_, '_> {
         true
     }
 
+    #[inline]
     fn reset_fall_distance(&mut self) {
         if let Some(p) = self.game.player.as_mut() {
             p.fall_distance = 0.0;
         }
     }
 
+    #[inline]
     fn set_remaining_fire_ticks(&mut self, ticks: i32) {
         if let Some(p) = self.game.player.as_mut() {
             p.set_remaining_fire_ticks(ticks);
         }
     }
 
+    #[inline]
     fn add_effect(&mut self, effect: mod_api::EffectKey, duration: i32, amplifier: u8) -> bool {
         let Some(def) = mod_api::__private::effect_index(effect)
             .and_then(sunrise_client_core::potions::effect_by_index)
@@ -932,6 +947,7 @@ impl mod_api::InsideEntityAccess for GamePlayerInsideAccess<'_, '_> {
         self.game.add_player_effect(instance)
     }
 
+    #[inline]
     fn hurt_with_source(
         &mut self,
         damage_type: &str,
@@ -964,6 +980,7 @@ impl mod_api::InsideEntityAccess for GamePlayerInsideAccess<'_, '_> {
         )
     }
 
+    #[inline]
     fn set_block(&mut self, pos: [i32; 3], state: mod_api::BlockState) -> bool {
         use crate::game::api_values::TryIntoEngine as _;
         let Some(level) = self.game.level(self.game.dim.id()) else {
@@ -978,6 +995,7 @@ impl mod_api::InsideEntityAccess for GamePlayerInsideAccess<'_, '_> {
             .unwrap_or(false)
     }
 
+    #[inline]
     fn destroy_block(&mut self, pos: [i32; 3], drop: bool) -> bool {
         let Some(level) = self.game.level(self.game.dim.id()) else {
             return false;
@@ -987,6 +1005,7 @@ impl mod_api::InsideEntityAccess for GamePlayerInsideAccess<'_, '_> {
             .is_some()
     }
 
+    #[inline]
     fn apply_effect(&mut self, effect: mod_api::InsideEffect) {
         match effect {
             mod_api::InsideEffect::Freeze => {
@@ -1024,6 +1043,7 @@ impl mod_api::InsideEntityAccess for GamePlayerInsideAccess<'_, '_> {
         }
     }
 
+    #[inline]
     fn apply_builtin(&mut self, action: mod_api::__private::BuiltinInsideAction) {
         match action {
             mod_api::__private::BuiltinInsideAction::PowderSnowMelt(pos) => {

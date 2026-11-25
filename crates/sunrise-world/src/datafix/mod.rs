@@ -135,7 +135,7 @@ impl Cx<'_> {
 pub(crate) const LAST_READ: &str = "\u{0}last_read";
 
 /// Remember a record's current fields as the map it was read from.
-pub fn mark_read(e: &mut Tag) {
+pub(crate) fn mark_read(e: &mut Tag) {
     if let Tag::Compound(_) = e {
         let mut raw = e.clone();
         strip_last_read(&mut raw);
@@ -161,7 +161,7 @@ fn reread_as(ty: Ty, k: Key, v: &mut Tag) -> tables::Result {
 
 /// A typed field dropped from an entity: what writing the entity gives back for
 /// it (its value in the map the entity was last read from, if any).
-pub fn drop_typed(e: &mut Tag, field: &str) {
+pub(crate) fn drop_typed(e: &mut Tag, field: &str) {
     match e.get(LAST_READ).and_then(|raw| raw.get(field)).cloned() {
         Some(raw) => dynamic::put(e, field, raw),
         None => {
@@ -185,12 +185,12 @@ fn strip_last_read(v: &mut Tag) {
 }
 
 /// The entity or block entity `id` field, namespaced.
-pub fn id_is(v: &Tag, id: &str) -> bool {
+pub(crate) fn id_is(v: &Tag, id: &str) -> bool {
     as_str(v.get("id")).is_some_and(|s| dynamic::namespaced(&s) == id)
 }
 
 /// `createRenamer`: the id namespaced, looked up in a table.
-pub fn renamer<'a>(
+pub(crate) fn renamer<'a>(
     table: &'a [(&'a str, &'static str)],
 ) -> impl Fn(&str) -> Option<&'static str> + 'a {
     move |id: &str| {
@@ -322,7 +322,7 @@ pub fn update_chunk(tag: &mut Tag, dimension: &str, generator: Option<&str>) {
 
 /// [`update_chunk`] up to an older DataVersion than the current one (the
 /// harness checks the fixes of a range of versions on their own).
-pub fn update_chunk_to(tag: &mut Tag, dimension: &str, generator: Option<&str>, to: i32) {
+pub(crate) fn update_chunk_to(tag: &mut Tag, dimension: &str, generator: Option<&str>, to: i32) {
     let version = dynamic::as_int(tag.get("DataVersion"), -1);
     if version >= to {
         return;
@@ -344,7 +344,7 @@ pub fn update_region_tag(root: Ty, tag: &mut Tag) {
 }
 
 /// [`update_region_tag`] up to an older DataVersion.
-pub fn update_region_tag_to(root: Ty, tag: &mut Tag, to: i32) {
+pub(crate) fn update_region_tag_to(root: Ty, tag: &mut Tag, to: i32) {
     let default = if root == Ty::PoiChunk { 1945 } else { -1 };
     let version = dynamic::as_int(tag.get("DataVersion"), default);
     if version >= to {
@@ -361,7 +361,7 @@ pub fn update_player(tag: &mut Tag) {
 }
 
 /// [`update_player`] up to an older DataVersion.
-pub fn update_player_to(tag: &mut Tag, to: i32) {
+pub(crate) fn update_player_to(tag: &mut Tag, to: i32) {
     let version = dynamic::as_int(tag.get("DataVersion"), -1);
     update(Ty::Player, tag, version, to);
     dynamic::put(tag, "DataVersion", Tag::Int(to));
@@ -375,7 +375,7 @@ pub fn update_hotbar(tag: &mut Tag) {
 }
 
 /// The saved data type of a file below a `data` folder (`namespace/path.dat`).
-pub fn saved_data_type(relative: &str) -> Option<Ty> {
+pub(crate) fn saved_data_type(relative: &str) -> Option<Ty> {
     let name = relative.strip_suffix(".dat").unwrap_or(relative);
     if name.ends_with("/command_storage") {
         return Some(Ty::SavedCommandStorage);

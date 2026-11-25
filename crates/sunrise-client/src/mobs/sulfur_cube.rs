@@ -1465,9 +1465,11 @@ struct SulfurTempt {
 }
 impl Goal for SulfurTempt {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let Some(p) = cx.w.selected_player() else {
             return false;
@@ -1490,6 +1492,7 @@ impl Goal for SulfurTempt {
         self.player = ok.then_some(p.eye);
         ok
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(p) = cx.w.selected_player() else {
             return;
@@ -1502,6 +1505,7 @@ impl Goal for SulfurTempt {
         let yaw = m.yaw;
         super::cube::set_direction(m, yaw, true);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         super::cube::set_wanted(m, 0.0);
     }
@@ -1512,12 +1516,15 @@ impl Goal for SulfurTempt {
 struct SearchForItems;
 impl Goal for SearchForItems {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         !m.is_baby() && m.extra.ints[3] <= 0 && m.extra.point.is_some()
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
         let Some(p) = m.extra.point else { return };
         m.turn_to(p, 10.0, 10.0);

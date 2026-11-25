@@ -828,18 +828,22 @@ struct ItemInsideAccess<'a, 'g> {
 }
 
 impl mod_api::InsideEntityAccess for ItemInsideAccess<'_, '_> {
+    #[inline]
     fn id(&self) -> u32 {
         self.item.id
     }
 
+    #[inline]
     fn kind(&self) -> &str {
         "minecraft:item"
     }
 
+    #[inline]
     fn is_alive(&self) -> bool {
         self.item.health > 0
     }
 
+    #[inline]
     fn position(&self) -> [f64; 3] {
         [
             self.item.position.x,
@@ -848,6 +852,7 @@ impl mod_api::InsideEntityAccess for ItemInsideAccess<'_, '_> {
         ]
     }
 
+    #[inline]
     fn velocity(&self) -> [f64; 3] {
         [
             self.item.velocity.x,
@@ -856,18 +861,22 @@ impl mod_api::InsideEntityAccess for ItemInsideAccess<'_, '_> {
         ]
     }
 
+    #[inline]
     fn fire_ticks(&self) -> i32 {
         self.item.fire_ticks
     }
 
+    #[inline]
     fn is_on_fire(&self) -> bool {
         self.item.fire_ticks > 0 && item_can_burn(self.game, self.item)
     }
 
+    #[inline]
     fn fall_distance(&self) -> f64 {
         self.item.fall_distance
     }
 
+    #[inline]
     fn block_state(&self, pos: [i32; 3]) -> Option<mod_api::BlockState> {
         use crate::game::api_values::TryIntoApi as _;
         let level = self.game.level(self.game.dim.id())?;
@@ -876,6 +885,7 @@ impl mod_api::InsideEntityAccess for ItemInsideAccess<'_, '_> {
             .and_then(|id| id.try_into_api().ok())
     }
 
+    #[inline]
     fn push(&mut self, delta: [f64; 3]) -> bool {
         if !delta.iter().all(|v| v.is_finite()) {
             return false;
@@ -887,6 +897,7 @@ impl mod_api::InsideEntityAccess for ItemInsideAccess<'_, '_> {
         true
     }
 
+    #[inline]
     fn set_velocity(&mut self, velocity: [f64; 3]) -> bool {
         if !velocity.iter().all(|v| v.is_finite()) {
             return false;
@@ -895,6 +906,7 @@ impl mod_api::InsideEntityAccess for ItemInsideAccess<'_, '_> {
         true
     }
 
+    #[inline]
     fn make_stuck_in_block(&mut self, speed_multiplier: [f64; 3]) -> bool {
         if !speed_multiplier.iter().all(|v| v.is_finite()) {
             return false;
@@ -908,18 +920,22 @@ impl mod_api::InsideEntityAccess for ItemInsideAccess<'_, '_> {
         true
     }
 
+    #[inline]
     fn reset_fall_distance(&mut self) {
         self.item.fall_distance = 0.0;
     }
 
+    #[inline]
     fn set_remaining_fire_ticks(&mut self, ticks: i32) {
         self.item.fire_ticks = ticks;
     }
 
+    #[inline]
     fn add_effect(&mut self, _effect: mod_api::EffectKey, _duration: i32, _amplifier: u8) -> bool {
         false
     }
 
+    #[inline]
     fn hurt_with_source(
         &mut self,
         damage_type: &str,
@@ -942,6 +958,7 @@ impl mod_api::InsideEntityAccess for ItemInsideAccess<'_, '_> {
             .hurt_lent_item_entity(self.item, amount, damage_type, direct, causing, from)
     }
 
+    #[inline]
     fn set_block(&mut self, pos: [i32; 3], state: mod_api::BlockState) -> bool {
         use crate::game::api_values::TryIntoEngine as _;
         let Some(level) = self.game.level(self.game.dim.id()) else {
@@ -956,6 +973,7 @@ impl mod_api::InsideEntityAccess for ItemInsideAccess<'_, '_> {
             .unwrap_or(false)
     }
 
+    #[inline]
     fn destroy_block(&mut self, pos: [i32; 3], drop: bool) -> bool {
         let Some(level) = self.game.level(self.game.dim.id()) else {
             return false;
@@ -965,6 +983,7 @@ impl mod_api::InsideEntityAccess for ItemInsideAccess<'_, '_> {
             .is_some()
     }
 
+    #[inline]
     fn apply_effect(&mut self, effect: mod_api::InsideEffect) {
         match effect {
             mod_api::InsideEffect::Extinguish => {
@@ -989,6 +1008,7 @@ impl mod_api::InsideEntityAccess for ItemInsideAccess<'_, '_> {
         }
     }
 
+    #[inline]
     fn apply_builtin(&mut self, action: mod_api::__private::BuiltinInsideAction) {
         use mod_api::__private::BuiltinInsideAction as Action;
         match action {
@@ -1056,18 +1076,22 @@ struct ProjectileInsideAccess<'a, 'g> {
 }
 
 impl mod_api::InsideEntityAccess for ProjectileInsideAccess<'_, '_> {
+    #[inline]
     fn id(&self) -> u32 {
         self.shot.id
     }
 
+    #[inline]
     fn kind(&self) -> &str {
         self.shot.entity_type()
     }
 
+    #[inline]
     fn is_alive(&self) -> bool {
         shot_alive(self.shot)
     }
 
+    #[inline]
     fn position(&self) -> [f64; 3] {
         [
             self.shot.position.x,
@@ -1076,6 +1100,7 @@ impl mod_api::InsideEntityAccess for ProjectileInsideAccess<'_, '_> {
         ]
     }
 
+    #[inline]
     fn velocity(&self) -> [f64; 3] {
         [
             self.shot.velocity.x,
@@ -1084,18 +1109,22 @@ impl mod_api::InsideEntityAccess for ProjectileInsideAccess<'_, '_> {
         ]
     }
 
+    #[inline]
     fn fire_ticks(&self) -> i32 {
         self.shot.fire_ticks
     }
 
+    #[inline]
     fn is_on_fire(&self) -> bool {
         self.shot.burning()
     }
 
+    #[inline]
     fn fall_distance(&self) -> f64 {
         self.shot.fall_distance
     }
 
+    #[inline]
     fn block_state(&self, pos: [i32; 3]) -> Option<mod_api::BlockState> {
         use crate::game::api_values::TryIntoApi as _;
         let level = self.game.level(self.game.dim.id())?;
@@ -1104,6 +1133,7 @@ impl mod_api::InsideEntityAccess for ProjectileInsideAccess<'_, '_> {
             .and_then(|id| id.try_into_api().ok())
     }
 
+    #[inline]
     fn push(&mut self, delta: [f64; 3]) -> bool {
         if !delta.iter().all(|v| v.is_finite()) {
             return false;
@@ -1115,6 +1145,7 @@ impl mod_api::InsideEntityAccess for ProjectileInsideAccess<'_, '_> {
         true
     }
 
+    #[inline]
     fn set_velocity(&mut self, velocity: [f64; 3]) -> bool {
         if !velocity.iter().all(|v| v.is_finite()) {
             return false;
@@ -1123,6 +1154,7 @@ impl mod_api::InsideEntityAccess for ProjectileInsideAccess<'_, '_> {
         true
     }
 
+    #[inline]
     fn make_stuck_in_block(&mut self, speed_multiplier: [f64; 3]) -> bool {
         if !speed_multiplier.iter().all(|v| v.is_finite()) {
             return false;
@@ -1136,18 +1168,22 @@ impl mod_api::InsideEntityAccess for ProjectileInsideAccess<'_, '_> {
         true
     }
 
+    #[inline]
     fn reset_fall_distance(&mut self) {
         self.shot.fall_distance = 0.0;
     }
 
+    #[inline]
     fn set_remaining_fire_ticks(&mut self, ticks: i32) {
         self.shot.fire_ticks = ticks;
     }
 
+    #[inline]
     fn add_effect(&mut self, _effect: mod_api::EffectKey, _duration: i32, _amplifier: u8) -> bool {
         false
     }
 
+    #[inline]
     fn hurt_with_source(
         &mut self,
         damage_type: &str,
@@ -1176,6 +1212,7 @@ impl mod_api::InsideEntityAccess for ProjectileInsideAccess<'_, '_> {
             .hurt_lent_projectile(self.shot, damage_type, direct, causing, from)
     }
 
+    #[inline]
     fn set_block(&mut self, pos: [i32; 3], state: mod_api::BlockState) -> bool {
         use crate::game::api_values::TryIntoEngine as _;
         let Some(level) = self.game.level(self.game.dim.id()) else {
@@ -1190,6 +1227,7 @@ impl mod_api::InsideEntityAccess for ProjectileInsideAccess<'_, '_> {
             .unwrap_or(false)
     }
 
+    #[inline]
     fn destroy_block(&mut self, pos: [i32; 3], drop: bool) -> bool {
         let Some(level) = self.game.level(self.game.dim.id()) else {
             return false;
@@ -1199,6 +1237,7 @@ impl mod_api::InsideEntityAccess for ProjectileInsideAccess<'_, '_> {
             .is_some()
     }
 
+    #[inline]
     fn apply_effect(&mut self, effect: mod_api::InsideEffect) {
         match effect {
             mod_api::InsideEffect::Extinguish => {
@@ -1219,6 +1258,7 @@ impl mod_api::InsideEntityAccess for ProjectileInsideAccess<'_, '_> {
         }
     }
 
+    #[inline]
     fn apply_builtin(&mut self, action: mod_api::__private::BuiltinInsideAction) {
         use mod_api::__private::BuiltinInsideAction as Action;
         match action {
@@ -2926,12 +2966,15 @@ impl Entity for Mob {
     const SERIALIZES_ATTACHMENTS: bool = true;
     stored_ground!();
 
+    #[inline]
     fn fall_distance(&self) -> f64 {
         self.fall_distance
     }
+    #[inline]
     fn reset_fall_distance(&mut self) {
         self.fall_distance = 0.0;
     }
+    #[inline]
     fn support_collision(
         &self,
         tags: &sunrise_items::items::EntityTypeTags,
@@ -2942,11 +2985,13 @@ impl Entity for Mob {
     /// `Entity.noPhysics`: written through the mod API; no mob tick rewrites it
     /// (a vex sets it only for the length of its own, custom travel). Its own
     /// field is the write's store, so `stored` is None for a mob.
+    #[inline]
     fn no_physics(&self, _stored: Option<bool>) -> bool {
         self.no_physics
     }
     /// `Entity.move(MoverType.PISTON, ...)` ends in `setPos`, which `Shulker`
     /// overrides to snap to the block centre.
+    #[inline]
     fn move_entity(&mut self, gate: &mut MoveGate, movement: Vec3) {
         if gate.skipped() {
             return;
@@ -2958,9 +3003,11 @@ impl Entity for Mob {
             self.position = moved;
         }
     }
+    #[inline]
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.head_pitch]
     }
+    #[inline]
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
         let previous = self.rotation();
         let yaw = if yaw.is_finite() { yaw } else { previous[0] };
@@ -2972,9 +3019,11 @@ impl Entity for Mob {
         self.previous_yaw = self.yaw;
         self.previous_head_pitch = self.head_pitch;
     }
+    #[inline]
     fn native_type(&self) -> Cow<'_, str> {
         super::native_hooks::mob_kind(self).into()
     }
+    #[inline]
     fn save_nbt(
         game: &mut Game<'_>,
         index: usize,
@@ -2982,6 +3031,7 @@ impl Entity for Mob {
     ) -> Option<(ChunkKey, Tag)> {
         game.save_mob(index, keys)
     }
+    #[inline]
     fn load_nbt(
         game: &mut Game<'_>,
         kind: &str,
@@ -2997,43 +3047,55 @@ impl Entity for Mob {
         Ok(())
     }
     stored_motion!();
+    #[inline]
     fn portal_size(&self) -> Option<(f32, f32)> {
         Some((self.width(), self.height()))
     }
+    #[inline]
     fn sweeps_portals(&self) -> bool {
         true
     }
+    #[inline]
     fn can_use_portal(&self, game: &Game<'_>) -> bool {
         game.mob_portal_eligible(self)
     }
     /// `PersistentEntitySectionManager.Callback.onRemove`: discard stops
     /// section enumeration immediately, before the entity list is swept.
+    #[inline]
     fn selector_target(&self) -> Option<Target> {
         (!self.removed && self.death_time == 0).then_some(Target::Mob(self.id))
     }
+    #[inline]
     fn bounds(&self) -> Aabb {
         Mob::bounds(self)
     }
+    #[inline]
     fn get_step_height(&self) -> f32 {
         self.kind.step_height as f32
     }
+    #[inline]
     fn is_alive(&self) -> bool {
         !self.removed && self.alive()
     }
+    #[inline]
     fn is_removed(&self) -> bool {
         self.removed
     }
+    #[inline]
     fn is_pickable(&self) -> bool {
         !self.removed && !(&*self.kind.id == "minecraft:player" && self.extra.spectator)
     }
+    #[inline]
     fn is_living(&self) -> bool {
         true
     }
     /// `Bat.isIgnoringBlockTriggers`.
+    #[inline]
     fn is_ignoring_block_triggers(&self) -> bool {
         self.species() == Species::Bat
     }
     /// `Warden.ignoreExplosion`: while it digs or emerges.
+    #[inline]
     fn ignores_explosion(&self, blast: &Blast) -> bool {
         !self.alive()
             || blast.spared == Some(self.id)
@@ -3043,10 +3105,12 @@ impl Entity for Mob {
     /// `getEyeHeight` of the mob as it stands: a baby's, a slime's or a
     /// phantom's own scaled eye height, not the adult kind's. The blast's box
     /// is its real `bounds`, so it needs no override.
+    #[inline]
     fn explosion_eye_height(&self) -> f64 {
         self.eye_height()
     }
     /// `Entity.push` sets `needsSync`.
+    #[inline]
     fn push_from_explosion(&mut self, push: Vec3) {
         self.velocity = Vec3::new(
             self.velocity.x + push.x,
@@ -3055,6 +3119,7 @@ impl Entity for Mob {
         );
         self.needs_sync = true;
     }
+    #[inline]
     fn thunder_hit(&self) -> ThunderHit {
         if self.alive() {
             ThunderHit::Mob
@@ -3063,6 +3128,7 @@ impl Entity for Mob {
         }
     }
     /// The kind's own size, as the strike has always read it.
+    #[inline]
     fn thunder_bounds(&self) -> Aabb {
         let (p, w) = (self.position, self.kind.width / 2.0);
         Aabb::new(
@@ -3075,9 +3141,11 @@ impl Entity for Mob {
 impl Entity for ItemEntity {
     stored_size!(|_: &Self| ItemEntity::DIMENSIONS);
     stored_ground!();
+    #[inline]
     fn fall_distance(&self) -> f64 {
         self.fall_distance
     }
+    #[inline]
     fn support_collision(
         &self,
         _tags: &sunrise_items::items::EntityTypeTags,
@@ -3090,9 +3158,11 @@ impl Entity for ItemEntity {
             }),
         )
     }
+    #[inline]
     fn reset_fall_distance(&mut self) {
         self.fall_distance = 0.0;
     }
+    #[inline]
     fn move_entity(&mut self, gate: &mut MoveGate, movement: Vec3) {
         if gate.skipped() {
             return;
@@ -3101,21 +3171,26 @@ impl Entity for ItemEntity {
         *position = position.add_vector(movement);
     }
 
+    #[inline]
     fn rotation(&self) -> [f32; 2] {
         self.rotation
     }
+    #[inline]
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
         let previous = self.rotation();
         let yaw = if yaw.is_finite() { yaw } else { previous[0] };
         let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
     }
+    #[inline]
     fn fluid_eye_y(&self) -> f64 {
         ItemEntity::fluid_eye_y(self)
     }
+    #[inline]
     fn native_type(&self) -> Cow<'_, str> {
         "minecraft:item".into()
     }
+    #[inline]
     fn save_nbt(
         game: &mut Game<'_>,
         index: usize,
@@ -3123,6 +3198,7 @@ impl Entity for ItemEntity {
     ) -> Option<(ChunkKey, Tag)> {
         game.save_item(index, keys)
     }
+    #[inline]
     fn load_nbt(
         game: &mut Game<'_>,
         kind: &str,
@@ -3145,24 +3221,31 @@ impl Entity for ItemEntity {
         Ok(())
     }
     stored_motion!();
+    #[inline]
     fn portal_size(&self) -> Option<(f32, f32)> {
         Some((0.25, 0.25))
     }
+    #[inline]
     fn selector_target(&self) -> Option<Target> {
         Some(Target::Item(self.id))
     }
+    #[inline]
     fn thunder_hit(&self) -> ThunderHit {
         ThunderHit::Item
     }
+    #[inline]
     fn ignores_explosion(&self, blast: &Blast) -> bool {
         blast.items_ignore
     }
+    #[inline]
     fn explosion_eye_height(&self) -> f64 {
         Self::EYE_HEIGHT
     }
+    #[inline]
     fn bounds(&self) -> Aabb {
         ItemEntity::bounds(self)
     }
+    #[inline]
     fn piston_slime_bounce(&mut self, movement: Direction) {
         ItemEntity::piston_slime_bounce(self, movement);
     }
@@ -3171,9 +3254,11 @@ impl Entity for ItemEntity {
 impl Entity for ExperienceOrb {
     stored_size!(|_: &Self| ExperienceOrb::DIMENSIONS);
     stored_ground!();
+    #[inline]
     fn reset_fall_distance(&mut self) {
         // An orb keeps no fall distance here.
     }
+    #[inline]
     fn move_entity(&mut self, gate: &mut MoveGate, movement: Vec3) {
         if gate.skipped() {
             return;
@@ -3182,21 +3267,26 @@ impl Entity for ExperienceOrb {
         *position = position.add_vector(movement);
     }
 
+    #[inline]
     fn rotation(&self) -> [f32; 2] {
         self.rotation
     }
+    #[inline]
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
         let previous = self.rotation();
         let yaw = if yaw.is_finite() { yaw } else { previous[0] };
         let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
     }
+    #[inline]
     fn ticks_after_projectiles(&self) -> bool {
         true
     }
+    #[inline]
     fn native_type(&self) -> Cow<'_, str> {
         "minecraft:experience_orb".into()
     }
+    #[inline]
     fn save_nbt(
         game: &mut Game<'_>,
         index: usize,
@@ -3204,6 +3294,7 @@ impl Entity for ExperienceOrb {
     ) -> Option<(ChunkKey, Tag)> {
         game.save_orb(index, keys)
     }
+    #[inline]
     fn load_nbt(
         game: &mut Game<'_>,
         kind: &str,
@@ -3219,21 +3310,27 @@ impl Entity for ExperienceOrb {
         Ok(())
     }
     stored_motion!();
+    #[inline]
     fn portal_size(&self) -> Option<(f32, f32)> {
         Some((0.5, 0.5))
     }
+    #[inline]
     fn selector_target(&self) -> Option<Target> {
         Some(Target::Orb(self.id))
     }
+    #[inline]
     fn thunder_hit(&self) -> ThunderHit {
         ThunderHit::Orb
     }
+    #[inline]
     fn explosion_eye_height(&self) -> f64 {
         f64::from(0.5f32 * 0.85f32)
     }
+    #[inline]
     fn bounds(&self) -> Aabb {
         ExperienceOrb::bounds(self)
     }
+    #[inline]
     fn piston_slime_bounce(&mut self, movement: Direction) {
         self.velocity = piston_push::bounce_velocity(movement, self.velocity);
         self.ground.on_ground = false;
@@ -3244,9 +3341,11 @@ impl Entity for ExperienceOrb {
 impl Entity for Boat {
     stored_size!(|_: &Self| Boat::DIMENSIONS);
     stored_ground!();
+    #[inline]
     fn reset_fall_distance(&mut self) {
         // A boat keeps no fall distance here.
     }
+    #[inline]
     fn move_entity(&mut self, gate: &mut MoveGate, movement: Vec3) {
         if gate.skipped() {
             return;
@@ -3255,9 +3354,11 @@ impl Entity for Boat {
         *position = position.add_vector(movement);
     }
 
+    #[inline]
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
+    #[inline]
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
         let previous = self.rotation();
         let yaw = if yaw.is_finite() { yaw } else { previous[0] };
@@ -3265,9 +3366,11 @@ impl Entity for Boat {
         self.yaw = yaw;
         self.pitch = pitch.clamp(-90.0, 90.0);
     }
+    #[inline]
     fn native_type(&self) -> Cow<'_, str> {
         self.entity_type_name().into()
     }
+    #[inline]
     fn save_nbt(
         game: &mut Game<'_>,
         index: usize,
@@ -3275,6 +3378,7 @@ impl Entity for Boat {
     ) -> Option<(ChunkKey, Tag)> {
         game.save_boat(index, keys)
     }
+    #[inline]
     fn load_nbt(
         game: &mut Game<'_>,
         kind: &str,
@@ -3298,35 +3402,45 @@ impl Entity for Boat {
         Ok(())
     }
     stored_motion!();
+    #[inline]
     fn is_vehicle(&self) -> bool {
         true
     }
     /// `Boat.getEyeY`: the top of the 0.5625 box.
+    #[inline]
     fn fluid_eye_y(&self) -> f64 {
         self.position.y + super::boats::HEIGHT
     }
+    #[inline]
     fn portal_size(&self) -> Option<(f32, f32)> {
         Some((super::boats::WIDTH as f32, super::boats::HEIGHT as f32))
     }
+    #[inline]
     fn can_use_portal(&self, game: &Game<'_>) -> bool {
         game.vehicle_can_use_portal(self.id)
     }
+    #[inline]
     fn selector_target(&self) -> Option<Target> {
         Some(Target::Boat(self.id))
     }
+    #[inline]
     fn thunder_hit(&self) -> ThunderHit {
         ThunderHit::Vehicle
     }
+    #[inline]
     fn ignores_explosion(&self, blast: &Blast) -> bool {
         blast.vehicles_ignore
     }
     /// `EntityType.OAK_BOAT & co`: the full 0.5625.
+    #[inline]
     fn explosion_eye_height(&self) -> f64 {
         0.5625
     }
+    #[inline]
     fn bounds(&self) -> Aabb {
         Boat::bounds(self)
     }
+    #[inline]
     fn is_pickable(&self) -> bool {
         true
     }
@@ -3335,12 +3449,15 @@ impl Entity for Boat {
 impl Entity for Minecart {
     stored_size!(|_: &Self| Minecart::DIMENSIONS);
     stored_ground!();
+    #[inline]
     fn fall_distance(&self) -> f64 {
         self.fall_distance
     }
+    #[inline]
     fn reset_fall_distance(&mut self) {
         self.fall_distance = 0.0;
     }
+    #[inline]
     fn move_entity(&mut self, gate: &mut MoveGate, movement: Vec3) {
         if gate.skipped() {
             return;
@@ -3349,9 +3466,11 @@ impl Entity for Minecart {
         *position = position.add_vector(movement);
     }
 
+    #[inline]
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
+    #[inline]
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
         let previous = self.rotation();
         let yaw = if yaw.is_finite() { yaw } else { previous[0] };
@@ -3359,9 +3478,11 @@ impl Entity for Minecart {
         self.yaw = yaw;
         self.pitch = pitch.clamp(-90.0, 90.0);
     }
+    #[inline]
     fn native_type(&self) -> Cow<'_, str> {
         self.kind.id().into()
     }
+    #[inline]
     fn save_nbt(
         game: &mut Game<'_>,
         index: usize,
@@ -3369,6 +3490,7 @@ impl Entity for Minecart {
     ) -> Option<(ChunkKey, Tag)> {
         game.save_cart(index, keys)
     }
+    #[inline]
     fn load_nbt(
         game: &mut Game<'_>,
         kind: &str,
@@ -3392,34 +3514,43 @@ impl Entity for Minecart {
         Ok(())
     }
     stored_motion!();
+    #[inline]
     fn is_vehicle(&self) -> bool {
         true
     }
+    #[inline]
     fn portal_size(&self) -> Option<(f32, f32)> {
         Some((
             super::minecarts::WIDTH as f32,
             super::minecarts::HEIGHT as f32,
         ))
     }
+    #[inline]
     fn can_use_portal(&self, game: &Game<'_>) -> bool {
         game.vehicle_can_use_portal(self.id)
     }
+    #[inline]
     fn selector_target(&self) -> Option<Target> {
         Some(Target::Cart(self.id))
     }
+    #[inline]
     fn thunder_hit(&self) -> ThunderHit {
         ThunderHit::Vehicle
     }
+    #[inline]
     fn ignores_explosion(&self, blast: &Blast) -> bool {
         blast.vehicles_ignore
     }
+    #[inline]
     fn bounds(&self) -> Aabb {
         Minecart::bounds(self)
     }
+    #[inline]
     fn is_pickable(&self) -> bool {
         true
     }
     /// `tick_blocks` sweeps minecarts along with the players.
+    #[inline]
     fn sweeps_blocks_inside(&self) -> bool {
         false
     }
@@ -3439,6 +3570,7 @@ pub(super) fn armor_stand_size(stand: &ArmorStand) -> (f64, f64) {
 impl Entity for ArmorStand {
     stored_size!(ArmorStand::default_dimensions);
     stored_ground!(enchantment_fall_distance);
+    #[inline]
     fn support_collision(
         &self,
         _tags: &sunrise_items::items::EntityTypeTags,
@@ -3446,16 +3578,20 @@ impl Entity for ArmorStand {
         let (context, subject) = ArmorStand::support_collision(self);
         (context, Some(subject))
     }
+    #[inline]
     fn reset_fall_distance(&mut self) {
         self.enchantment_fall_distance = 0.0;
     }
     /// `LivingEntity.isAlive`: health above 0 (removal is the level's).
+    #[inline]
     fn is_alive(&self) -> bool {
         self.health > 0.0
     }
+    #[inline]
     fn is_pickable(&self) -> bool {
         !self.marker
     }
+    #[inline]
     fn move_entity(&mut self, gate: &mut MoveGate, movement: Vec3) {
         if gate.skipped() {
             return;
@@ -3464,9 +3600,11 @@ impl Entity for ArmorStand {
         *position = position.add_vector(movement);
     }
 
+    #[inline]
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
+    #[inline]
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
         let previous = self.rotation();
         let yaw = if yaw.is_finite() { yaw } else { previous[0] };
@@ -3479,12 +3617,15 @@ impl Entity for ArmorStand {
         self.previous_yaw = yaw;
         self.pitch = pitch.clamp(-90.0, 90.0);
     }
+    #[inline]
     fn fluid_eye_y(&self) -> f64 {
         ArmorStand::fluid_eye_y(self)
     }
+    #[inline]
     fn native_type(&self) -> Cow<'_, str> {
         super::armor_stands::TYPE_ID.into()
     }
+    #[inline]
     fn save_nbt(
         game: &mut Game<'_>,
         index: usize,
@@ -3492,6 +3633,7 @@ impl Entity for ArmorStand {
     ) -> Option<(ChunkKey, Tag)> {
         game.save_armor_stand(index, keys)
     }
+    #[inline]
     fn load_nbt(
         game: &mut Game<'_>,
         kind: &str,
@@ -3514,15 +3656,18 @@ impl Entity for ArmorStand {
         Ok(())
     }
     stored_motion!();
+    #[inline]
     fn selector_target(&self) -> Option<Target> {
         Some(Target::Stand(self.id))
     }
     /// `ArmorStand.ignoreExplosion`: a visible stand feels only a burst that
     /// affects block-like entities (`items_ignore` is that flag, negated).
+    #[inline]
     fn ignores_explosion(&self, blast: &Blast) -> bool {
         self.invisible || blast.items_ignore
     }
     /// `EntityType.ARMOR_STAND`'s size, halved when small; a marker has none.
+    #[inline]
     fn explosion_box(&self) -> Aabb {
         let (w, h) = armor_stand_size(self);
         let half = w / 2.0;
@@ -3532,6 +3677,7 @@ impl Entity for ArmorStand {
             Vec3::new(p.x + half, p.y + h, p.z + half),
         )
     }
+    #[inline]
     fn explosion_eye_height(&self) -> f64 {
         if self.marker {
             0.0
@@ -3542,35 +3688,43 @@ impl Entity for ArmorStand {
         }
     }
     /// A burst of wind pushes a stand that a blast only breaks.
+    #[inline]
     fn pushed_by_wind(&self) -> bool {
         true
     }
+    #[inline]
     fn bounds(&self) -> Aabb {
         ArmorStand::bounds(self)
     }
+    #[inline]
     fn is_living(&self) -> bool {
         true
     }
     /// `ArmorStand.isIgnoringBlockTriggers`.
+    #[inline]
     fn is_ignoring_block_triggers(&self) -> bool {
         self.marker
     }
     /// A NoGravity stand is not swept for the blocks it stands in (plates,
     /// fire): measured beside the real server, it never presses a plate nor
     /// catches fire, and does again once `NoGravity` is cleared.
+    #[inline]
     fn sweeps_blocks_inside(&self) -> bool {
         !self.no_gravity
     }
+    #[inline]
     fn pushed_by_explosion(&self) -> bool {
         false
     }
     /// `Entity.noPhysics`: `Marker` or `NoGravity` unless a mod wrote it,
     /// recomputed from them on load because `readAdditionalSaveData` does.
     /// Its own field is the write's store, so `stored` is None for a stand.
+    #[inline]
     fn no_physics(&self, _stored: Option<bool>) -> bool {
         self.no_physics.unwrap_or(self.marker || self.no_gravity)
     }
     /// `ArmorStand.getPistonPushReaction`: a marker is ignored.
+    #[inline]
     fn get_piston_push_reaction(&self) -> PushReaction {
         if self.marker {
             PushReaction::IgnoreEntity
@@ -3583,6 +3737,7 @@ impl Entity for ArmorStand {
     /// makes a stand without `hasPhysics` (a marker or a `NoGravity` one)
     /// `noPhysics`, so `Entity.isAffectedByBlocks` never runs its sweep and it
     /// enters no portal; a marker's box is `MARKER_DIMENSIONS`, 0 by 0, too.
+    #[inline]
     fn portal_size(&self) -> Option<(f32, f32)> {
         if self.marker || self.no_gravity {
             return None;
@@ -3595,15 +3750,18 @@ impl Entity for ArmorStand {
 impl Entity for PrimedTnt {
     stored_size!(|_: &Self| PrimedTnt::DIMENSIONS);
     stored_ground!();
+    #[inline]
     fn support_collision(
         &self,
         _tags: &sunrise_items::items::EntityTypeTags,
     ) -> (CollisionContext<'_>, Option<PowderSnowSubject<'_>>) {
         (self.collision_context(), Some(self.powder_snow_subject()))
     }
+    #[inline]
     fn reset_fall_distance(&mut self) {
         // Primed TNT keeps no fall distance here.
     }
+    #[inline]
     fn move_entity(&mut self, gate: &mut MoveGate, movement: Vec3) {
         if gate.skipped() {
             return;
@@ -3612,24 +3770,30 @@ impl Entity for PrimedTnt {
         *position = position.add_vector(movement);
     }
 
+    #[inline]
     fn rotation(&self) -> [f32; 2] {
         self.rotation
     }
+    #[inline]
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
         let previous = self.rotation();
         let yaw = if yaw.is_finite() { yaw } else { previous[0] };
         let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
     }
+    #[inline]
     fn ticks_after_projectiles(&self) -> bool {
         true
     }
+    #[inline]
     fn waits_for_spawn_packet(&self) -> bool {
         true
     }
+    #[inline]
     fn native_type(&self) -> Cow<'_, str> {
         "minecraft:tnt".into()
     }
+    #[inline]
     fn save_nbt(
         game: &mut Game<'_>,
         index: usize,
@@ -3637,6 +3801,7 @@ impl Entity for PrimedTnt {
     ) -> Option<(ChunkKey, Tag)> {
         game.save_tnt(index, keys)
     }
+    #[inline]
     fn load_nbt(
         game: &mut Game<'_>,
         kind: &str,
@@ -3654,29 +3819,37 @@ impl Entity for PrimedTnt {
     stored_motion!();
     /// `EntityTypes.TNT`'s explicit `eyeHeight(0.15F)`. Nothing vanilla reads
     /// for TNT depends on it (only `isEyeInFluid` does), but it is the type's.
+    #[inline]
     fn fluid_eye_y(&self) -> f64 {
         self.position.y + f64::from(0.15_f32)
     }
     /// `PrimedTnt` is 0.98 across.
+    #[inline]
     fn portal_size(&self) -> Option<(f32, f32)> {
         Some((0.98, 0.98))
     }
+    #[inline]
     fn can_use_portal(&self, game: &Game<'_>) -> bool {
         game.tnt_can_use_portal(self.id)
     }
+    #[inline]
     fn selector_target(&self) -> Option<Target> {
         Some(Target::Tnt(self.id))
     }
     /// Pushed from its position, not its eyes.
+    #[inline]
     fn explosion_eye_height(&self) -> f64 {
         0.0
     }
+    #[inline]
     fn bounds(&self) -> Aabb {
         PrimedTnt::bounds(self)
     }
+    #[inline]
     fn is_pickable(&self) -> bool {
         true
     }
+    #[inline]
     fn piston_slime_bounce(&mut self, movement: Direction) {
         self.velocity = piston_push::bounce_velocity(movement, self.velocity);
         // Leave the ground so the next tick does not apply the on-ground
@@ -3689,9 +3862,11 @@ impl Entity for PrimedTnt {
 impl Entity for FallingBlock {
     stored_size!(|_: &Self| FallingBlock::DIMENSIONS);
     stored_ground!();
+    #[inline]
     fn fall_distance(&self) -> f64 {
         self.fall_distance
     }
+    #[inline]
     fn support_collision(
         &self,
         _tags: &sunrise_items::items::EntityTypeTags,
@@ -3705,9 +3880,11 @@ impl Entity for FallingBlock {
             }),
         )
     }
+    #[inline]
     fn reset_fall_distance(&mut self) {
         self.fall_distance = 0.0;
     }
+    #[inline]
     fn move_entity(&mut self, gate: &mut MoveGate, movement: Vec3) {
         if gate.skipped() {
             return;
@@ -3715,24 +3892,30 @@ impl Entity for FallingBlock {
         let position = self.position_mut();
         *position = position.add_vector(movement);
     }
+    #[inline]
     fn rotation(&self) -> [f32; 2] {
         self.rotation
     }
+    #[inline]
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
         let previous = self.rotation();
         let yaw = if yaw.is_finite() { yaw } else { previous[0] };
         let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
     }
+    #[inline]
     fn ticks_after_projectiles(&self) -> bool {
         true
     }
+    #[inline]
     fn waits_for_spawn_packet(&self) -> bool {
         true
     }
+    #[inline]
     fn native_type(&self) -> Cow<'_, str> {
         "minecraft:falling_block".into()
     }
+    #[inline]
     fn save_nbt(
         game: &mut Game<'_>,
         index: usize,
@@ -3740,6 +3923,7 @@ impl Entity for FallingBlock {
     ) -> Option<(ChunkKey, Tag)> {
         game.save_falling(index, keys)
     }
+    #[inline]
     fn load_nbt(
         game: &mut Game<'_>,
         kind: &str,
@@ -3762,12 +3946,15 @@ impl Entity for FallingBlock {
         Ok(())
     }
     stored_motion!();
+    #[inline]
     fn selector_target(&self) -> Option<Target> {
         Some(Target::Falling(self.id))
     }
+    #[inline]
     fn bounds(&self) -> Aabb {
         FallingBlock::bounds(self)
     }
+    #[inline]
     fn is_pickable(&self) -> bool {
         true
     }
@@ -3776,11 +3963,13 @@ impl Entity for FallingBlock {
 impl Entity for Projectile {
     stored_size!(|p: &Self| p.kind.dimensions());
     stored_ground!();
+    #[inline]
     fn fall_distance(&self) -> f64 {
         self.arrow
             .as_ref()
             .map_or(self.fall_distance, |arrow| arrow.fall_distance)
     }
+    #[inline]
     fn support_collision(
         &self,
         _tags: &sunrise_items::items::EntityTypeTags,
@@ -3793,11 +3982,13 @@ impl Entity for Projectile {
             }),
         )
     }
+    #[inline]
     fn reset_fall_distance(&mut self) {
         if let Some(arrow) = self.arrow.as_deref_mut() {
             arrow.fall_distance = 0.0;
         }
     }
+    #[inline]
     fn portal_after_move(&self) -> bool {
         !matches!(
             self.kind,
@@ -3805,9 +3996,11 @@ impl Entity for Projectile {
                 | sunrise_client::projectiles::ProjectileKind::ShulkerBullet { .. }
         )
     }
+    #[inline]
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
+    #[inline]
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
         let previous = self.rotation();
         let yaw = if yaw.is_finite() { yaw } else { previous[0] };
@@ -3818,15 +4011,19 @@ impl Entity for Projectile {
         self.previous_pitch = self.pitch;
     }
     /// `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`.
+    #[inline]
     fn set_piston_on_ground(&mut self, on_ground: bool) {
         self.ground.on_ground = on_ground;
     }
+    #[inline]
     fn set_on_ground(&mut self, on_ground: bool) {
         self.ground.on_ground = on_ground;
     }
+    #[inline]
     fn native_type(&self) -> Cow<'_, str> {
         self.entity_type().into()
     }
+    #[inline]
     fn save_nbt(
         game: &mut Game<'_>,
         index: usize,
@@ -3834,6 +4031,7 @@ impl Entity for Projectile {
     ) -> Option<(ChunkKey, Tag)> {
         game.save_projectile(index, keys)
     }
+    #[inline]
     fn load_nbt(
         game: &mut Game<'_>,
         kind: &str,
@@ -3896,16 +4094,20 @@ impl Entity for Projectile {
     }
     stored_motion!();
     /// Arrows and the thrown items and fireballs a chunk saves.
+    #[inline]
     fn portal_size(&self) -> Option<(f32, f32)> {
         (super::nether_portal::is_arrow(self) || super::nether_portal::is_portal_projectile(self))
             .then(|| super::nether_portal::projectile_box(self))
     }
+    #[inline]
     fn portal_from(&self) -> Option<Vec3> {
         Some(self.previous)
     }
+    #[inline]
     fn portal_sweeps(&self) -> bool {
         !super::nether_portal::is_arrow(self) || !self.stuck || self.previous != self.position
     }
+    #[inline]
     fn selector_target(&self) -> Option<Target> {
         use sunrise_client::projectiles::ProjectileKind as K;
         // The kinds /data can write (entity_nbt).
@@ -3923,12 +4125,15 @@ impl Entity for Projectile {
     }
     /// `AbstractArrow.push` does nothing in the ground; a wind charge's motion
     /// stays 0.
+    #[inline]
     fn pushed_by_explosion(&self) -> bool {
         !self.stuck && !self.kind.ignores_blast()
     }
+    #[inline]
     fn explosion_eye_height(&self) -> f64 {
         self.kind.eye_height()
     }
+    #[inline]
     fn push_from_explosion(&mut self, push: Vec3) {
         self.velocity = Vec3::new(
             self.velocity.x + push.x,
@@ -3937,33 +4142,40 @@ impl Entity for Projectile {
         );
         self.needs_sync = true;
     }
+    #[inline]
     fn bounds(&self) -> Aabb {
         Projectile::bounds(self)
     }
     /// A shulker bullet's, set when it is made, unless a mod wrote one: the
     /// write has no field on this struct and lands in `stored`, so a cleared
     /// flag is what the movement code reads; an arrow's `AbstractArrow.noPhysics`.
+    #[inline]
     fn no_physics(&self, stored: Option<bool>) -> bool {
         stored.unwrap_or_else(|| {
             matches!(self.kind, ProjectileKind::ShulkerBullet { .. })
                 || self.arrow.as_ref().is_some_and(|a| a.no_physics)
         })
     }
+    #[inline]
     fn move_entity(&mut self, gate: &mut MoveGate, movement: Vec3) {
         if gate.skipped() {
             return;
         }
         Projectile::move_by_piston(self, movement);
     }
+    #[inline]
     fn piston_release_bounds(&self) -> Option<Aabb> {
         Projectile::piston_release_bounds(self)
     }
+    #[inline]
     fn release_after_piston(&mut self, no_block_collision: bool) {
         Projectile::release_after_piston(self, no_block_collision);
     }
+    #[inline]
     fn piston_slime_bounce(&mut self, movement: Direction) {
         Projectile::piston_slime_bounce(self, movement);
     }
+    #[inline]
     fn is_pickable(&self) -> bool {
         super::deflect::attackable(self)
     }
@@ -3972,9 +4184,11 @@ impl Entity for Projectile {
 impl Entity for Rocket {
     stored_size!(|_: &Self| Rocket::DIMENSIONS);
     stored_ground!();
+    #[inline]
     fn reset_fall_distance(&mut self) {
         // A firework rocket keeps no fall distance here.
     }
+    #[inline]
     fn move_entity(&mut self, gate: &mut MoveGate, movement: Vec3) {
         if gate.skipped() {
             return;
@@ -3982,18 +4196,22 @@ impl Entity for Rocket {
         let position = self.position_mut();
         *position = position.add_vector(movement);
     }
+    #[inline]
     fn rotation(&self) -> [f32; 2] {
         self.rotation
     }
+    #[inline]
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
         let previous = self.rotation();
         let yaw = if yaw.is_finite() { yaw } else { previous[0] };
         let pitch = if pitch.is_nan() { previous[1] } else { pitch };
         self.rotation = [yaw, pitch.clamp(-90.0, 90.0)];
     }
+    #[inline]
     fn native_type(&self) -> Cow<'_, str> {
         "minecraft:firework_rocket".into()
     }
+    #[inline]
     fn save_nbt(
         game: &mut Game<'_>,
         index: usize,
@@ -4001,6 +4219,7 @@ impl Entity for Rocket {
     ) -> Option<(ChunkKey, Tag)> {
         game.save_rocket(index, keys)
     }
+    #[inline]
     fn load_nbt(
         game: &mut Game<'_>,
         kind: &str,
@@ -4025,23 +4244,29 @@ impl Entity for Rocket {
     }
     stored_motion!();
     /// A rocket that carries its owner stays.
+    #[inline]
     fn portal_size(&self) -> Option<(f32, f32)> {
         (self.attached_to.is_none() && !self.attached).then_some((0.25, 0.25))
     }
+    #[inline]
     fn portal_from(&self) -> Option<Vec3> {
         Some(self.previous)
     }
+    #[inline]
     fn selector_target(&self) -> Option<Target> {
         Some(Target::Rocket(self.id))
     }
     /// 0.25 wide, so 0.2125 to the eyes.
+    #[inline]
     fn explosion_eye_height(&self) -> f64 {
         0.2125
     }
+    #[inline]
     fn bounds(&self) -> Aabb {
         Rocket::bounds(self)
     }
     /// `FireworkRocketEntity.tick`: boosting a player skips the step.
+    #[inline]
     fn sweeps_blocks_inside(&self) -> bool {
         !self.attached
     }
@@ -4050,15 +4275,19 @@ impl Entity for Rocket {
 impl Entity for ThrownTrident {
     stored_size!(|_: &Self| THROWN_TRIDENT_DIMENSIONS);
     stored_ground!();
+    #[inline]
     fn reset_fall_distance(&mut self) {
         // A thrown trident keeps no fall distance here.
     }
+    #[inline]
     fn portal_after_move(&self) -> bool {
         true
     }
+    #[inline]
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
     }
+    #[inline]
     fn set_rotation(&mut self, [yaw, pitch]: [f32; 2]) {
         let previous = self.rotation();
         let yaw = if yaw.is_finite() { yaw } else { previous[0] };
@@ -4066,12 +4295,15 @@ impl Entity for ThrownTrident {
         self.yaw = yaw;
         self.pitch = pitch.clamp(-90.0, 90.0);
     }
+    #[inline]
     fn set_on_ground(&mut self, on_ground: bool) {
         self.ground.on_ground = on_ground;
     }
+    #[inline]
     fn native_type(&self) -> Cow<'_, str> {
         "minecraft:trident".into()
     }
+    #[inline]
     fn save_nbt(
         game: &mut Game<'_>,
         index: usize,
@@ -4079,6 +4311,7 @@ impl Entity for ThrownTrident {
     ) -> Option<(ChunkKey, Tag)> {
         game.save_trident(index, keys)
     }
+    #[inline]
     fn load_nbt(
         game: &mut Game<'_>,
         kind: &str,
@@ -4101,26 +4334,33 @@ impl Entity for ThrownTrident {
         Ok(())
     }
     stored_motion!();
+    #[inline]
     fn portal_size(&self) -> Option<(f32, f32)> {
         Some((0.5, 0.5))
     }
+    #[inline]
     fn portal_from(&self) -> Option<Vec3> {
         Some(self.previous)
     }
+    #[inline]
     fn portal_sweeps(&self) -> bool {
         !self.in_ground || self.previous != self.position
     }
+    #[inline]
     fn selector_target(&self) -> Option<Target> {
         Some(Target::Trident(self.id))
     }
     /// Like any arrow (`AbstractArrow.push`) not pushed while in the ground.
+    #[inline]
     fn pushed_by_explosion(&self) -> bool {
         !self.in_ground
     }
     /// `EntityType.TRIDENT`: eyes at 0.13.
+    #[inline]
     fn explosion_eye_height(&self) -> f64 {
         f64::from(0.13_f32)
     }
+    #[inline]
     fn bounds(&self) -> Aabb {
         let p = self.position;
         let vanilla = Aabb::new(
@@ -4136,25 +4376,31 @@ impl Entity for ThrownTrident {
     }
     /// `AbstractArrow.noPhysics`, set once a loyal trident turns back. Its own
     /// field is the write's store, so `stored` is None for a trident.
+    #[inline]
     fn no_physics(&self, _stored: Option<bool>) -> bool {
         self.no_physics
     }
+    #[inline]
     fn move_entity(&mut self, gate: &mut MoveGate, movement: Vec3) {
         if gate.skipped() {
             return;
         }
         ThrownTrident::move_by_piston(self, movement);
     }
+    #[inline]
     fn piston_release_bounds(&self) -> Option<Aabb> {
         ThrownTrident::piston_release_bounds(self)
     }
+    #[inline]
     fn release_after_piston(&mut self, no_block_collision: bool) {
         ThrownTrident::release_after_piston(self, no_block_collision);
     }
+    #[inline]
     fn piston_slime_bounce(&mut self, movement: Direction) {
         ThrownTrident::piston_slime_bounce(self, movement);
     }
     /// `GameLevel::tick_blocks` sweeps tridents itself.
+    #[inline]
     fn sweeps_blocks_inside(&self) -> bool {
         false
     }

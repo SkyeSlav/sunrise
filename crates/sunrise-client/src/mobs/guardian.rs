@@ -78,21 +78,26 @@ struct GuardianAttack {
 }
 impl Goal for GuardianAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.target_info(cx.w).is_some_and(|t| t.alive)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.can_use(m, cx)
             && (is_elder(m)
                 || m.target_info(cx.w)
                     .is_some_and(|t| t.position.distance_squared(m.position) > 9.0))
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.attack_time = -10;
         m.ai.nav.stop();
@@ -100,10 +105,12 @@ impl Goal for GuardianAttack {
             m.look_at_speed([t.position.x, t.eye_y, t.position.z], 90.0, 90.0);
         }
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.extra.flag = false;
         m.set_ai_target(cx.w, None);
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let (Some(who), Some(t)) = (m.ai.target, m.target_info(cx.w)) else {
             return;

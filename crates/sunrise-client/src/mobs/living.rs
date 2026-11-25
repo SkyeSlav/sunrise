@@ -129,7 +129,7 @@ impl CurrentTarget for Pushed<'_> {
     }
 }
 /// Dimensions as `EntityDimensions` holds them: the floats `Mob::dims` widened, back.
-pub fn dims_array((w, h, e): (f64, f64, f64)) -> [f32; 3] {
+pub(crate) fn dims_array((w, h, e): (f64, f64, f64)) -> [f32; 3] {
     [w as f32, h as f32, e as f32]
 }
 pub fn wrap(a: f32) -> f32 {
@@ -788,7 +788,7 @@ impl Mob {
     /// `Entity.saveWithoutId`'s `CustomName`: the whole component as
     /// `ComponentSerialization.CODEC` writes it (a name tag's `custom_name`
     /// keeps its colour), else the plain text. `None` without a name.
-    pub fn custom_name_tag(&self) -> Option<sunrise_core::nbt::Tag> {
+    pub(crate) fn custom_name_tag(&self) -> Option<sunrise_core::nbt::Tag> {
         let name = self.custom_name.as_ref()?;
         Some(match &self.custom_name_text {
             Some(text) => crate::scoreboard::component_tag(&text.component()),
@@ -797,7 +797,7 @@ impl Mob {
     }
     /// Whether the save's `CustomName` is not this mob's name, style included:
     /// a rename to the same text with another colour still changes it.
-    pub fn custom_name_changed(&self, saved: Option<&sunrise_core::nbt::Tag>) -> bool {
+    pub(crate) fn custom_name_changed(&self, saved: Option<&sunrise_core::nbt::Tag>) -> bool {
         match (&self.custom_name_text, saved) {
             (Some(current), Some(saved)) => crate::entity_nbt::name_text(saved) != *current,
             (Some(_), None) => true,
@@ -820,7 +820,7 @@ impl Mob {
         }
         if self.eye_height() < 0.4 { 0.0 } else { 0.4 }
     }
-    pub fn is_in_liquid(&self) -> bool {
+    pub(crate) fn is_in_liquid(&self) -> bool {
         self.fluids.in_water || self.fluids.in_lava
     }
     /// `FloatGoal.canUse` and the brains' `Swim`: water deeper than the jump threshold, or lava.
@@ -2058,7 +2058,7 @@ impl Mob {
     /// `LivingEntity.travelFlying(input, waterSpeed, lavaSpeed, airSpeed)`:
     /// the speeds vary per mob (an allay flies at the speed its move control
     /// set, `Allay.travel`).
-    pub fn travel_flying_speeds(
+    pub(crate) fn travel_flying_speeds(
         &mut self,
         w: &MobWorld,
         level: &mut DamageLevel<'_>,
@@ -2376,7 +2376,7 @@ impl Mob {
         }
     }
     /// The jump part of LivingEntity.aiStep.
-    pub fn handle_jumping(&mut self, w: &MobWorld) {
+    pub(crate) fn handle_jumping(&mut self, w: &MobWorld) {
         if self.ai.jumping && self.affected_by_fluids() {
             let (fluid_height, in_water_with_height) = if self.fluids.in_lava {
                 (self.fluids.lava, false)
@@ -2462,7 +2462,7 @@ impl Mob {
         }
     }
     /// The `living_jump` hook for this mob, with its motion after the jump.
-    pub fn living_jumped(&self, context: &LoopContext) {
+    pub(crate) fn living_jumped(&self, context: &LoopContext) {
         let v = self.velocity;
         crate::motion::native_living_jump(context, self.id, &self.kind.id, [v.x, v.y, v.z]);
     }
@@ -2471,7 +2471,7 @@ impl Mob {
         self.jump_power_with(w, 1.0)
     }
     /// `LivingEntity.getJumpPower(float multiplier)`
-    pub fn jump_power_with(&self, w: &MobWorld, multiplier: f32) -> f32 {
+    pub(crate) fn jump_power_with(&self, w: &MobWorld, multiplier: f32) -> f32 {
         let mut power = self.attrs.jump_strength as f32 * multiplier * self.block_jump_factor(w)
             + self.jump_boost_power();
         crate::motion::native_living_jump_power(w.loop_context, self.id, &self.kind.id, &mut power);
@@ -2498,7 +2498,7 @@ impl Mob {
         )
     }
     /// LivingEntity.updateWalkAnimation (client calculateEntityAnimation).
-    pub fn update_walk_animation(&mut self) {
+    pub(crate) fn update_walk_animation(&mut self) {
         let dy = if self.kind.flags.omnidirectional {
             self.position.y - self.previous.y
         } else {
@@ -2677,7 +2677,12 @@ impl sunrise_world::water_splash::WaterSplashWorld for Splash<'_> {
 /// entity from (`Entity.getLightProbePosition` is that position and
 /// `EntityRenderer.getPackedLightCoords` takes `BlockPos.containing` of it):
 /// `Mth.lerp(partialTick, xo, x)` on each axis, plus `getEyeHeight()` on y.
-pub fn eye_probe_cell(previous: Vec3, position: Vec3, eye_height: f64, partial: f64) -> [i32; 3] {
+pub(crate) fn eye_probe_cell(
+    previous: Vec3,
+    position: Vec3,
+    eye_height: f64,
+    partial: f64,
+) -> [i32; 3] {
     let at = previous.lerp(position, partial);
     [
         at.x.floor() as i32,

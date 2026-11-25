@@ -107,7 +107,7 @@ pub fn register(m: &mut Mob) {
 /// `Parrot.registerGoals`: a tamed parrot sits when told to and follows its
 /// owner from five blocks away; it wanders to trees (`ParrotWanderGoal`) and
 /// lands on its owner's shoulder.
-pub fn register_parrot(m: &mut Mob) {
+pub(crate) fn register_parrot(m: &mut Mob) {
     let g = &mut m.ai.goals;
     g.add(0, TamePanic(Panic::new(1.25)));
     g.add(0, Float);
@@ -124,9 +124,11 @@ pub fn register_parrot(m: &mut Mob) {
 struct LandOnOwnersShoulder;
 impl Goal for LandOnOwnersShoulder {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // ShoulderRidingEntity.canSitOnShoulder: rideCooldownCounter > 100.
         is_owner(m, cx.w)
@@ -134,6 +136,7 @@ impl Goal for LandOnOwnersShoulder {
             && !m.extra.sitting
             && m.age > 100
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         // `!isInSittingPose()`: an ordered parrot still in the water may land.
         if !m.extra.sitting_pose
@@ -174,27 +177,34 @@ impl NonTameTarget {
 }
 impl Goal for NonTameTarget {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "NonTameRandomTargetGoal"
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !m.extra.tame && self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let Some(who) = m.ai.target else {
             return false;
         };
         Self::prey_matches(&self.0.prey, who, cx.w) && self.0.can_continue(m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx)
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx)
     }
@@ -235,7 +245,7 @@ pub fn set_tame(m: &mut Mob, tame: bool) {
     }
 }
 /// The max_health base `Wolf.applyTamingSideEffects` sets.
-pub fn wolf_health_base(tame: bool) -> f64 {
+pub(crate) fn wolf_health_base(tame: bool) -> f64 {
     if tame { 40.0 } else { 8.0 }
 }
 /// `TamableAnimal.getOwner`: the player the saved owner UUID names, when it
@@ -351,21 +361,27 @@ fn owner_distance_sqr(m: &Mob, w: &MobWorld) -> Option<f64> {
 struct TamePanic(Panic);
 impl Goal for TamePanic {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx)
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if !unable_to_move_to_owner(m, cx.w)
             && owner_distance_sqr(m, cx.w).is_some_and(|d| d >= 144.0)
@@ -380,9 +396,11 @@ impl Goal for TamePanic {
 struct SitWhenOrdered;
 impl Goal for SitWhenOrdered {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         JUMP | MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !m.extra.sitting && !m.extra.tame {
             return false;
@@ -398,17 +416,20 @@ impl Goal for SitWhenOrdered {
             }
         }
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.extra.sitting
     }
     /// `SitWhenOrderedToGoal.start`: stop and sit. A wolf's begging tilt is
     /// `BegGoal`'s to end, and a cat lying down gets up when its relax goal
     /// stops.
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.nav_stop();
         m.extra.sitting_pose = true;
     }
     /// `SitWhenOrderedToGoal.stop`.
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.extra.sitting_pose = false;
     }
@@ -431,12 +452,15 @@ impl AvoidLlamas {
 /// its target while it does.
 impl Goal for AvoidLlamas {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "WolfAvoidEntityGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !self.0.can_use(m, cx) {
             return false;
@@ -452,16 +476,20 @@ impl Goal for AvoidLlamas {
         };
         !m.extra.tame && i32::from(strength) >= m.random.next_int_bound(5).unwrap_or(0)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.set_ai_target(cx.w, None);
         self.0.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx)
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.set_ai_target(cx.w, None);
         self.0.tick(m, cx)
@@ -487,33 +515,40 @@ impl FollowOwner {
 }
 impl Goal for FollowOwner {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let Some(d) = owner_distance_sqr(m, cx.w) else {
             return false;
         };
         !unable_to_move_to_owner(m, cx.w) && d >= self.start * self.start
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if m.ai.nav.is_done() || unable_to_move_to_owner(m, cx.w) {
             return false;
         }
         owner_distance_sqr(m, cx.w).is_some_and(|d| d > self.stop * self.stop)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         self.recalc = 0;
         m.set_malus(super::path::PathType::Water, 0.0);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.nav_stop();
         let water = super::path::PathType::Water.malus();
         m.set_malus(super::path::PathType::Water, water);
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some((at, eye, _)) = owner(m, cx.w) else {
             return;
@@ -541,9 +576,11 @@ struct OwnerHurtBy {
 }
 impl Goal for OwnerHurtBy {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         TARGET
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !m.extra.tame || m.extra.sitting {
             return false;
@@ -553,17 +590,20 @@ impl Goal for OwnerHurtBy {
         };
         at != self.timestamp && wants_to_attack(m, cx.w, who)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.ai.target
             .and_then(|t| cx.w.target_info(t))
             .is_some_and(|t| t.alive)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some((who, at)) = owner_view(m, cx.w).and_then(|p| p.hurt_by) {
             m.set_ai_target(cx.w, Some(who));
             self.timestamp = at;
         }
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.set_ai_target(cx.w, None);
     }
@@ -577,9 +617,11 @@ struct OwnerHurt {
 }
 impl Goal for OwnerHurt {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         TARGET
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !m.extra.tame || m.extra.sitting {
             return false;
@@ -599,11 +641,13 @@ impl Goal for OwnerHurt {
             None => wants_to_attack(m, cx.w, Who::Mob(id)),
         }
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.ai.target
             .and_then(|t| cx.w.target_info(t))
             .is_some_and(|t| t.alive)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(id) = self.victim else {
             return;
@@ -622,6 +666,7 @@ impl Goal for OwnerHurt {
             m.ai.owner_hurt_timestamp = at;
         }
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.set_ai_target(cx.w, None);
     }
@@ -738,27 +783,33 @@ impl Beg {
 }
 impl Goal for Beg {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         cx.w.selected_player()
             .is_some_and(|p| p.alive && !p.spectator && m.distance_sqr(p.position) <= 64.0)
             && self.interesting(cx.w)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         cx.w.selected_player()
             .is_some_and(|p| p.alive && m.distance_sqr(p.position) <= 64.0)
             && self.ticks > 0
             && self.interesting(cx.w)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.extra.flag = true;
         self.ticks = reduced(40 + m.random.next_int_bound(40).unwrap_or(0));
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.extra.flag = false;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(p) = cx.w.selected_player() {
             let max = m.max_head_x_rot();
@@ -846,7 +897,7 @@ pub(super) fn update_persistent_anger(m: &mut Mob, w: &MobWorld) {
 /// The part of `Wolf.tick` both sides run: `interestedAngle` eases toward 1
 /// while the wolf begs (`isInterested`, `DATA_INTERESTED_ID`), toward 0
 /// otherwise, for `getHeadRollAngle`.
-pub fn interest_tick(m: &mut Mob) {
+pub(crate) fn interest_tick(m: &mut Mob) {
     let goal = if m.extra.flag { 1.0 } else { 0.0 };
     m.anim.vo[INTEREST] = m.anim.v[INTEREST];
     m.anim.v[INTEREST] += (goal - m.anim.v[INTEREST]) * 0.4;
@@ -866,7 +917,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
 /// the ground and is not pathing, and tells the clients (entity event 8),
 /// then `Wolf.tick` runs the shake (`shake_tick`). `wet` is
 /// `isInWaterOrRain`.
-pub fn server_shake(m: &mut Mob, wet: bool, events: &mut Vec<MobEvent>) {
+pub(crate) fn server_shake(m: &mut Mob, wet: bool, events: &mut Vec<MobEvent>) {
     if m.extra.flag2 && m.extra.counter2 == 0 && m.ai.nav.is_done() && m.ground.on_ground {
         start_shaking(m);
         broadcast(m, events, 8);
@@ -978,7 +1029,7 @@ fn shake_tick(m: &mut Mob, wet: bool, server: bool, events: &mut Vec<MobEvent>) 
 /// `Wolf.hurtServer`, `Parrot.hurtServer`: `setOrderedToSit(false)`. A
 /// wolf's anger comes with the target (`HurtByTargetGoal`, then
 /// `updatePersistentAnger`).
-pub fn stand_when_hurt(m: &mut Mob) {
+pub(crate) fn stand_when_hurt(m: &mut Mob) {
     m.extra.sitting = false;
 }
 /// `Wolf.getTailAngle`.
@@ -1105,7 +1156,7 @@ const LIE_TAIL: usize = 1;
 const RELAX: usize = 2;
 
 /// `Cat.registerGoals` (with `reassessTameGoals`' player avoidance).
-pub fn register_cat(m: &mut Mob) {
+pub(crate) fn register_cat(m: &mut Mob) {
     m.extra.color = RED;
     // Cat.defineSynchedData: DATA_VARIANT_ID starts at DEFAULT_VARIANT (CatVariants.BLACK, id 1).
     m.extra.variant = 1;
@@ -1152,7 +1203,7 @@ pub fn register_cat(m: &mut Mob) {
 }
 /// `Cat.registerGoals`: `WaterAvoidingRandomStrollGoal(this, 0.8, 1.0000001E-5F)`,
 /// the ocelot's probability (a cat strolls out of water one tick in 100000).
-pub fn cat_stroll() -> Stroll {
+pub(crate) fn cat_stroll() -> Stroll {
     let mut stroll = Stroll::avoiding_water(0.8);
     stroll.water_avoiding = Some(1.000_000_1e-5);
     stroll
@@ -1160,7 +1211,7 @@ pub fn cat_stroll() -> Stroll {
 /// `Ocelot.registerGoals`, then `reassessTrustingGoals` adds the player
 /// avoidance last. A trusting ocelot (`Ocelot.mobInteract`, the `Trusting`
 /// tag) neither runs from players nor is scared off while tempted.
-pub fn register_ocelot(m: &mut Mob) {
+pub(crate) fn register_ocelot(m: &mut Mob) {
     let food = m.kind.food.clone();
     let mut stroll = Stroll::avoiding_water(0.8);
     stroll.water_avoiding = Some(1.000_000_1e-5);
@@ -1185,28 +1236,36 @@ pub fn register_ocelot(m: &mut Mob) {
 struct OcelotTempt(super::goals::Tempt);
 impl Goal for OcelotTempt {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "OcelotTemptGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
     // `OcelotTemptGoal.canScare`: `super.canScare() && !isTrusting()`.
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.scared_unless_trusting(m, |t, m| t.can_use(m, cx))
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.scared_unless_trusting(m, |t, m| t.can_continue(m, cx))
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx)
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         self.0.every_tick()
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.scared_unless_trusting(m, |t, m| t.tick(m, cx))
     }
@@ -1240,31 +1299,38 @@ impl OcelotAvoid {
 }
 impl Goal for OcelotAvoid {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "OcelotAvoidEntityGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
     // `OcelotAvoidEntityGoal.canUse` and `canContinueToUse`: `!isTrusting() && super`.
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !m.extra.trusting && self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !m.extra.trusting && self.0.can_continue(m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx)
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx)
     }
 }
 /// `TamableAnimal.readAdditionalSaveData`: the saved order sets the pose too.
-pub fn restore_sitting(m: &mut Mob, ordered: bool) {
+pub(crate) fn restore_sitting(m: &mut Mob, ordered: bool) {
     m.extra.sitting = ordered;
     m.extra.sitting_pose = ordered;
 }
@@ -1278,12 +1344,15 @@ pub fn cat_sitting(m: &Mob) -> bool {
 struct CatTempt(super::goals::Tempt, Option<[i32; 4]>);
 impl Goal for CatTempt {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !m.extra.tame && self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // `CatTemptGoal` has no `canContinueToUse`: `TemptGoal`'s calls
         // `canUse()` again, so `!isTame()` is re-checked mid-tempt.
@@ -1298,15 +1367,19 @@ impl Goal for CatTempt {
         self.0.can_scare = scare;
         go
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx)
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         self.0.every_tick()
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         // Cat.tick: a wild cat being tempted begs every 100 ticks.
         if m.age.is_multiple_of(100) {
@@ -1341,7 +1414,7 @@ fn empty_above(w: &MobWorld, p: [i32; 3]) -> bool {
 }
 /// Whether `p` is the player that owns `m` (a cat without a recorded owner
 /// belongs to whoever it sees).
-pub fn is_owner_of(m: &Mob, p: &super::PlayerView) -> bool {
+pub(crate) fn is_owner_of(m: &Mob, p: &super::PlayerView) -> bool {
     m.extra.owner.is_none_or(|o| o == p.uuid)
 }
 /// `Cat.CatAvoidEntityGoal`: the player avoidance only while untamed.
@@ -1349,21 +1422,27 @@ pub fn is_owner_of(m: &Mob, p: &super::PlayerView) -> bool {
 struct CatAvoid(super::goals::AvoidEntity);
 impl Goal for CatAvoid {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !m.extra.tame && self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !m.extra.tame && self.0.can_continue(m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx)
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx)
     }
@@ -1404,9 +1483,11 @@ impl CatRelaxOnOwner {
 }
 impl Goal for CatRelaxOnOwner {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let w = cx.w;
         let Some(p) = Self::sleeping_owner(m, w) else {
@@ -1436,9 +1517,11 @@ impl Goal for CatRelaxOnOwner {
         self.goal = Some([at[0] + back[0], at[1] + back[1], at[2] + back[2]]);
         !self.occupied(m, w)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         Self::sleeping_owner(m, cx.w).is_some() && self.goal.is_some() && !self.occupied(m, cx.w)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(g) = self.goal {
             m.extra.sitting_pose = false;
@@ -1449,6 +1532,7 @@ impl Goal for CatRelaxOnOwner {
             );
         }
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.extra.flag = false;
         // The `gameplay/cat_waking_up_gift_chance` of the `day` timeline: 0.7
@@ -1472,6 +1556,7 @@ impl Goal for CatRelaxOnOwner {
         m.extra.relax_one = false;
         m.nav_stop();
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let (Some(p), Some(g)) = (cx.w.selected_player(), self.goal) else {
             return;
@@ -1567,28 +1652,35 @@ fn can_lie_on(w: &MobWorld, p: [i32; 3]) -> bool {
 }
 impl Goal for CatLieOnBlock {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         JUMP | MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.extra.tame
             && !m.extra.sitting
             && !m.extra.flag
             && self.0.can_use(m, cx.w, reduced(40), can_lie_on)
     }
+    #[inline]
     fn can_continue(&mut self, _: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(cx.w, can_lie_on)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx.w);
         m.extra.sitting_pose = false;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.extra.flag = false;
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx.w);
         m.extra.sitting_pose = false;
@@ -1619,9 +1711,11 @@ fn can_sit_on(w: &MobWorld, p: [i32; 3]) -> bool {
 }
 impl Goal for CatSitOnBlock {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         JUMP | MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !m.extra.tame || m.extra.sitting {
             return false;
@@ -1635,19 +1729,24 @@ impl Goal for CatSitOnBlock {
         let next = reduced(200 + m.random.next_int_bound(200).unwrap_or(0));
         self.0.can_use(m, cx.w, next, can_sit_on)
     }
+    #[inline]
     fn can_continue(&mut self, _: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(cx.w, can_sit_on)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx.w);
         m.extra.sitting_pose = false;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.extra.sitting_pose = false;
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx.w);
         m.extra.sitting_pose = self.0.reached;
@@ -1660,12 +1759,15 @@ struct OcelotAttack {
 }
 impl Goal for OcelotAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.ai.target.is_some()
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let Some(t) = m.ai.target.and_then(|t| cx.w.target_info(t)) else {
             return false;
@@ -1674,12 +1776,15 @@ impl Goal for OcelotAttack {
             && m.distance_sqr(t.position) <= 225.0
             && (!m.ai.nav.is_done() || m.ai.target.is_some())
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.nav_stop();
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(who) = m.ai.target else {
             return;
@@ -1707,7 +1812,7 @@ impl Goal for OcelotAttack {
     }
 }
 /// `Cat.tick`: lying and relaxing amounts and the purr.
-pub fn cat_ai_step(m: &mut Mob, events: &mut Vec<MobEvent>) {
+pub(crate) fn cat_ai_step(m: &mut Mob, events: &mut Vec<MobEvent>) {
     cat_amounts(m);
     if (m.extra.flag || m.extra.relax_one) && m.age.is_multiple_of(5) {
         let volume = 0.6 + 0.4 * (m.random.next_float() - m.random.next_float());
@@ -1739,13 +1844,13 @@ pub fn cat_variant(w_moon_full: bool, r: &mut impl RandomSource) -> u8 {
     let n = if w_moon_full { 11 } else { 10 };
     r.next_int_bound(n).unwrap_or(0) as u8
 }
-pub fn cat_texture(m: &Mob) -> String {
+pub(crate) fn cat_texture(m: &Mob) -> String {
     let v = CAT_VARIANTS[(m.extra.variant as usize).min(10)];
     let baby = if m.is_baby() { "_baby" } else { "" };
     format!("entity/cat/cat_{v}{baby}")
 }
 /// `CatRenderer.setupRotations`: lying cats roll onto their side.
-pub fn cat_rotations(m: &Mob, partial: f32) -> glam::Mat4 {
+pub(crate) fn cat_rotations(m: &Mob, partial: f32) -> glam::Mat4 {
     let lie = m.anim.lerp(LIE, partial);
     if lie <= 0.0 {
         return glam::Mat4::IDENTITY;
@@ -1792,7 +1897,7 @@ pub struct Feline {
 /// stalking (the move control's 0.6), sprint while dashing (1.33). Sprinting
 /// adds `LivingEntity.SPEED_MODIFIER_SPRINTING` (`Mob::movement_speed`) to the
 /// move control's tick that follows.
-pub fn feline_server_ai_step(m: &mut Mob) {
+pub(crate) fn feline_server_ai_step(m: &mut Mob) {
     let speed = m.ai.mov.has_wanted().then_some(m.ai.mov.speed_modifier);
     m.extra.pose = if speed == Some(0.6) {
         super::sync::CROUCHING
@@ -1802,7 +1907,7 @@ pub fn feline_server_ai_step(m: &mut Mob) {
     m.extra.sprinting = speed == Some(1.33);
 }
 /// `AdultFelineModel` / `BabyFelineModel.setupAnim` for cats and ocelots.
-pub fn cat_anim(m: &Mob, s: &State, p: &mut Poses) {
+pub(crate) fn cat_anim(m: &Mob, s: &State, p: &mut Poses) {
     // FelineRenderState: Entity.isCrouching (the pose) and isSprinting.
     let st = Feline {
         crouching: m.extra.pose == super::sync::CROUCHING,

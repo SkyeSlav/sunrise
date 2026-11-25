@@ -808,24 +808,30 @@ struct ShulkerAttack {
 }
 impl Goal for ShulkerAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.target_info(cx.w).is_some_and(|t| t.alive) && peaceful_off(m, cx.w)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.attack_time = 20;
         set_peek(m, 100, cx.events, cx.w.attributes);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         set_peek(m, 0, cx.events, cx.w.attributes);
     }
     /// `Shulker.ShulkerAttackGoal.tick`: the bullet starts at the centre of
     /// the shulker's box ([`bullet_origin`]).
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if !peaceful_off(m, cx.w) {
             return;
@@ -873,26 +879,32 @@ struct Peek {
 }
 impl Goal for Peek {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.ai.target.is_none()
             && m.random.next_int_bound(reduced(40)).unwrap_or(1) == 0
             && can_stay_at(m, cx.w, block_pos(m), m.extra.variant3)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         m.ai.target.is_none() && self.time > 0
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.time = reduced(20 * (1 + m.random.next_int_bound(3).unwrap_or(0)));
         set_peek(m, 30, cx.events, cx.w.attributes);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         if m.ai.target.is_none() {
             set_peek(m, 0, cx.events, cx.w.attributes);
         }
     }
+    #[inline]
     fn tick(&mut self, _m: &mut Mob, _cx: &mut Cx) {
         self.time -= 1;
     }

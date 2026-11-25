@@ -16,6 +16,7 @@ pub(super) trait PredictionBase: LevelAccess {
 }
 
 impl PredictionBase for crate::game::GameLevel<'_> {
+    #[inline]
     fn fire_odds_level<'a>(
         &'a self,
         prediction: &'a dyn PredictedLevel,
@@ -131,12 +132,14 @@ impl crate::game::Game<'_> {
 impl sunrise_world::level::BlockEntityNeighbors for DryLevel<'_> {}
 
 impl PredictedLevel for DryLevel<'_> {
+    #[inline]
     fn block_entity_removed(&self, pos: BlockPos) -> bool {
         self.removed_entities.contains(&pos)
     }
 }
 
 impl sunrise_world::level::LevelAccess for DryLevel<'_> {
+    #[inline]
     fn can_place_liquid(
         &self,
         pos: sunrise_core::position::BlockPos,
@@ -146,6 +149,7 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
     ) -> Option<bool> {
         self.base.can_place_liquid(pos, state, fluid, user)
     }
+    #[inline]
     fn place_liquid(
         &mut self,
         _: &mut sunrise_world::level::Ticks,
@@ -156,9 +160,11 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
         self.filled_container = true;
         None
     }
+    #[inline]
     fn before_smoke_source(&self, state: BlockStateId, smoke: &mut Option<bool>) {
         self.base.before_smoke_source(state, smoke);
     }
+    #[inline]
     fn before_fire_odds(
         &self,
         state: BlockStateId,
@@ -170,9 +176,11 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
             level.native_fire_odds(level.base.dimension, state, pos, face, odds);
         }
     }
+    #[inline]
     fn cake_can_eat(&self, vanilla: bool) -> bool {
         self.base.cake_can_eat(vanilla)
     }
+    #[inline]
     fn emit(&mut self, event: sunrise_world::level::LevelEvent) {
         if let sunrise_world::level::LevelEvent::Sound {
             pos,
@@ -193,12 +201,14 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
             self.sounds.push((pos, sound, source, volume, pitch));
         }
     }
+    #[inline]
     fn block_state(&self, pos: sunrise_core::position::BlockPos) -> BlockStateId {
         self.changed
             .get(&pos)
             .copied()
             .unwrap_or_else(|| self.base.block_state(pos))
     }
+    #[inline]
     fn set_raw(
         &mut self,
         pos: sunrise_core::position::BlockPos,
@@ -208,39 +218,48 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
         self.changed.insert(pos, state);
         Some(previous)
     }
+    #[inline]
     fn observes_block_state_change(&self, _: BlockStateId, _: BlockStateId) -> bool {
         self.notice_order.is_some()
     }
+    #[inline]
     fn observe_block_state_change(&self, pos: BlockPos, _: BlockStateId, _: BlockStateId) {
         if let Some(order) = &self.notice_order {
             order.borrow_mut().push(pos);
         }
     }
+    #[inline]
     fn is_loaded(&self, pos: sunrise_core::position::BlockPos) -> bool {
         self.base.is_loaded(pos)
     }
     /// `Level.isClientSide`: the preview keeps its live level's side.
+    #[inline]
     fn is_client_side(&self) -> bool {
         self.base.is_client_side()
     }
+    #[inline]
     fn has_native_block_entity(&self, state: BlockStateId) -> bool {
         self.base.has_native_block_entity(state)
     }
+    #[inline]
     fn has_mod_block_entity(&self, pos: BlockPos) -> bool {
         !self.block_entity_removed(pos) && self.base.has_mod_block_entity(pos)
     }
+    #[inline]
     fn remove_block_entity(&mut self, pos: BlockPos, _: BlockStateId, _: bool) -> u8 {
         // The simulation decides what survives a state write. Record its removal
         // without running live entity effects or touching the base.
         self.removed_entities.insert(pos);
         0
     }
+    #[inline]
     fn shulker_is_closed(&self, pos: BlockPos) -> Option<bool> {
         if self.block_entity_removed(pos) {
             return None;
         }
         self.base.shulker_is_closed(pos)
     }
+    #[inline]
     fn published_collision_shape(
         &self,
         pos: sunrise_core::position::BlockPos,
@@ -251,30 +270,39 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
         }
         self.base.published_collision_shape(pos, state)
     }
+    #[inline]
     fn min_y(&self) -> i32 {
         self.base.min_y()
     }
+    #[inline]
     fn max_y(&self) -> i32 {
         self.base.max_y()
     }
+    #[inline]
     fn block_light(&self, pos: sunrise_core::position::BlockPos) -> i32 {
         self.base.block_light(pos)
     }
+    #[inline]
     fn sky_light(&self, pos: sunrise_core::position::BlockPos) -> i32 {
         self.base.sky_light(pos)
     }
+    #[inline]
     fn sky_darken(&self) -> i32 {
         self.base.sky_darken()
     }
+    #[inline]
     fn is_raining(&self) -> bool {
         self.base.is_raining()
     }
+    #[inline]
     fn biome_name(&self, pos: BlockPos) -> Option<&str> {
         self.base.biome_name(pos)
     }
+    #[inline]
     fn sea_level(&self) -> i32 {
         self.base.sea_level()
     }
+    #[inline]
     fn world_surface(&self, x: i32, z: i32) -> i32 {
         // The motion-blocking scan reads staged states; start above both the
         // live surface and any blocks staged above it in this column.
@@ -283,21 +311,27 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
             .filter(|pos| pos.x == x && pos.z == z)
             .fold(self.base.world_surface(x, z), |top, pos| top.max(pos.y + 1))
     }
+    #[inline]
     fn is_unobstructed(&self, pos: sunrise_core::position::BlockPos, state: BlockStateId) -> bool {
         self.base.is_unobstructed(pos, state)
     }
+    #[inline]
     fn within_world_border(&self, pos: BlockPos) -> bool {
         self.base.within_world_border(pos)
     }
+    #[inline]
     fn redstone_experiments(&self) -> bool {
         self.base.redstone_experiments()
     }
+    #[inline]
     fn block_entity_signal(&self, pos: BlockPos, state: BlockStateId, direction: Direction) -> i32 {
         self.base.block_entity_signal(pos, state, direction)
     }
+    #[inline]
     fn has_signal_hook(&self) -> bool {
         self.asks_mods && self.base.has_signal_hook()
     }
+    #[inline]
     fn adjust_signal_source(&self, state: BlockStateId, vanilla: bool) -> bool {
         if self.asks_mods {
             self.base.adjust_signal_source(state, vanilla)
@@ -305,6 +339,7 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
             vanilla
         }
     }
+    #[inline]
     fn adjust_signal(
         &self,
         pos: BlockPos,
@@ -320,9 +355,11 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
             vanilla
         }
     }
+    #[inline]
     fn has_weak_power_hook(&self) -> bool {
         self.asks_mods && self.base.has_weak_power_hook()
     }
+    #[inline]
     fn adjust_should_check_weak_power(
         &self,
         pos: BlockPos,
@@ -333,9 +370,11 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
         self.base
             .adjust_should_check_weak_power(pos, state, direction, vanilla)
     }
+    #[inline]
     fn has_redstone_wire_connection_hook(&self) -> bool {
         self.asks_mods && self.base.has_redstone_wire_connection_hook()
     }
+    #[inline]
     fn adjust_should_redstone_wire_connect_to(
         &self,
         pos: BlockPos,
@@ -346,9 +385,11 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
         self.base
             .adjust_should_redstone_wire_connect_to(pos, state, direction, vanilla)
     }
+    #[inline]
     fn has_connection_hook(&self) -> bool {
         self.asks_mods && self.base.has_connection_hook()
     }
+    #[inline]
     fn adjust_can_be_connected_to(
         &self,
         kind: ConnectionKind,
@@ -362,6 +403,7 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
         self.base
             .adjust_can_be_connected_to(kind, pos, state, connector, direction, face_solid, vanilla)
     }
+    #[inline]
     fn adjust_connects_to(
         &self,
         kind: ConnectionKind,
@@ -375,17 +417,20 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
         self.base
             .adjust_connects_to(kind, pos, state, neighbour, direction, face_solid, vanilla)
     }
+    #[inline]
     fn fence_gate_in_wall(&self, state: BlockStateId) -> Option<bool> {
         self.asks_mods
             .then(|| self.base.fence_gate_in_wall(state))
             .flatten()
     }
+    #[inline]
     fn random(&mut self) -> &mut sunrise_core::random::LegacyRandom {
         &mut self.random
     }
     /// A mod's bone meal answer is read, never grown here: the preview asks
     /// the level it stands in for, as `isValidBonemealTarget` is read on both
     /// sides.
+    #[inline]
     fn is_valid_bonemeal_target(
         &self,
         pos: sunrise_core::position::BlockPos,
@@ -398,6 +443,7 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
     /// neighbour's shape update after the first one reads the blocks the guess
     /// set.
     #[allow(clippy::option_option)]
+    #[inline]
     fn before_state_for_placement(
         &self,
         ticks: &sunrise_world::level::Ticks,
@@ -418,6 +464,7 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
             );
         }
     }
+    #[inline]
     fn before_can_survive(
         &self,
         ticks: &sunrise_world::level::Ticks,
@@ -435,6 +482,7 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
                 survives,
             )
     }
+    #[inline]
     fn before_can_sustain_plant(
         &self,
         ticks: &sunrise_world::level::Ticks,
@@ -454,6 +502,7 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
                 sustains,
             )
     }
+    #[inline]
     fn before_may_place_on(
         &self,
         ticks: &sunrise_world::level::Ticks,
@@ -473,6 +522,7 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
                 may,
             )
     }
+    #[inline]
     fn must_survive(&self, item: &str) -> Option<bool> {
         if self.asks_mods {
             self.base.must_survive(item)
@@ -480,6 +530,7 @@ impl sunrise_world::level::LevelAccess for DryLevel<'_> {
             None
         }
     }
+    #[inline]
     fn game_time(&self) -> i64 {
         self.base.game_time()
     }

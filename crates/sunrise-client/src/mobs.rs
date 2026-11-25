@@ -377,7 +377,11 @@ impl MobTypes {
 
     /// The client startup already parsed `entity-models.json` for the handoff
     /// and the other model loaders; read the model layers from that copy.
-    pub fn load_with_document(root: &Path, document: &EntityModelDocument) -> crate::Result<Self> {
+    #[cfg(test)]
+    pub(crate) fn load_with_document(
+        root: &Path,
+        document: &EntityModelDocument,
+    ) -> crate::Result<Self> {
         Self::load_with_models(root, true, Some(document), None, &Self::root_catalog(root)?)
     }
 
@@ -953,7 +957,7 @@ impl Damage {
             attacker_species: None,
         }
     }
-    pub fn with_species(mut self, species: Species) -> Self {
+    pub(crate) fn with_species(mut self, species: Species) -> Self {
         self.attacker_species = Some(species);
         self
     }
@@ -1541,7 +1545,7 @@ impl Extra {
         }
     }
     /// Empties `slot` and returns the id of what it held.
-    pub fn take_slot_id(&mut self, slot: usize) -> Option<Arc<str>> {
+    pub(crate) fn take_slot_id(&mut self, slot: usize) -> Option<Arc<str>> {
         self.equipment[slot].take().map(|s| s.item)
     }
 }
@@ -1831,7 +1835,7 @@ pub enum BreedExperience {
 /// conditional on the game having broken one of `mob`'s blocks. Unless a listener
 /// can cancel the break (`MobWorld::asks_living_destroy_block`, passed as `asks`)
 /// they stay plain events: nothing is allocated.
-pub fn after_break(events: &mut Vec<MobEvent>, asks: bool, mob: u32, start: usize) {
+pub(crate) fn after_break(events: &mut Vec<MobEvent>, asks: bool, mob: u32, start: usize) {
     if asks {
         let effects = events.split_off(start);
         events.push(MobEvent::IfBroke {
@@ -2768,7 +2772,7 @@ pub enum MobEvent {
 
 impl MobEvent {
     /// Whether this event acts on the `Who::Player` seen by the mob.
-    pub fn targets_player(&self) -> bool {
+    pub(crate) fn targets_player(&self) -> bool {
         match self {
             Self::AttackPlayer(..)
             | Self::CubeHurtPlayer { .. }
@@ -3564,7 +3568,7 @@ impl PlayerView {
     /// `LivingEntity.getVisibilityPercent(level, looking)` before the visibility
     /// event and the clamp: sneaking, invisibility by armour cover, and the
     /// worn head's `mob_visibility` for the `looking` mob's type.
-    pub fn visibility_percent(&self, looking: Species) -> f64 {
+    pub(crate) fn visibility_percent(&self, looking: Species) -> f64 {
         let mut visibility = 1.0;
         if self.sneaking {
             visibility *= 0.8;
@@ -3761,7 +3765,7 @@ pub enum TargetChange {
 }
 impl MobWorld<'_> {
     /// Whether this breeding action must meet the listener before either parent cools down.
-    pub fn asks_live_birth(&self, species: Species) -> bool {
+    pub(crate) fn asks_live_birth(&self, species: Species) -> bool {
         self.asks_baby_spawn
             && finalize::ageable(species)
             && !matches!(species, Species::Turtle | Species::Frog | Species::Sniffer)
@@ -3806,7 +3810,7 @@ impl MobWorld<'_> {
     /// Keep a mount's rider as the recipient even when a target-change hook
     /// redirects the mount to a different player later in the same tick.
     /// Before any switch the existing allocation-free routing is unchanged.
-    pub fn route_rider_event(&self, mount: u32, event: MobEvent) -> MobEvent {
+    pub(crate) fn route_rider_event(&self, mount: u32, event: MobEvent) -> MobEvent {
         if event.targets_player()
             && let Some(selection) = self.player_selection
             && selection.has_switched()
@@ -3821,7 +3825,7 @@ impl MobWorld<'_> {
     }
 
     /// Dispatch a proposed AI target change, validating a substituted target.
-    pub fn change_target(
+    pub(crate) fn change_target(
         &self,
         mob: &mut Mob,
         is_brain: bool,
@@ -3841,7 +3845,7 @@ impl MobWorld<'_> {
     }
     /// Whether a mob may grief here at all: the rule, or a mod that may say
     /// yes against it.
-    pub fn griefing_possible(&self) -> bool {
+    pub(crate) fn griefing_possible(&self) -> bool {
         self.mob_griefing || self.mob_hooks.is_some_and(|hooks| hooks.grief_hooked())
     }
     /// `EventHooks.canEntityGrief(level, mob)`: the `mob_griefing` rule, or
@@ -3889,7 +3893,7 @@ impl<'a> Teams<'a> {
         }
     }
     /// The team of the real player with this entity id.
-    pub fn of_player(&self, id: u32) -> Option<&'a crate::scoreboard::Team> {
+    pub(crate) fn of_player(&self, id: u32) -> Option<&'a crate::scoreboard::Team> {
         self.players.get(&id).copied()
     }
 }
@@ -4213,7 +4217,7 @@ impl Mob {
     }
     /// `Mob.getAttackBoundingBox(range)`: its box, widened to its vehicle's
     /// (`vehicle`, when it rides) on x and z, grown by `range` on x and z.
-    pub fn attack_box(&self, range: f64, vehicle: Option<Aabb>) -> Aabb {
+    pub(crate) fn attack_box(&self, range: f64, vehicle: Option<Aabb>) -> Aabb {
         let b = self.bounds();
         let (mut lo, mut hi) = (b.min_position(), b.max_position());
         if let Some(vehicle) = vehicle.filter(|_| self.extra.mount.is_some()) {
@@ -5116,7 +5120,7 @@ impl Mob {
             self.extra.section_seq = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
-    pub fn distance_to(&self, p: [f64; 3]) -> f64 {
+    pub(crate) fn distance_to(&self, p: [f64; 3]) -> f64 {
         let d = [
             p[0] - self.position.x,
             p[1] - self.position.y,
@@ -5341,7 +5345,7 @@ impl Mob {
     /// what is left reaches the health.
     /// A modifier registered for the absorption reduction (`container`) changes what the
     /// hearts take, matching NeoForge's unclamped `Reduction::Absorption` step.
-    pub fn soak_absorption(&mut self, damage: f32, container: &mut DamageContainer) -> f32 {
+    pub(crate) fn soak_absorption(&mut self, damage: f32, container: &mut DamageContainer) -> f32 {
         let (remaining, _, left) = container.absorb(damage, self.absorption);
         // LivingEntity.setAbsorptionAmount clamps the remainder to the attribute maximum
         // with Java's NaN-propagating Mth.clamp.
@@ -5457,7 +5461,7 @@ impl Mob {
     /// `HealOrHarmMobEffect.applyInstantenousEffect`: a harming effect hurts a
     /// living mob (6 << amplifier, magic) and heals an undead one, a healing effect
     /// the reverse (4 << amplifier), both scaled by `scale`.
-    pub fn apply_heal_or_harm(
+    pub(crate) fn apply_heal_or_harm(
         &mut self,
         context: &LoopContext,
         level: &mut DamageLevel<'_>,
@@ -5509,7 +5513,12 @@ impl Mob {
     /// `LivingEntity.addEffect`: returns whether the effect was accepted and
     /// changed the mob's active effect set. Durations other than `-1` that
     /// are already exhausted expire in the effect tick, not at admission.
-    pub fn try_add_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32) -> bool {
+    pub(crate) fn try_add_effect(
+        &mut self,
+        effect: &'static str,
+        ticks: i32,
+        amplifier: i32,
+    ) -> bool {
         let effect = sunrise_client_core::potions::namespaced(effect);
         // LivingEntity.addEffect: an effect the mob refuses is never added, so it
         // never joins the list the client draws or an effect tick reads.

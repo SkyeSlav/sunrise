@@ -153,7 +153,7 @@ fn configure_stream(stream: &TcpStream) -> Result<()> {
     let _ = sock.set_tcp_keepalive(&keepalive);
     #[cfg(target_os = "linux")]
     {
-        let _ = sock.set_quickack(true);
+        let _ = sock.set_tcp_quickack(true);
     }
     Ok(())
 }

@@ -241,6 +241,7 @@ impl FrictionView<'_> {
 }
 
 impl super::mod_api_host::SidedLevel for FrictionView<'_> {
+    #[inline]
     fn client_side(&self) -> bool {
         self.0.context.side() == LoopSide::Client
     }
@@ -249,6 +250,7 @@ impl super::mod_api_host::SidedLevel for FrictionView<'_> {
 super::native_tags::impl_tags!(FrictionView<'_>, view, view.0.side.tag_items());
 
 impl LevelHost for FrictionView<'_> {
+    #[inline]
     fn block_states(&self) -> mod_api::BlockStates<'_> {
         struct NoTables;
         impl LevelHost for NoTables {
@@ -263,6 +265,7 @@ impl LevelHost for FrictionView<'_> {
             .unwrap_or_else(|| NONE.block_states())
     }
 
+    #[inline]
     fn friction(&self, pos: [i32; 3], state: BlockState, entity: Option<EntityRef>) -> Option<f32> {
         let entity = match entity {
             Some(entity) => Some(self.1.filter(|&(known, _)| known == entity)?),
@@ -271,14 +274,17 @@ impl LevelHost for FrictionView<'_> {
         FrictionView(self.0, entity).query(pos, state.try_into_engine(&()).ok()?)
     }
 
+    #[inline]
     fn entity_kind(&self, entity: EntityRef) -> Option<EntityTypeKey> {
         self.1.filter(|&(known, _)| known == entity)?.1
     }
 
+    #[inline]
     fn block_state(&self, [x, y, z]: [i32; 3]) -> Option<BlockState> {
         self.0.world.block(x, y, z).try_into_api().ok()
     }
 
+    #[inline]
     fn state_block(&self, state: BlockState) -> Option<&str> {
         self.0
             .registry
@@ -286,6 +292,7 @@ impl LevelHost for FrictionView<'_> {
             .map(|state| &*state.name)
     }
 
+    #[inline]
     fn block_state_id(&self, name: &str) -> Option<BlockState> {
         super::native_block_states::parse(
             &super::native_block_states::block_registries(self.0.registry),
@@ -296,10 +303,12 @@ impl LevelHost for FrictionView<'_> {
         .ok()
     }
 
+    #[inline]
     fn block_state_default(&self, block: BlockKey) -> Option<BlockState> {
         super::api_values::default_state(block)?.try_into_api().ok()
     }
 
+    #[inline]
     fn state_string(&self, state: BlockState) -> Option<String> {
         self.0
             .registry
@@ -307,30 +316,36 @@ impl LevelHost for FrictionView<'_> {
             .map(super::native_block_states::serialize)
     }
 
+    #[inline]
     fn min_y(&self) -> i32 {
         self.0.world.shape.min_y
     }
 
+    #[inline]
     fn height(&self) -> i32 {
         self.0.world.shape.height
     }
 
+    #[inline]
     fn block_entity(&self, [x, y, z]: [i32; 3]) -> Option<BlockEntityRef> {
         self.0
             .side
             .block_entity(self.0.world, BlockPos::new(x, y, z))
     }
 
+    #[inline]
     fn block_entity_data(&self, entity: BlockEntityRef) -> Option<Compound> {
         self.0
             .side
             .block_entity_data(self.0.world, self.0.registry, entity)
     }
 
+    #[inline]
     fn tags(&self) -> &dyn mod_api::Tags {
         self
     }
 
+    #[inline]
     fn fluid_state(&self, [x, y, z]: [i32; 3]) -> Option<FluidState> {
         if !self.0.world.is_loaded_at(x, y, z) {
             return None;
@@ -340,6 +355,7 @@ impl LevelHost for FrictionView<'_> {
         state.fluid_state(&states)
     }
 
+    #[inline]
     fn state_with_property(&self, state: BlockState, key: &str, value: &str) -> Option<BlockState> {
         super::native_hooks::with_property(
             self.0.registry,
@@ -351,30 +367,36 @@ impl LevelHost for FrictionView<'_> {
         .ok()
     }
 
+    #[inline]
     fn can_see_sky(&self, pos: [i32; 3]) -> Option<bool> {
         Some(super::native_world_read::can_see_sky(self.0.world, pos))
     }
 
+    #[inline]
     fn brightness(&self, layer: LightLayer, pos: [i32; 3]) -> i32 {
         super::native_level_refs::world_brightness(self.0.world, layer, pos)
     }
 
+    #[inline]
     fn raw_brightness(&self, pos: [i32; 3], sky_darken: i32) -> i32 {
         let block = self.brightness(LightLayer::Block, pos);
         let sky = self.brightness(LightLayer::Sky, pos);
         block.max(sky.wrapping_sub(sky_darken))
     }
 
+    #[inline]
     fn is_loaded(&self, [x, y, z]: [i32; 3]) -> bool {
         self.0.world.is_loaded_at(x, y, z)
     }
 
+    #[inline]
     fn is_raining_at(&self, [x, y, z]: [i32; 3]) -> bool {
         self.0
             .side
             .is_raining_at(self.0.world, BlockPos::new(x, y, z))
     }
 
+    #[inline]
     fn enabled_features(&self) -> FeatureFlags {
         FeatureFlags::new(self.0.side.enabled_features().clone())
     }

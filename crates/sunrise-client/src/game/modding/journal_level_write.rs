@@ -170,9 +170,11 @@ macro_rules! read_level {
 }
 
 impl LevelHost for JournalLevelWrite<'_, '_> {
+    #[inline]
     fn block_states(&self) -> mod_api::BlockStates<'_> {
         mod_api::BlockStates::of(&*self.game)
     }
+    #[inline]
     fn attachment_read_scope(&self) -> mod_api::AttachmentReadScope<'_> {
         self.game.attachment_frame_borrow()
     }
@@ -198,6 +200,7 @@ impl LevelHost for JournalLevelWrite<'_, '_> {
         fn sky_darken(&self) -> Option<i32>;
         fn enabled_features(&self) -> FeatureFlags;
     }
+    #[inline]
     fn state_block(&self, state: BlockState) -> Option<&str> {
         self.game
             .pack
@@ -206,27 +209,35 @@ impl LevelHost for JournalLevelWrite<'_, '_> {
             .state(state.try_into_engine(&()).ok()?)
             .map(|state| &*state.name)
     }
+    #[inline]
     fn tags(&self) -> &dyn Tags {
         self.game
     }
+    #[inline]
     fn block_entity_data(&self, entity: BlockEntityRef) -> Option<Compound> {
         self.game.block_entity_data(entity)
     }
+    #[inline]
     fn signal(&self, pos: [i32; 3], direction: Direction) -> Option<i32> {
         self.game.level_signal(self.level, pos, direction)
     }
+    #[inline]
     fn direct_signal(&self, pos: [i32; 3], direction: Direction) -> Option<i32> {
         self.game.level_direct_signal(self.level, pos, direction)
     }
+    #[inline]
     fn direct_signal_to(&self, pos: [i32; 3]) -> Option<i32> {
         self.game.level_direct_signal_to(self.level, pos)
     }
+    #[inline]
     fn best_neighbor_signal(&self, pos: [i32; 3]) -> Option<i32> {
         self.game.level_best_neighbor_signal(self.level, pos)
     }
+    #[inline]
     fn has_neighbor_signal(&self, pos: [i32; 3]) -> Option<bool> {
         Some(self.game.level_has_neighbor_signal(self.level, pos))
     }
+    #[inline]
     fn collision_shape(&self, pos: [i32; 3]) -> Option<mod_api::VoxelShape> {
         self.is_loaded(pos).then(|| {
             let [x, y, z] = pos;
@@ -241,19 +252,23 @@ impl LevelHost for JournalLevelWrite<'_, '_> {
 }
 
 impl LevelRandomHost for JournalLevelWrite<'_, '_> {
+    #[inline]
     fn container_signal(&mut self, pos: [i32; 3]) -> Option<i32> {
         self.is_loaded(pos)
             .then(|| self.game.stored_container_signal((pos[0], pos[1], pos[2])))
     }
+    #[inline]
     fn attachments(&mut self) -> &mut dyn AttachmentStore {
         self.game
     }
+    #[inline]
     fn lend_random(&mut self, draw: RandomDraw<'_>) {
         super::api_values::with_live_level_random(&mut self.game.world.random, draw);
     }
 }
 
 impl LevelTicksHost for JournalLevelWrite<'_, '_> {
+    #[inline]
     fn schedule_block_tick(&mut self, [x, y, z]: [i32; 3], block: BlockKey, delay: i32) -> bool {
         let pos = BlockPos::new(x, y, z);
         let Some(block) = super::api_values::behavior_block(block, self.game.res.behaviours())
@@ -264,6 +279,7 @@ impl LevelTicksHost for JournalLevelWrite<'_, '_> {
         self.game.block_ticks.blocks.chunk(pos.chunk()).is_some()
             && self.queue(PendingWrite::BlockTick(level, pos, block, delay))
     }
+    #[inline]
     fn schedule_fluid_tick(&mut self, [x, y, z]: [i32; 3], fluid: &str, delay: i32) -> bool {
         let pos = BlockPos::new(x, y, z);
         let Some(fluid) = FluidKind::from_name(fluid) else {
@@ -276,11 +292,13 @@ impl LevelTicksHost for JournalLevelWrite<'_, '_> {
 }
 
 impl LevelWriteHost for JournalLevelWrite<'_, '_> {
+    #[inline]
     fn set_block(&mut self, pos: [i32; 3], state: BlockState, flags: BlockUpdateFlags) -> bool {
         state
             .try_into_engine(&())
             .is_ok_and(|state| self.write_block(pos, state, flags.bits()))
     }
+    #[inline]
     fn remove_block(&mut self, pos: [i32; 3], moved: bool) -> bool {
         if !self.is_loaded(pos) {
             return false;
@@ -288,6 +306,7 @@ impl LevelWriteHost for JournalLevelWrite<'_, '_> {
         let (replacement, flags) = self.game.level_removal_write(pos, moved);
         self.write_block(pos, replacement, flags)
     }
+    #[inline]
     fn set_block_property(
         &mut self,
         pos: [i32; 3],
@@ -304,6 +323,7 @@ impl LevelWriteHost for JournalLevelWrite<'_, '_> {
         )
         .is_some_and(|state| self.write_block(pos, state, flags.bits()))
     }
+    #[inline]
     fn play_sound(
         &mut self,
         sound: &str,
@@ -333,6 +353,7 @@ impl LevelWriteHost for JournalLevelWrite<'_, '_> {
         });
         true
     }
+    #[inline]
     fn send_particles(
         &mut self,
         options: &ParticleOptions,
@@ -370,6 +391,7 @@ impl LevelWriteHost for JournalLevelWrite<'_, '_> {
             randomization: 0,
         }))
     }
+    #[inline]
     fn level_event(&mut self, id: i32, pos: [i32; 3], data: i32) -> bool {
         super::native_level_events::level_event_data_ok(
             id,

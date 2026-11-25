@@ -818,17 +818,14 @@ mod tests {
         );
     }
 
-    use crate::rsa::tests::{CHAT_KEY_PKCS8, TEST_D, TEST_SPKI};
+    use crate::rsa::tests::{CHAT_KEY_PKCS8, TEST_D, TEST_N};
 
     /// The services' key (the 1024-bit test key) signing a player's chat
     /// key as the certificates endpoint's publicKeySignatureV2 does.
     fn services() -> RsaPrivateKey {
-        let n = RsaPublicKey::from_der(&crate::rsa::tests::hex(TEST_SPKI))
-            .unwrap()
-            .modulus;
         let body = [
             crate::rsa::der_integer(&[0]),
-            crate::rsa::der_integer(&n),
+            crate::rsa::der_integer(&crate::rsa::tests::hex(TEST_N)),
             crate::rsa::der_integer(&[1, 0, 1]),
             crate::rsa::der_integer(&crate::rsa::tests::hex(TEST_D)),
         ]

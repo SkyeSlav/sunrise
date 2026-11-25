@@ -96,6 +96,8 @@ READERS = {
     "sunrise-prepare": [
         "crates/sunrise-client/src/game/runtime/launch_api.rs", "mods/sunrise/src/test/java", "research-lock.json",
     ],
+    # The RSA key tests verify the client's signed-textures fixture.
+    "sunrise-protocol": ["crates/sunrise-client/src/game/network/remote/fixtures/signed_textures.json"],
     "sunrise-release-sign": [
         "tests/install_ps1_signature.ps1", "tools/ci/sign_native_build.sh", "tools/ci/sign_release.sh",
     ],

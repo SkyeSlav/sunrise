@@ -106,7 +106,7 @@ impl Navigation {
     pub fn is_done(&self) -> bool {
         self.path.as_ref().is_none_or(Path::is_done)
     }
-    pub fn is_in_progress(&self) -> bool {
+    pub(crate) fn is_in_progress(&self) -> bool {
         !self.is_done()
     }
     pub fn stop(&mut self) {
@@ -134,7 +134,7 @@ impl Navigation {
             NavKind::Amphibious { prefers_shallow } => Evaluator::Amphibious { prefers_shallow },
         }
     }
-    pub fn can_cut_corner(t: PathType) -> bool {
+    pub(crate) fn can_cut_corner(t: PathType) -> bool {
         !matches!(
             t,
             PathType::FireInNeighbor | PathType::DamagingInNeighbor | PathType::WalkableDoor
@@ -170,7 +170,7 @@ impl Mob {
     /// `Mob.getMaxFallDistance` (normal difficulty), with `Creeper`'s
     /// override: a creeper that has a target falls by its own health, so a
     /// full-health one walks off a 22-block drop instead of 3.
-    pub fn max_fall_distance(&self) -> i32 {
+    pub(crate) fn max_fall_distance(&self) -> i32 {
         if self.ai.target.is_none() {
             return comfortable_fall_distance(0.0);
         }
@@ -219,7 +219,7 @@ impl Mob {
         self.ai.nav.max_visited_nodes = (self.max_path_length() * 16.0).floor() as i32;
     }
     /// `PathNavigation.setRequiredPathLength`.
-    pub fn set_required_path_length(&mut self, length: f32) {
+    pub(crate) fn set_required_path_length(&mut self, length: f32) {
         self.ai.nav.required_path_length = length;
         self.update_max_visited_nodes();
     }
@@ -366,7 +366,7 @@ impl Mob {
     }
     /// PathNavigation.createPath(Set<BlockPos>, reach): the nearest of
     /// several targets, without the ground surface search.
-    pub fn create_path_to_any(
+    pub(crate) fn create_path_to_any(
         &mut self,
         w: &MobWorld,
         targets: &[[i32; 3]],
@@ -376,7 +376,7 @@ impl Mob {
         self.create_path_raw(w, targets, reach, max)
     }
     /// PathNavigation.createPath(Entity, reach).
-    pub fn create_path_to_entity(
+    pub(crate) fn create_path_to_entity(
         &mut self,
         w: &MobWorld,
         at: [f64; 3],
@@ -467,7 +467,7 @@ impl Mob {
         let path = self.create_path_to(w, p, 1);
         self.nav_move_to_path(w, path, speed)
     }
-    pub fn nav_move_to_entity(
+    pub(crate) fn nav_move_to_entity(
         &mut self,
         w: &MobWorld,
         at: [f64; 3],
@@ -530,7 +530,7 @@ impl Mob {
     }
     /// `PathNavigation.shouldRecomputePath`: a block changed at `pos` near the
     /// middle of what is left of the path.
-    pub fn should_recompute_path(&self, pos: [i32; 3]) -> bool {
+    pub(crate) fn should_recompute_path(&self, pos: [i32; 3]) -> bool {
         let nav = &self.ai.nav;
         if nav.delayed_recompute {
             return false;
@@ -550,7 +550,7 @@ impl Mob {
     }
     /// `ServerLevel.sendBlockUpdated` for a mob that should re-path: the
     /// recompute happens at the start of its next navigation tick.
-    pub fn queue_path_recompute(&mut self) {
+    pub(crate) fn queue_path_recompute(&mut self) {
         self.ai.nav.pending_recompute = true;
     }
     /// Tick the private field while goal access is redirected to the vehicle.
@@ -772,7 +772,7 @@ impl Mob {
         }
     }
     /// PathNavigation.isStableDestination for the mob's navigation.
-    pub fn stable_destination(&self, w: &MobWorld, p: [i32; 3]) -> bool {
+    pub(crate) fn stable_destination(&self, w: &MobWorld, p: [i32; 3]) -> bool {
         if self.species() == super::Species::Bee {
             return super::bee::stable_destination(w, p);
         }
