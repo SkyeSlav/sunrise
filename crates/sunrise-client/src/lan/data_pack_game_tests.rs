@@ -12,6 +12,9 @@ fn test_environments_and_instances_decode_validate_and_sync() {
         br#"{"type":"minecraft:all_of","definitions":[]}"#,
     )
     .unwrap();
+    let clocks = root.path().join("data/minecraft/world_clock");
+    std::fs::create_dir_all(&clocks).unwrap();
+    std::fs::write(clocks.join("overworld.json"), b"{}").unwrap();
     let defaults = sunrise_world::item_defaults::read(root.path()).unwrap();
     let files = [
         (
@@ -151,6 +154,29 @@ fn test_environments_and_instances_decode_validate_and_sync() {
                 .into_bytes(),
             ],
         ),
+        (
+            "test_environment/test:bad_clock".into(),
+            vec![
+                json!({
+                    "type": "minecraft:clock_time",
+                    "clock": "test:missing_clock",
+                    "time": 1
+                })
+                .to_string()
+                .into_bytes(),
+            ],
+        ),
+        (
+            "test_environment/test:bad_timeline".into(),
+            vec![
+                json!({
+                    "type": "minecraft:timeline_attributes",
+                    "timelines": ["test:missing_timeline"]
+                })
+                .to_string()
+                .into_bytes(),
+            ],
+        ),
     ];
     let error = PackRegistryDefinitions::load(
         root.path(),
@@ -168,6 +194,8 @@ fn test_environments_and_instances_decode_validate_and_sync() {
         "data/test/test_instance/missing_fn.json",
         "data/test/test_environment/bad_rule.json",
         "data/test/test_environment/bad_time.json",
+        "data/test/test_environment/bad_clock.json: unknown world_clock test:missing_clock",
+        "data/test/test_environment/bad_timeline.json: unknown timeline test:missing_timeline",
     ] {
         assert!(error.contains(expected), "missing {expected} in:\n{error}");
     }

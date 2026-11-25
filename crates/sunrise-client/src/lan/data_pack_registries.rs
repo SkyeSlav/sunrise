@@ -230,7 +230,7 @@ impl PackRegistryDefinitions {
             defaults,
             sound_exists: &sound_exists,
             dialog_references: Vec::new(),
-            test_environment_references: Vec::new(),
+            holder_references: Vec::new(),
         };
         for table in REGISTRY_KINDS {
             let registry = table.key;
@@ -379,24 +379,6 @@ impl PackRegistryDefinitions {
                 entries.insert(key, None);
             }
         }
-        // RegistryDataLoader.validateRegistry: every test_environment referenced by a
-        // winning test_environment (`all_of`) or test_instance (`environment`) is bound.
-        let held_environments: BTreeSet<String> = definitions
-            .entries
-            .get("minecraft:test_environment")
-            .into_iter()
-            .flatten()
-            .filter(|(_, entry)| entry.is_some())
-            .map(|((namespace, path), _)| format!("{namespace}:{path}"))
-            .collect();
-        for (registry, id, file, env_ref) in decoder.test_environment_references {
-            if !held_environments.contains(&env_ref) {
-                errors
-                    .entry(registry)
-                    .or_default()
-                    .insert(id, format!("{file}: unknown test_environment {env_ref}"));
-            }
-        }
         // RegistryDataLoader.validateRegistry: every dialog a winner names is bound.
         let dialogs = definitions.entries.get("minecraft:dialog");
         let root = resources.join("data/minecraft");
@@ -432,28 +414,28 @@ impl PackRegistryDefinitions {
             }
         }
         // WorldClock.CODEC holder binding and Timeline.validateRegistry.
+        let clocks = definitions.entries.get("minecraft:world_clock");
+        let mut prepared_clocks =
+            synchronized_entries(&root, resources, "minecraft:world_clock", overlay);
+        prepared_clocks.retain(|(key, ..)| !clocks.is_some_and(|c| c.contains_key(key)));
+        condition_filter::filter(
+            &mut prepared_clocks,
+            false,
+            overlay.conditions,
+            "world_clock",
+        );
+        let held_clocks: BTreeSet<String> = clocks
+            .into_iter()
+            .flatten()
+            .filter(|(_, entry)| entry.is_some())
+            .map(|((namespace, path), _)| format!("{namespace}:{path}"))
+            .chain(
+                prepared_clocks
+                    .into_iter()
+                    .map(|((namespace, path), ..)| format!("{namespace}:{path}")),
+            )
+            .collect();
         if definitions.entries.contains_key("minecraft:timeline") {
-            let clocks = definitions.entries.get("minecraft:world_clock");
-            let mut prepared_clocks =
-                synchronized_entries(&root, resources, "minecraft:world_clock", overlay);
-            prepared_clocks.retain(|(key, ..)| !clocks.is_some_and(|c| c.contains_key(key)));
-            condition_filter::filter(
-                &mut prepared_clocks,
-                false,
-                overlay.conditions,
-                "world_clock",
-            );
-            let held_clocks: BTreeSet<String> = clocks
-                .into_iter()
-                .flatten()
-                .filter(|(_, entry)| entry.is_some())
-                .map(|((namespace, path), _)| format!("{namespace}:{path}"))
-                .chain(
-                    prepared_clocks
-                        .into_iter()
-                        .map(|((namespace, path), ..)| format!("{namespace}:{path}")),
-                )
-                .collect();
             if let Some(entries) = definitions.entries.get_mut("minecraft:timeline") {
                 let mut rejected = Vec::new();
                 let mut valid_timelines: Vec<(String, (String, String), Arc<Timeline>)> =
@@ -491,6 +473,40 @@ impl PackRegistryDefinitions {
                 for key in rejected {
                     entries.insert(key, None);
                 }
+            }
+        }
+        // RegistryDataLoader.validateRegistry: every test_environment, world_clock and timeline
+        // holder a winning test_environment or test_instance names is bound.
+        let held = |registry: &str| -> BTreeSet<String> {
+            definitions
+                .entries
+                .get(registry)
+                .into_iter()
+                .flatten()
+                .filter(|(_, entry)| entry.is_some())
+                .map(|((namespace, path), _)| format!("{namespace}:{path}"))
+                .collect()
+        };
+        let held_environments = held("minecraft:test_environment");
+        let held_timelines = held("minecraft:timeline");
+        for reference in decoder.holder_references {
+            let bound = match reference.target_registry {
+                "minecraft:test_environment" => &held_environments,
+                "minecraft:world_clock" => &held_clocks,
+                _ => &held_timelines,
+            };
+            if !bound.contains(&reference.target_id) {
+                let kind = reference.target_registry.trim_start_matches("minecraft:");
+                errors
+                    .entry(reference.referring_registry)
+                    .or_default()
+                    .insert(
+                        reference.referring_id,
+                        format!(
+                            "{}: unknown {kind} {}",
+                            reference.referring_file, reference.target_id
+                        ),
+                    );
             }
         }
         if errors.is_empty() {
@@ -655,7 +671,7 @@ impl PackRegistryDefinitions {
             defaults,
             sound_exists: &sound_exists,
             dialog_references: Vec::new(),
-            test_environment_references: Vec::new(),
+            holder_references: Vec::new(),
         };
         let root = resources.join("data/minecraft");
         for (registry, decode) in [
@@ -805,8 +821,18 @@ struct Decoder<'a> {
     defaults: &'a ItemDefaults,
     sound_exists: &'a dyn Fn(&str) -> bool,
     dialog_references: Vec<Vec<Reference>>,
-    /// `(referring_registry, referring_id, referring_file, target_test_environment_id)`.
-    test_environment_references: Vec<(&'static str, String, String, String)>,
+    /// The registry holders `test_environment` and `test_instance` entries name, which their
+    /// registries (and `world_clock` and `timeline`) must hold.
+    holder_references: Vec<HolderReference>,
+}
+
+/// A `RegistryCodecs.holder` reference decoded from a winning entry.
+struct HolderReference {
+    referring_registry: &'static str,
+    referring_id: String,
+    referring_file: String,
+    target_registry: &'static str,
+    target_id: String,
 }
 
 impl Decoder<'_> {
@@ -1067,7 +1093,7 @@ fn decode_test_environment(
 ) -> Result<Definition, String> {
     let file = registry_file_path("test_environment", id);
     let tag =
-        decode_test_environment_value(decoder, "minecraft:test_environment", id, &file, &value, 0)?;
+        decode_test_environment_value(decoder, "minecraft:test_environment", id, &file, &value)?;
     check_network_nbt(&tag)?;
     Ok(Definition::Validated(value, Some(tag)))
 }
@@ -1103,17 +1129,17 @@ fn decode_test_environment_holder(
     referring_file: &str,
     field: &str,
     value: &Value,
-    depth: u32,
 ) -> Result<Tag, String> {
     if let Some(raw) = value.as_str() {
         let env_id = Identifier::parse(raw).map_err(|error| format!("{field}: {error}"))?;
         let canonical = env_id.to_string();
-        decoder.test_environment_references.push((
+        decoder.holder_references.push(HolderReference {
             referring_registry,
-            referring_id.to_owned(),
-            referring_file.to_owned(),
-            canonical.clone(),
-        ));
+            referring_id: referring_id.to_owned(),
+            referring_file: referring_file.to_owned(),
+            target_registry: "minecraft:test_environment",
+            target_id: canonical.clone(),
+        });
         return Ok(string(&canonical));
     }
     if value.is_object() {
@@ -1123,7 +1149,6 @@ fn decode_test_environment_holder(
             referring_id,
             referring_file,
             value,
-            depth + 1,
         )
         .map_err(|error| format!("{field}: {error}"));
     }
@@ -1136,11 +1161,7 @@ fn decode_test_environment_value(
     referring_id: &str,
     referring_file: &str,
     value: &Value,
-    depth: u32,
 ) -> Result<Tag, String> {
-    if depth > 16 {
-        return Err("test_environment nesting too deep".into());
-    }
     let fields = value.as_object().ok_or("not a map")?;
     let kind_value = fields.get("type").ok_or("type is required")?;
     let kind = parse_identifier_field("type", kind_value)?;
@@ -1165,7 +1186,6 @@ fn decode_test_environment_value(
                         referring_file,
                         &format!("definitions[{index}]"),
                         entry,
-                        depth,
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -1180,6 +1200,13 @@ fn decode_test_environment_value(
                 0,
                 i32::MAX,
             )?;
+            decoder.holder_references.push(HolderReference {
+                referring_registry,
+                referring_id: referring_id.to_owned(),
+                referring_file: referring_file.to_owned(),
+                target_registry: "minecraft:world_clock",
+                target_id: clock.to_string(),
+            });
             tag.insert("clock".into(), string(&clock.to_string()));
             tag.insert("time".into(), Tag::Int(time));
         }
@@ -1240,8 +1267,16 @@ fn decode_test_environment_value(
                 .iter()
                 .enumerate()
                 .map(|(index, entry)| {
-                    parse_identifier_field(&format!("timelines[{index}]"), entry)
-                        .map(|id| string(&id.to_string()))
+                    parse_identifier_field(&format!("timelines[{index}]"), entry).map(|id| {
+                        decoder.holder_references.push(HolderReference {
+                            referring_registry,
+                            referring_id: referring_id.to_owned(),
+                            referring_file: referring_file.to_owned(),
+                            target_registry: "minecraft:timeline",
+                            target_id: id.to_string(),
+                        });
+                        string(&id.to_string())
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             tag.insert("timelines".into(), Tag::List(timelines));
@@ -1289,7 +1324,6 @@ fn decode_test_instance(
         &file,
         "environment",
         fields.get("environment").ok_or("environment is required")?,
-        0,
     )?;
     tag.insert("environment".into(), environment);
     let structure = parse_identifier_field(
