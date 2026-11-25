@@ -1393,6 +1393,9 @@ mod native_knockback_credit_site_tests;
 #[path = "game/modding/native_knockback_tests.rs"]
 mod native_knockback_tests;
 #[cfg(test)]
+#[path = "game/modding/native_level_attachments_tests.rs"]
+mod native_level_attachments_tests;
+#[cfg(test)]
 #[path = "game/modding/native_level_block_states_tests.rs"]
 mod native_level_block_states_tests;
 #[path = "game/modding/native_level_border.rs"]

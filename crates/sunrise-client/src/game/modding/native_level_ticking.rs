@@ -126,4 +126,66 @@ mod tests {
             assert_reads(game, level, [0, 64, 0], None);
         });
     }
+
+    #[test]
+    #[ignore = "daily"]
+    fn parked_level_ticking_reads_reflect_mod_forced_chunks() {
+        use mod_api::{ChunkRef, Hooks, ModEntry, Registrar, TicketController, TicketOwner};
+        use std::sync::{Arc, Mutex};
+        use sunrise_client::chunk::Chunk;
+
+        struct Loader(Arc<Mutex<Option<TicketController>>>);
+        #[mod_api::__subscriptions]
+        impl Hooks for Loader {
+            fn register(&self, r: &mut dyn Registrar, _: &mod_api::RegistrationContext) {
+                let controller = r.register_ticket_controller("loader", None);
+                *self.0.lock().unwrap() = Some(controller);
+            }
+        }
+
+        let issued = Arc::new(Mutex::new(None));
+        let mods = vec![ModEntry::new(
+            "parked_tick",
+            Box::new(Loader(issued.clone())),
+        )]
+        .into();
+        mod_platform::testing::with_mods(mods, || {
+            with_game(|game| {
+                mod_api::testing::with_installed_ticket_controllers(|| {
+                    let controller = issued.lock().unwrap().unwrap();
+                    game.enter_level(crate::game::Dim::Nether).unwrap();
+                    let nether = game.level("minecraft:the_nether").unwrap();
+                    for cx in 0..=2 {
+                        game.world
+                            .chunks
+                            .insert((cx, 0), Arc::new(Chunk::empty(cx, 0)));
+                    }
+                    assert!(game.chunk_set_mod_forced(
+                        ChunkRef::new(nether, [0, 0]),
+                        controller,
+                        TicketOwner::Block([0, 64, 0]),
+                        true,
+                        false,
+                    ));
+                    game.update_chunk_tickets();
+                    // Park the Nether while Overworld is in place.
+                    game.enter_level(crate::game::Dim::Overworld).unwrap();
+                    assert_eq!(game.dim, crate::game::Dim::Overworld);
+
+                    // Inside the mod-forced chunk: both entity and block ticking are enabled.
+                    assert_eq!(nether.should_tick_blocks_at(game, [8, 64, 8]), Some(true));
+                    assert_eq!(nether.entity_ticking(game, [8, 64, 8]), Some(true));
+                    // One chunk away: entity ticking stops immediately; unloaded neighbor does not block-tick.
+                    assert_eq!(nether.entity_ticking(game, [24, 64, 8]), Some(false));
+                    assert_eq!(nether.should_tick_blocks_at(game, [40, 64, 8]), Some(false));
+                    game.levels
+                        .parked_world_mut_of("minecraft:the_nether")
+                        .unwrap()
+                        .chunks
+                        .remove(&(1, 0));
+                    assert_eq!(nether.should_tick_blocks_at(game, [24, 64, 8]), Some(false));
+                });
+            });
+        });
+    }
 }
