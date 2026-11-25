@@ -3162,6 +3162,8 @@ struct WorldRest {
     /// `SpinAttackEffectModel` (Riptide's spinning boxes).
     spin_attack: Option<sunrise_client::mobs::Part>,
     stations: sunrise_client::stations::StationData,
+    test_environments: Arc<HashMap<String, test_environments::Environment>>,
+    test_instances: Arc<HashMap<String, test_instances::TestDef>>,
 }
 
 /// The content tables a world's data packs change, loaded when the world
@@ -3199,6 +3201,9 @@ struct WorldTables {
     /// The gameplay attributes of the dimension types, biomes and timelines (with the
     /// packs' timeline tags) that the raid code reads.
     gameplay: Arc<sunrise_client::patrol::GameplayAttributes>,
+    /// `Registries.TEST_ENVIRONMENT` and `Registries.TEST_INSTANCE`, frozen at world open.
+    test_environments: Arc<HashMap<String, test_environments::Environment>>,
+    test_instances: Arc<HashMap<String, test_instances::TestDef>>,
 }
 
 struct PreparedParts {
@@ -4320,11 +4325,6 @@ struct Game<'a> {
     /// by id, a miss included (game/administration/structure_blocks.rs).
     structure_templates: HashMap<String, Option<structure_blocks::TemplateEntry>>,
     structure_spawns: sunrise_client::mobs::spawn_selection::StructureSpawns,
-    /// The game tests read so far, by id (the test instance registry).
-    test_defs: std::cell::RefCell<HashMap<String, Option<test_instances::TestDef>>>,
-    /// `test_defs` holds the world's whole test instance registry
-    /// (`snapshot_test_defs`), so a miss is final.
-    test_defs_snapshot: bool,
     /// `GameTestBlockHighlightRenderer.markers`: block, text, removal time.
     test_highlights: HashMap<(i32, i32, i32), (String, std::time::Instant)>,
     /// `GameTestTicker.SINGLETON`: the game tests running on this server.
@@ -14697,8 +14697,6 @@ impl<'a> Game<'a> {
             command_block_screen: None,
             block_editor: None,
             structure_templates: HashMap::new(),
-            test_defs: std::cell::RefCell::new(HashMap::new()),
-            test_defs_snapshot: false,
             test_highlights: HashMap::new(),
             game_tests: game_tests::GameTests::default(),
             #[cfg(feature = "friends")]
