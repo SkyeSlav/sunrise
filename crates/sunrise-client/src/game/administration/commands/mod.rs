@@ -4365,10 +4365,14 @@ impl Game<'_> {
 
     /// MessageArgument: `@p`-style selectors in a message become names.
     pub(super) fn expand_selectors(&mut self, raw: &str) -> Text {
-        let mut out = Text::empty();
+        // `MessageArgument.Message.resolveComponent`: no selector part leaves the whole text as one
+        // literal; otherwise the text before the first part is the literal root and each part and
+        // each non-empty stretch after it is appended as a sibling.
+        let mut out: Option<Text> = None;
+        let mut pending = String::new();
         let mut rest = raw;
         while let Some(at) = rest.find('@') {
-            out.push(&rest[..at]);
+            pending.push_str(&rest[..at]);
             let mut reader = Reader::new(&rest[at..]);
             match (sunrise_client::command::ArgType::Entity {
                 single: false,
@@ -4378,22 +4382,35 @@ impl Game<'_> {
             {
                 Ok(Arg::Entity(s)) if reader.cursor > 1 => {
                     let found = self.select(&s);
+                    let text =
+                        out.get_or_insert_with(|| Text::literal(std::mem::take(&mut pending)));
+                    if !pending.is_empty() {
+                        text.push(std::mem::take(&mut pending));
+                    }
                     for (i, t) in found.iter().enumerate() {
                         if i > 0 {
-                            out.push(", ");
+                            text.push(", ");
                         }
-                        out.push(self.target_name(*t));
+                        text.push(self.target_name(*t));
                     }
                     rest = &rest[at + reader.cursor..];
                 }
                 _ => {
-                    out.push("@");
+                    pending.push('@');
                     rest = &rest[at + 1..];
                 }
             }
         }
-        out.push(rest);
-        out
+        pending.push_str(rest);
+        match out {
+            None => Text::literal(pending),
+            Some(mut text) => {
+                if !pending.is_empty() {
+                    text.push(pending);
+                }
+                text
+            }
+        }
     }
 }
 
