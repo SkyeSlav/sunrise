@@ -1131,6 +1131,8 @@ pub struct ParticleEngine {
     /// Where the providers' `ParticleLevelView` finds every engine block state as a mod reads
     /// it, asked only when a provider has particles to tick.
     block_state_source: fn() -> Option<BlockStates>,
+    /// The mods' hooks this engine reaches (`client_particle_add`), set by the game.
+    mod_hooks: crate::mod_hooks::ModHooks,
     /// How many provider particles live, in every list and still waiting to join.
     provided_live: Arc<std::sync::atomic::AtomicUsize>,
     set_sprites: Vec<Vec<u32>>,
@@ -1304,6 +1306,7 @@ impl ParticleEngine {
             typed_sets: HashMap::new(),
             providers,
             block_state_source: || None,
+            mod_hooks: crate::mod_hooks::ModHooks::default(),
             provided_live: Arc::default(),
             set_sprites: Vec::new(),
             parallel_min: PARALLEL_MIN,
@@ -1330,6 +1333,10 @@ impl ParticleEngine {
     /// to tick.
     pub fn set_block_state_source(&mut self, source: fn() -> Option<BlockStates>) {
         self.block_state_source = source;
+    }
+    /// The mods' hooks this engine calls; see [`crate::mod_hooks`].
+    pub fn set_mod_hooks(&mut self, hooks: crate::mod_hooks::ModHooks) {
+        self.mod_hooks = hooks;
     }
     /// `onResourceManagerReload`: sprite rects and sets come from the
     /// reloaded atlas and pack; a live particle keeps drawing its sprite by
@@ -1727,11 +1734,14 @@ impl ParticleEngine {
         &mut self,
         level: Option<&ParticleLevel<'_>>,
         options: &ParticleOptions,
-        p: [f64; 3],
-        v: [f64; 3],
+        mut p: [f64; 3],
+        mut v: [f64; 3],
         override_limiter: bool,
         always_show: bool,
     ) -> bool {
+        if !self.mods_admit(options, &mut p, &mut v, override_limiter, always_show) {
+            return true;
+        }
         if self.capture(options, p, v) {
             return true;
         }
@@ -1752,16 +1762,47 @@ impl ParticleEngine {
         true
     }
 
+    /// `client_particle_add`, when a mod listens: false drops the particle, as does a
+    /// position or velocity a listener left non-finite.
+    fn mods_admit(
+        &self,
+        options: &ParticleOptions,
+        p: &mut [f64; 3],
+        v: &mut [f64; 3],
+        override_limiter: bool,
+        always_show: bool,
+    ) -> bool {
+        let Some(hook) = self.mod_hooks.particle_add else {
+            return true;
+        };
+        hook(options, p, v, override_limiter, always_show)
+            && p.iter().chain(v.iter()).all(|x| x.is_finite())
+    }
+
     /// An option its caller admitted already (`ClientLevel.doAddParticle` admits before it
-    /// invokes a provider): a capture takes it as `add`'s, else it is created.
+    /// invokes a provider): the mods' hook runs, and a particle it moved is checked against
+    /// the camera distance again unless `override_limiter` (the Particles setting's roll is
+    /// not made twice); then a capture takes it as `add`'s, else it is created.
     pub fn add_admitted_with_level(
         &mut self,
         level: Option<&ParticleLevel<'_>>,
         options: &ParticleOptions,
-        p: [f64; 3],
-        v: [f64; 3],
+        mut p: [f64; 3],
+        mut v: [f64; 3],
+        override_limiter: bool,
     ) -> bool {
+        if !self.mods_admit(options, &mut p, &mut v, override_limiter, false)
+            || !override_limiter && !self.within_limiter_distance(p)
+        {
+            return true;
+        }
         self.capture(options, p, v) || self.create_with_level(level, options, p, v)
+    }
+
+    /// The limiter's 32 blocks around the camera.
+    fn within_limiter_distance(&self, p: [f64; 3]) -> bool {
+        let c = self.camera;
+        (p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2) <= 1024.0
     }
 
     /// `ClientLevel.doAddParticle`'s admission step, before invoking a provider.
@@ -1771,10 +1812,8 @@ impl ParticleEngine {
         override_limiter: bool,
         always_show: bool,
     ) -> bool {
-        let c = self.camera;
-        let d2 = (p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2);
         let minimal = self.calculate_particle_level(always_show) == 2;
-        override_limiter || (d2 <= 1024.0 && !minimal)
+        override_limiter || (self.within_limiter_distance(p) && !minimal)
     }
     /// `NoxiousGasCloudParticle.spawnNoxiousGasParticle`: the gas, as an
     /// always visible particle (`ClientLevel.addAlwaysVisibleParticle`).
@@ -6783,5 +6822,80 @@ mod tests {
         engine.tick_explosions_with(None, &|_| false);
         assert_eq!(engine.pending.len(), 0);
         assert!(engine.tracked_explosions.is_empty());
+    }
+
+    fn hooked_engine(hook: crate::mod_hooks::ParticleAdd) -> ParticleEngine {
+        let mut engine = ParticleEngine::new(
+            &ResourceSource::indexed(Default::default()),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+        engine.seed_randoms(0, 0, 0);
+        engine.set_mod_hooks(crate::mod_hooks::ModHooks {
+            particle_add: Some(hook),
+        });
+        engine
+    }
+
+    /// Moves portals 100 blocks along x, drops flames, and leaves clouds at NaN.
+    fn rewrite(
+        options: &ParticleOptions,
+        pos: &mut [f64; 3],
+        velocity: &mut [f64; 3],
+        _: bool,
+        _: bool,
+    ) -> bool {
+        match options.ty {
+            ParticleType::Portal => pos[0] += 100.0,
+            ParticleType::Cloud => velocity[1] = f64::NAN,
+            _ => return options.ty != ParticleType::Flame,
+        }
+        true
+    }
+
+    #[test]
+    fn mod_hook_moves_drops_and_refuses_non_finite_particles() {
+        let mut engine = hooked_engine(rewrite);
+        engine.requested = Some(Vec::new());
+        for ty in [
+            ParticleType::Portal,
+            ParticleType::Flame,
+            ParticleType::Cloud,
+        ] {
+            engine.add(&ParticleOptions::simple(ty), [1.0, 2.0, 3.0], [0.0; 3]);
+        }
+        let requested = engine.requested.take().unwrap();
+        assert_eq!(requested.len(), 1);
+        assert_eq!(requested[0].0.ty, ParticleType::Portal);
+        assert_eq!(requested[0].1, [101.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn mod_hook_position_is_the_one_the_limiter_checks() {
+        let mut engine = hooked_engine(rewrite);
+        engine.add(
+            &ParticleOptions::simple(ParticleType::Portal),
+            [-90.0, 0.0, 0.0],
+            [0.0; 3],
+        );
+        assert_eq!(engine.pending.len(), 1);
+        engine.add(
+            &ParticleOptions::simple(ParticleType::Portal),
+            [0.0; 3],
+            [0.0; 3],
+        );
+        assert_eq!(engine.pending.len(), 1);
+    }
+
+    #[test]
+    fn admitted_particle_moved_out_of_range_is_dropped_without_a_second_roll() {
+        let mut engine = hooked_engine(rewrite);
+        let portal = ParticleOptions::simple(ParticleType::Portal);
+        let state = engine.level_random.state();
+        engine.add_admitted_with_level(None, &portal, [0.0; 3], [0.0; 3], false);
+        assert_eq!(engine.pending.len(), 0);
+        assert_eq!(engine.level_random.state(), state);
+        engine.add_admitted_with_level(None, &portal, [0.0; 3], [0.0; 3], true);
+        assert_eq!(engine.pending.len(), 1);
     }
 }

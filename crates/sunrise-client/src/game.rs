@@ -1667,6 +1667,11 @@ mod native_registry_ids_tests;
 #[cfg(test)]
 #[path = "game/modding/native_registry_processor_tests.rs"]
 mod native_registry_processor_tests;
+#[path = "game/modding/native_render_hooks.rs"]
+mod native_render_hooks;
+#[cfg(test)]
+#[path = "game/modding/native_render_hooks_tests.rs"]
+mod native_render_hooks_tests;
 #[cfg(test)]
 #[path = "game/modding/native_render_pair_tests.rs"]
 pub(in crate::game) mod native_render_pair_tests;

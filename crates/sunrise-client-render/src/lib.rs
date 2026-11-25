@@ -67,6 +67,7 @@ pub mod inventory_effects;
 pub mod java_text;
 mod jei_sprites;
 pub mod jigsaw_block;
+pub mod mod_hooks;
 pub mod moving_colliders;
 pub mod terrain_model;
 pub use sunrise_polytone::creative_tabs as polytone_creative_tabs;

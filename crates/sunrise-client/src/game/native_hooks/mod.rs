@@ -214,6 +214,7 @@ mod client_narrator_tests;
 mod client_options;
 mod client_packet;
 mod client_packet_send;
+mod client_particle_add;
 mod client_pause_change;
 mod client_pause_read;
 mod client_pick;

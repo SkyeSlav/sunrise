@@ -24,6 +24,26 @@ layer particle sprites and resource-pack and stack-component overrides. It retur
 Setup, Reloading and World. Resolve again after resource reloads.
 It allocates a sprite list only when called; it adds no per-tick work.
 
+### Changing particles as they are added
+
+`client_particle_add` (vanilla's `ClientLevel.doAddParticle`) sees every particle the client is
+asked to add, whoever asked: the server, a block's or entity's ambient tick, an explosion or
+another mod's `add_particle`. The listener may move it (`event.pos`), change its velocity
+(`event.velocity`) or return `Flow::Cancel` to drop it; the options are read-only, so a mod that
+wants a different particle cancels this one and adds its own. The 32-block camera check and the
+Particles setting then apply at the position the listener left, and a position or velocity left
+non-finite drops the particle. The listener gets no host: it runs inside the particle engine, so
+keep what it needs (a wind, a limit) in the mod's own state and update it from `client_tick`.
+
+```rust,ignore
+fn client_particle_add(&self, event: &mut ClientParticleAddEvent<'_>) -> Flow {
+    let [wx, wz] = *self.wind.lock().unwrap();
+    event.velocity[0] += wx;
+    event.velocity[2] += wz;
+    Flow::Continue
+}
+```
+
 ### Tinting an item crumb
 
 The item crumbs (`item` and its `item_*` variants) multiply their red, green and blue by
