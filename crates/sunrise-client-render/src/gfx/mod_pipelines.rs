@@ -13,10 +13,12 @@
 
 use super::expression_blocks::{VANILLA_OFFSETS, VANILLA_SIZES, block_entry};
 use super::world_primitives::{Upload, VertexPages};
-use crate::mod_pipelines::{Built, BuiltTexture, Pipelines};
+use crate::mod_pipelines::{Built, BuiltTexture, ModifierStacks, Pipelines};
 use glam::Mat4;
-use mod_api::{PipelineBlend, WorldDepth};
-use sunrise_mod_pipeline::{ENTRY, Options as PipelineOptions, SPRITE_RECT_BINDING};
+use mod_api::{Identifier, PipelineBlend, PipelineState, PolygonMode, WorldDepth};
+use sunrise_mod_pipeline::{
+    ENTRY, OIT_STAGE_SAMPLERS, Options as PipelineOptions, SPRITE_RECT_BINDING,
+};
 
 /// One corner of a pipeline quad, camera-relative.
 #[repr(C)]
@@ -48,9 +50,12 @@ impl PipelineVertex {
 pub struct PipelineRun {
     /// The pipeline's slot in the frame's [`Pipelines`].
     pub slot: u32,
-    /// The stage it draws at (`STAGE_AFTER_OPAQUE_BLOCKS..=STAGE_CUSTOM_GEOMETRY`).
+    /// The stage it draws at (`STAGE_AFTER_OPAQUE_BLOCKS..=STAGE_CUSTOM_GEOMETRY`, or OIT stage
+    /// `0..=2` for `Batch::oit_runs`).
     pub stage: u32,
     pub quads: u32,
+    /// Interned modifier stack id (`0` = no active modifier).
+    pub modifier_stack: u32,
 }
 
 /// A frame's pipeline quads, as the game queued them: 4 vertices a quad, in the runs' order.
@@ -60,6 +65,13 @@ pub struct Batch<'a> {
     pub set: Option<&'a Pipelines>,
     pub vertices: &'a [PipelineVertex],
     pub runs: &'a [PipelineRun],
+    /// Interned modifier stacks referenced by `runs[*].modifier_stack`; `None` means empty.
+    pub modifiers: Option<&'a ModifierStacks>,
+    /// Modifier definitions for `modifiers`; `None` reads `registered_modifiers()`.
+    pub modifier_defs: Option<&'a [mod_api::PipelineModifier]>,
+    /// Order-independent transparency pipeline quad vertices and runs (`OitTranslucent`).
+    pub oit_vertices: &'a [PipelineVertex],
+    pub oit_runs: &'a [PipelineRun],
     /// Seconds of game time (fallback `Globals.GameTime` when no full vanilla block is supplied).
     pub time: f32,
 }
@@ -69,6 +81,7 @@ struct Run {
     slot: usize,
     stage: usize,
     quads: std::ops::Range<u32>,
+    modifier_stack: u32,
 }
 
 /// Where textured pipelines' textures come from when the renderer builds them
@@ -137,11 +150,46 @@ struct TargetState {
     write_mask: wgpu::ColorWrites,
 }
 
+/// Cached lazy variant for one `(pipeline, modifier_stack)` pair.
+enum CachedVariant {
+    /// Modifier changed no effective state for this target; reuse the base pipeline.
+    Base,
+    /// Compiled variant pipeline.
+    Compiled(wgpu::RenderPipeline),
+    /// GPU refused this variant (already logged once with both ids); skip its runs.
+    Refused,
+}
+
+/// One compiled OIT sub-pass (`DepthBounds`, `Transmittance`, or `Accumulate`) of a mod pipeline.
+struct CompiledOitStage {
+    pipeline: wgpu::RenderPipeline,
+    pipeline_layout: wgpu::PipelineLayout,
+    group_layout: wgpu::BindGroupLayout,
+    vertex_shader: wgpu::ShaderModule,
+    fragment_shader: wgpu::ShaderModule,
+    vanilla_mask: u8,
+    reads_sampler0: bool,
+    reads_sprite_rect: bool,
+    /// `(binding, cloud_samples_index)` for `DepthBoundsSampler` (0), `Coeff0` (1), `Coeff1` (2).
+    oit_samplers: Vec<(u32, usize)>,
+    /// Cached bind group for `ModPipelines::oit_generation`.
+    group: Option<wgpu::BindGroup>,
+    /// Lazy modifier variants indexed by `modifier_stack`.
+    variants: Vec<Option<CachedVariant>>,
+}
+
+struct CompiledOit {
+    stages: [CompiledOitStage; 3],
+    /// Sprite atlas texture view and rect buffer kept alive for OIT bind groups.
+    sprite: Option<(wgpu::TextureView, wgpu::Buffer)>,
+}
+
 /// A built pipeline: its compiled render pipeline, its per-pipeline bind group (binding only
 /// the set-0 blocks/samplers its stages read, backed by the shared vanilla uniform buffer plus
 /// optional sprite texture/rect), and the shader modules and fixed state needed to lazily
-/// compile a shader-pack target variant.
+/// compile modifier and shader-pack target variants.
 struct Compiled {
+    id: Identifier,
     pipeline: wgpu::RenderPipeline,
     pipeline_layout: wgpu::PipelineLayout,
     group: wgpu::BindGroup,
@@ -152,8 +200,12 @@ struct Compiled {
     /// Vanilla-gamma fragment shader for shader-pack `colortex0` targets (when `linear_light`
     /// differs from the pack's gamma encoding, `pack_fragment_shader` holds the undecoded stage).
     pack_fragment_shader: Option<wgpu::ShaderModule>,
-    blend: PipelineBlend,
-    depth: WorldDepth,
+    state: PipelineState,
+    /// Lazy modifier variants indexed by interned `modifier_stack` id (`0` unused; base is used).
+    variants: Vec<Option<CachedVariant>>,
+    /// Compiled OIT variants (`DepthBounds`, `Transmittance`, `Accumulate`) when opted in and
+    /// supported by the device.
+    oit: Option<CompiledOit>,
     #[cfg(test)]
     textured: bool,
 }
@@ -164,13 +216,18 @@ pub struct ModPipelines {
     linear_light: bool,
     /// Shared nearest/default sampler for `Sampler0`.
     sampler: wgpu::Sampler,
+    /// Non-filtering nearest sampler for OIT float textures (`DepthBoundsSampler`, `Coeff0`, `Coeff1`).
+    non_filtering_sampler: wgpu::Sampler,
     /// Shared 1024-byte vanilla uniform buffer (`Globals`, `Projection`, `DynamicTransforms`, `Fog`).
     vanilla: wgpu::Buffer,
     /// Same blocks with `Projection` adapted to shader-pack GL coordinates (`pack_clip_matrix`).
     pack_vanilla: wgpu::Buffer,
     vertices: VertexPages,
+    oit_vertices: VertexPages,
     /// The load `pipelines` was built from; 0 before any.
     generation: u64,
+    /// OIT target generation last bound into `CompiledOitStage::group`; 0 before any.
+    oit_generation: u64,
     /// By slot; `None` for a pipeline the load refused.
     pipelines: Vec<Option<Compiled>>,
     /// Lazily built for a shader pack's `(colortex0 format, rgb_only)` + GL `[0..1]` depth.
@@ -179,6 +236,7 @@ pub struct ModPipelines {
         Vec<Option<wgpu::RenderPipeline>>,
     )>,
     runs: Vec<Run>,
+    oit_runs: Vec<Run>,
 }
 
 impl ModPipelines {
@@ -190,6 +248,10 @@ impl ModPipelines {
     ) -> Self {
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Mod pipeline texture"),
+            ..Default::default()
+        });
+        let non_filtering_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Mod pipeline OIT sampler"),
             ..Default::default()
         });
         let buffer = |label| {
@@ -206,27 +268,39 @@ impl ModPipelines {
             color_format,
             linear_light,
             sampler,
+            non_filtering_sampler,
             vanilla,
             pack_vanilla,
             vertices: VertexPages::default(),
+            oit_vertices: VertexPages::default(),
             generation: 0,
+            oit_generation: 0,
             pipelines: Vec::new(),
             pack_pipelines: None,
             runs: Vec::new(),
+            oit_runs: Vec::new(),
         }
     }
 
     fn build_render_pipeline(
         device: &wgpu::Device,
+        label: &str,
         pipeline_layout: &wgpu::PipelineLayout,
         vertex_shader: &wgpu::ShaderModule,
         fragment_shader: &wgpu::ShaderModule,
-        blend: PipelineBlend,
-        depth: WorldDepth,
+        state: PipelineState,
         target: TargetState,
-    ) -> wgpu::RenderPipeline {
-        let blend_state = match blend {
-            PipelineBlend::Additive => wgpu::BlendState {
+    ) -> Result<wgpu::RenderPipeline, String> {
+        if state.polygon == PolygonMode::Line
+            && !device
+                .features()
+                .contains(wgpu::Features::POLYGON_MODE_LINE)
+        {
+            return Err("PolygonMode::Line requires the POLYGON_MODE_LINE device feature".into());
+        }
+        let blend_state = match state.blend {
+            PipelineBlend::Opaque => None,
+            PipelineBlend::Additive => Some(wgpu::BlendState {
                 color: wgpu::BlendComponent {
                     src_factor: wgpu::BlendFactor::SrcAlpha,
                     dst_factor: wgpu::BlendFactor::One,
@@ -237,11 +311,22 @@ impl ModPipelines {
                     dst_factor: wgpu::BlendFactor::One,
                     operation: wgpu::BlendOperation::Add,
                 },
-            },
-            _ => wgpu::BlendState::ALPHA_BLENDING,
+            }),
+            _ => Some(wgpu::BlendState::ALPHA_BLENDING),
         };
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Mod pipeline"),
+        let mut write_mask = wgpu::ColorWrites::empty();
+        if state.color_write.color {
+            write_mask |= wgpu::ColorWrites::COLOR;
+        }
+        if state.color_write.alpha {
+            write_mask |= wgpu::ColorWrites::ALPHA;
+        }
+        write_mask &= target.write_mask;
+
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
             layout: Some(pipeline_layout),
             vertex: wgpu::VertexState {
                 module: vertex_shader,
@@ -251,14 +336,17 @@ impl ModPipelines {
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
-                // Two-sided, as world quads are.
-                cull_mode: None,
+                cull_mode: state.cull.then_some(wgpu::Face::Back),
+                polygon_mode: match state.polygon {
+                    PolygonMode::Line => wgpu::PolygonMode::Line,
+                    _ => wgpu::PolygonMode::Fill,
+                },
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(match depth {
+                depth_write_enabled: Some(state.depth_write),
+                depth_compare: Some(match state.depth {
                     WorldDepth::ThroughWalls => wgpu::CompareFunction::Always,
                     _ => target.depth_compare,
                 }),
@@ -272,12 +360,224 @@ impl ModPipelines {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target.color_format,
-                    blend: Some(blend_state),
-                    write_mask: target.write_mask,
+                    blend: blend_state,
+                    write_mask,
                 })],
             }),
             multiview_mask: None,
             cache: None,
+        });
+        let internal = pollster::block_on(internal.pop());
+        let validation = pollster::block_on(validation.pop());
+        match internal.or(validation) {
+            None => Ok(pipeline),
+            Some(error) => Err(error.to_string()),
+        }
+    }
+
+    fn build_oit_render_pipeline(
+        device: &wgpu::Device,
+        label: &str,
+        pipeline_layout: &wgpu::PipelineLayout,
+        vertex_shader: &wgpu::ShaderModule,
+        fragment_shader: &wgpu::ShaderModule,
+        state: PipelineState,
+        stage: super::oit::Stage,
+    ) -> Result<wgpu::RenderPipeline, String> {
+        if state.polygon == PolygonMode::Line
+            && !device
+                .features()
+                .contains(wgpu::Features::POLYGON_MODE_LINE)
+        {
+            return Err("PolygonMode::Line requires the POLYGON_MODE_LINE device feature".into());
+        }
+        let targets = super::oit::stage_targets(stage);
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: vertex_shader,
+                entry_point: Some(ENTRY),
+                compilation_options: Default::default(),
+                buffers: &[Some(PipelineVertex::buffer_layout())],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: state.cull.then_some(wgpu::Face::Back),
+                polygon_mode: match state.polygon {
+                    PolygonMode::Line => wgpu::PolygonMode::Line,
+                    _ => wgpu::PolygonMode::Fill,
+                },
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                // OIT passes attach depth read-only (`depth_ops: None`).
+                depth_write_enabled: Some(false),
+                depth_compare: Some(match state.depth {
+                    WorldDepth::ThroughWalls => wgpu::CompareFunction::Always,
+                    _ => wgpu::CompareFunction::GreaterEqual,
+                }),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: fragment_shader,
+                entry_point: Some(ENTRY),
+                compilation_options: Default::default(),
+                targets: &targets,
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let internal = pollster::block_on(internal.pop());
+        let validation = pollster::block_on(validation.pop());
+        match internal.or(validation) {
+            None => Ok(pipeline),
+            Some(error) => Err(error.to_string()),
+        }
+    }
+
+    fn build_oit_stages(
+        device: &wgpu::Device,
+        id: &Identifier,
+        state: PipelineState,
+        variants: &[sunrise_glsl::Translated; 3],
+        sprite_binding: Option<&(wgpu::TextureView, [f32; 4])>,
+    ) -> Result<CompiledOit, String> {
+        use wgpu::util::DeviceExt;
+        let sprite = sprite_binding.map(|(view, rect)| {
+            let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Mod pipeline OIT sprite rect"),
+                contents: bytemuck::cast_slice(rect),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            (view.clone(), buf)
+        });
+        let mut built_stages = Vec::with_capacity(3);
+        for (stage_idx, (stage, program)) in super::oit::Stage::ALL
+            .into_iter()
+            .zip(variants.iter())
+            .enumerate()
+        {
+            let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+            let vertex_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Mod pipeline OIT (vertex)"),
+                source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(program.vertex.clone())),
+            });
+            let fragment_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Mod pipeline OIT (fragment)"),
+                source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(program.fragment.clone())),
+            });
+
+            let mut layout_entries = Vec::new();
+            let mut vanilla_mask = 0u8;
+            for b in 0..4u32 {
+                let stages = program.stages_reading(b);
+                if !stages.is_empty() {
+                    vanilla_mask |= 1 << b;
+                    layout_entries.push(block_entry(b, VANILLA_SIZES[b as usize], stages));
+                }
+            }
+            let sampler0_stages = program.stages_reading(4) | program.stages_reading(5);
+            let reads_sampler0 = !sampler0_stages.is_empty() && sprite.is_some();
+            if reads_sampler0 {
+                layout_entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: sampler0_stages,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                });
+                layout_entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: sampler0_stages,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                });
+            }
+            let sprite_rect_stages = program.stages_reading(SPRITE_RECT_BINDING);
+            let reads_sprite_rect = !sprite_rect_stages.is_empty() && sprite.is_some();
+            if reads_sprite_rect {
+                layout_entries.push(block_entry(SPRITE_RECT_BINDING, 16, sprite_rect_stages));
+            }
+            let mut oit_samplers = Vec::new();
+            for (other_idx, name) in program.other.iter().enumerate() {
+                let Some(sample_idx) = OIT_STAGE_SAMPLERS.iter().position(|s| s == name) else {
+                    continue;
+                };
+                let binding = program.other_binding(other_idx);
+                let stages = program.stages_reading(binding) | program.stages_reading(binding + 1);
+                if stages.is_empty() {
+                    continue;
+                }
+                oit_samplers.push((binding, sample_idx));
+                layout_entries.push(wgpu::BindGroupLayoutEntry {
+                    binding,
+                    visibility: stages,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                });
+                layout_entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: binding + 1,
+                    visibility: stages,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    count: None,
+                });
+            }
+            let group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Mod pipeline OIT"),
+                entries: &layout_entries,
+            });
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Mod pipeline OIT"),
+                bind_group_layouts: &[Some(&group_layout)],
+                ..Default::default()
+            });
+            let internal = pollster::block_on(internal.pop());
+            let validation = pollster::block_on(validation.pop());
+            if let Some(error) = internal.or(validation) {
+                return Err(format!("OIT stage {stage_idx}: {error}"));
+            }
+            let label = format!("{id}/oit/{stage_idx}");
+            let pipeline = Self::build_oit_render_pipeline(
+                device,
+                &label,
+                &pipeline_layout,
+                &vertex_shader,
+                &fragment_shader,
+                state,
+                stage,
+            )
+            .map_err(|e| format!("OIT stage {stage_idx}: {e}"))?;
+            built_stages.push(CompiledOitStage {
+                pipeline,
+                pipeline_layout,
+                group_layout,
+                vertex_shader,
+                fragment_shader,
+                vanilla_mask,
+                reads_sampler0,
+                reads_sprite_rect,
+                oit_samplers,
+                group: None,
+                variants: Vec::new(),
+            });
+        }
+        Ok(CompiledOit {
+            stages: built_stages.try_into().ok().expect("three OIT stages"),
+            sprite,
         })
     }
 
@@ -443,37 +743,53 @@ impl ModPipelines {
             bind_group_layouts: &[Some(&group_layout)],
             ..Default::default()
         });
+        let pipeline_label = built.id.to_string();
+        let internal = pollster::block_on(internal.pop());
+        let validation = pollster::block_on(validation.pop());
+        if let Some(error) = internal.or(validation) {
+            return Err(error.to_string());
+        }
         let pipeline = Self::build_render_pipeline(
             device,
+            &pipeline_label,
             &pipeline_layout,
             &vertex_shader,
             &fragment_shader,
-            built.blend,
-            built.depth,
+            built.state,
             TargetState {
                 color_format: self.color_format,
                 depth_compare: wgpu::CompareFunction::GreaterEqual,
                 write_mask: wgpu::ColorWrites::ALL,
             },
-        );
-        let internal = pollster::block_on(internal.pop());
-        let validation = pollster::block_on(validation.pop());
-        match internal.or(validation) {
-            None => Ok(Compiled {
-                pipeline,
-                pipeline_layout,
-                group,
-                pack_group,
-                vertex_shader,
-                fragment_shader,
-                pack_fragment_shader,
-                blend: built.blend,
-                depth: built.depth,
-                #[cfg(test)]
-                textured: sprite_binding.is_some(),
-            }),
-            Some(error) => Err(error.to_string()),
-        }
+        )?;
+        let oit = if let Some(variants) = &built.oit
+            && super::oit::supported(device)
+        {
+            Some(Self::build_oit_stages(
+                device,
+                &built.id,
+                built.state,
+                variants,
+                sprite_binding.as_ref(),
+            )?)
+        } else {
+            None
+        };
+        Ok(Compiled {
+            id: built.id.clone(),
+            pipeline,
+            pipeline_layout,
+            group,
+            pack_group,
+            vertex_shader,
+            fragment_shader,
+            pack_fragment_shader,
+            state: built.state,
+            variants: Vec::new(),
+            oit,
+            #[cfg(test)]
+            textured: sprite_binding.is_some(),
+        })
     }
 
     /// Ensure pack-target variants (`colortex0` format + GL `[0..1]` `LessEqual` depth) exist
@@ -507,26 +823,21 @@ impl ModPipelines {
             .enumerate()
             .map(|(slot, entry)| {
                 let c = entry.as_ref()?;
-                let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-                let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
                 let frag = c
                     .pack_fragment_shader
                     .as_ref()
                     .unwrap_or(&c.fragment_shader);
-                let pipeline = Self::build_render_pipeline(
+                match Self::build_render_pipeline(
                     device,
+                    &format!("{}/pack", c.id),
                     &c.pipeline_layout,
                     &c.vertex_shader,
                     frag,
-                    c.blend,
-                    c.depth,
+                    c.state,
                     target,
-                );
-                let internal = pollster::block_on(internal.pop());
-                let validation = pollster::block_on(validation.pop());
-                match internal.or(validation) {
-                    None => Some(pipeline),
-                    Some(error) => {
+                ) {
+                    Ok(pipeline) => Some(pipeline),
+                    Err(error) => {
                         log::warn!(
                             "Sunrise: mod pipeline slot {slot} refused for shader-pack target {format:?}: {error}"
                         );
@@ -590,9 +901,181 @@ impl ModPipelines {
             }
         }
         self.generation = set.generation();
+        self.oit_generation = 0;
         self.pipelines = pipelines;
         self.pack_pipelines = None;
         Ok(())
+    }
+
+    /// Ensure OIT bind groups (`DepthBoundsSampler`, `Coeff0`, `Coeff1`) match the current OIT
+    /// targets generation. Rebuilt only when `samples.generation` changes (e.g. resize/reload).
+    pub(super) fn prepare_oit_groups(
+        &mut self,
+        device: &wgpu::Device,
+        samples: Option<super::oit::CloudSamples<'_>>,
+    ) {
+        let Some(samples) = samples else {
+            return;
+        };
+        if samples.generation == self.oit_generation {
+            return;
+        }
+        for compiled in self.pipelines.iter_mut().flatten() {
+            let Some(oit) = compiled.oit.as_mut() else {
+                continue;
+            };
+            for stage in &mut oit.stages {
+                let mut entries = Vec::new();
+                for b in 0..4u32 {
+                    if (stage.vanilla_mask & (1 << b)) != 0 {
+                        entries.push(wgpu::BindGroupEntry {
+                            binding: b,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &self.vanilla,
+                                offset: VANILLA_OFFSETS[b as usize],
+                                size: wgpu::BufferSize::new(VANILLA_SIZES[b as usize]),
+                            }),
+                        });
+                    }
+                }
+                if stage.reads_sampler0
+                    && let Some((view, _)) = &oit.sprite
+                {
+                    entries.push(wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    });
+                    entries.push(wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    });
+                }
+                if stage.reads_sprite_rect
+                    && let Some((_, buf)) = &oit.sprite
+                {
+                    entries.push(wgpu::BindGroupEntry {
+                        binding: SPRITE_RECT_BINDING,
+                        resource: buf.as_entire_binding(),
+                    });
+                }
+                for &(binding, sample_idx) in &stage.oit_samplers {
+                    entries.push(wgpu::BindGroupEntry {
+                        binding,
+                        resource: wgpu::BindingResource::TextureView(samples.views[sample_idx]),
+                    });
+                    entries.push(wgpu::BindGroupEntry {
+                        binding: binding + 1,
+                        resource: wgpu::BindingResource::Sampler(&self.non_filtering_sampler),
+                    });
+                }
+                stage.group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Mod pipeline OIT"),
+                    layout: &stage.group_layout,
+                    entries: &entries,
+                }));
+            }
+        }
+        self.oit_generation = samples.generation;
+    }
+
+    /// Lazily compile a modified variant for `(slot, stack_id)` if not cached yet.
+    fn ensure_modifier_variant(
+        device: &wgpu::Device,
+        color_format: wgpu::TextureFormat,
+        compiled: &mut Compiled,
+        stack_id: u32,
+        stacks: &ModifierStacks,
+        defs: &[mod_api::PipelineModifier],
+    ) {
+        let idx = stack_id as usize;
+        if idx == 0 {
+            return;
+        }
+        if compiled.variants.len() <= idx {
+            compiled.variants.resize_with(idx + 1, || None);
+        }
+        if compiled.variants[idx].is_some() {
+            return;
+        }
+        let modified = stacks.apply(stack_id, compiled.state, defs);
+        if modified == compiled.state {
+            compiled.variants[idx] = Some(CachedVariant::Base);
+            return;
+        }
+        let label = stacks.label(stack_id, &compiled.id.to_string(), defs);
+        match Self::build_render_pipeline(
+            device,
+            &label,
+            &compiled.pipeline_layout,
+            &compiled.vertex_shader,
+            &compiled.fragment_shader,
+            modified,
+            TargetState {
+                color_format,
+                depth_compare: wgpu::CompareFunction::GreaterEqual,
+                write_mask: wgpu::ColorWrites::ALL,
+            },
+        ) {
+            Ok(pipeline) => compiled.variants[idx] = Some(CachedVariant::Compiled(pipeline)),
+            Err(error) => {
+                log::warn!("Sunrise: pipeline modifier variant {label} refused: {error}");
+                compiled.variants[idx] = Some(CachedVariant::Refused);
+            }
+        }
+    }
+
+    /// Lazily compile a modified OIT variant for `(slot, oit_stage, stack_id)` if not cached yet.
+    /// `blend` and `depth_write` overrides are ignored because OIT owns target blending and
+    /// read-only depth.
+    fn ensure_oit_modifier_variant(
+        device: &wgpu::Device,
+        compiled: &mut Compiled,
+        stage_idx: usize,
+        stack_id: u32,
+        stacks: &ModifierStacks,
+        defs: &[mod_api::PipelineModifier],
+    ) {
+        let idx = stack_id as usize;
+        if idx == 0 {
+            return;
+        }
+        let Some(oit) = compiled.oit.as_mut() else {
+            return;
+        };
+        let oit_stage = &mut oit.stages[stage_idx];
+        if oit_stage.variants.len() <= idx {
+            oit_stage.variants.resize_with(idx + 1, || None);
+        }
+        if oit_stage.variants[idx].is_some() {
+            return;
+        }
+        let modified = stacks.apply(stack_id, compiled.state, defs);
+        if modified.depth == compiled.state.depth
+            && modified.cull == compiled.state.cull
+            && modified.polygon == compiled.state.polygon
+        {
+            oit_stage.variants[idx] = Some(CachedVariant::Base);
+            return;
+        }
+        let label = format!(
+            "{}/oit/{stage_idx}",
+            stacks.label(stack_id, &compiled.id.to_string(), defs)
+        );
+        match Self::build_oit_render_pipeline(
+            device,
+            &label,
+            &oit_stage.pipeline_layout,
+            &oit_stage.vertex_shader,
+            &oit_stage.fragment_shader,
+            modified,
+            super::oit::Stage::ALL[stage_idx],
+        ) {
+            Ok(pipeline) => oit_stage.variants[idx] = Some(CachedVariant::Compiled(pipeline)),
+            Err(error) => {
+                log::warn!("Sunrise: OIT pipeline modifier variant {label} refused: {error}");
+                oit_stage.variants[idx] = Some(CachedVariant::Refused);
+            }
+        }
     }
 
     /// Upload the frame's quads and vanilla uniform blocks (`vanilla` as `core_lines::uniforms`
@@ -608,39 +1091,106 @@ impl ModPipelines {
         vanilla_blocks: Option<&[u8; 1024]>,
     ) -> u32 {
         self.runs.clear();
+        self.oit_runs.clear();
         if batch
             .set
             .is_none_or(|set| set.generation() != self.generation)
         {
             return 0;
         }
+        let modifier_defs = match batch.modifier_defs {
+            Some(defs) => defs,
+            None => crate::mod_pipelines::registered_modifiers(),
+        };
         let mut next = 0;
         for run in batch.runs {
             let quads = next..next + run.quads;
             next = quads.end;
-            if quads.end as usize * 4 > batch.vertices.len()
-                || !matches!(self.pipelines.get(run.slot as usize), Some(Some(_)))
-            {
+            if quads.end as usize * 4 > batch.vertices.len() {
                 continue;
+            }
+            let Some(Some(compiled)) = self.pipelines.get_mut(run.slot as usize) else {
+                continue;
+            };
+            if run.modifier_stack != ModifierStacks::EMPTY
+                && let Some(stacks) = batch.modifiers
+            {
+                Self::ensure_modifier_variant(
+                    device,
+                    self.color_format,
+                    compiled,
+                    run.modifier_stack,
+                    stacks,
+                    modifier_defs,
+                );
             }
             self.runs.push(Run {
                 slot: run.slot as usize,
                 stage: run.stage as usize,
                 quads,
+                modifier_stack: run.modifier_stack,
             });
         }
-        let Some(last) = self.runs.last() else {
+        let mut oit_next = 0;
+        for run in batch.oit_runs {
+            let quads = oit_next..oit_next + run.quads;
+            oit_next = quads.end;
+            if quads.end as usize * 4 > batch.oit_vertices.len() || run.stage >= 3 {
+                continue;
+            }
+            let Some(Some(compiled)) = self.pipelines.get_mut(run.slot as usize) else {
+                continue;
+            };
+            if compiled.oit.is_none() {
+                continue;
+            }
+            if run.modifier_stack != ModifierStacks::EMPTY
+                && let Some(stacks) = batch.modifiers
+            {
+                Self::ensure_oit_modifier_variant(
+                    device,
+                    compiled,
+                    run.stage as usize,
+                    run.modifier_stack,
+                    stacks,
+                    modifier_defs,
+                );
+            }
+            self.oit_runs.push(Run {
+                slot: run.slot as usize,
+                stage: run.stage as usize,
+                quads,
+                modifier_stack: run.modifier_stack,
+            });
+        }
+        if self.runs.is_empty() && self.oit_runs.is_empty() {
             return 0;
-        };
-        let quads = last.quads.end;
-        self.vertices.upload(
-            device,
-            upload,
-            "Mod pipeline quads",
-            bytemuck::cast_slice(&batch.vertices[..quads as usize * 4]),
-            4 * std::mem::size_of::<PipelineVertex>() as u64,
-            0,
-        );
+        }
+        let mut max_index_quads = 0u32;
+        if let Some(last) = self.runs.last() {
+            let quads = last.quads.end;
+            self.vertices.upload(
+                device,
+                upload,
+                "Mod pipeline quads",
+                bytemuck::cast_slice(&batch.vertices[..quads as usize * 4]),
+                4 * std::mem::size_of::<PipelineVertex>() as u64,
+                0,
+            );
+            max_index_quads = max_index_quads.max(self.vertices.index_quads(quads));
+        }
+        if let Some(last) = self.oit_runs.last() {
+            let quads = last.quads.end;
+            self.oit_vertices.upload(
+                device,
+                upload,
+                "Mod pipeline OIT quads",
+                bytemuck::cast_slice(&batch.oit_vertices[..quads as usize * 4]),
+                4 * std::mem::size_of::<PipelineVertex>() as u64,
+                0,
+            );
+            max_index_quads = max_index_quads.max(self.oit_vertices.index_quads(quads));
+        }
         let fallback;
         let blocks = match vanilla_blocks {
             Some(b) => b,
@@ -652,7 +1202,7 @@ impl ModPipelines {
         upload(&self.vanilla, blocks);
         let pack_blocks = pack_vanilla_blocks(blocks);
         upload(&self.pack_vanilla, &pack_blocks);
-        self.vertices.index_quads(quads)
+        max_index_quads
     }
 
     /// Whether any prepared runs fall in stages `first..=last`.
@@ -743,6 +1293,107 @@ impl ModPipelines {
         );
     }
 
+    /// Draw prepared standard-pass pipeline runs for the given run-index ranges.
+    pub fn draw_prepared_runs(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        indices: &wgpu::Buffer,
+        ranges: &[std::ops::Range<u32>],
+    ) {
+        self.draw_runs(
+            pass,
+            indices,
+            false,
+            ranges.iter().flat_map(|r| {
+                let start = (r.start as usize).min(self.runs.len());
+                let end = (r.end as usize).min(self.runs.len());
+                self.runs[start..end]
+                    .iter()
+                    .map(|run| (run, run.quads.clone()))
+            }),
+        );
+    }
+
+    /// Draw all OIT mod-pipeline runs for `stage` into the active OIT pass.
+    pub(super) fn draw_oit(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        stage: super::oit::Stage,
+        indices: &wgpu::Buffer,
+    ) {
+        let stage_idx = stage as usize;
+        self.draw_oit_runs(
+            pass,
+            stage_idx,
+            indices,
+            self.oit_runs.iter().filter(|run| run.stage == stage_idx),
+        );
+    }
+
+    /// Draw prepared OIT mod-pipeline runs for `stage` and the given run-index ranges.
+    pub(super) fn draw_prepared_oit(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        stage: super::oit::Stage,
+        indices: &wgpu::Buffer,
+        ranges: &[std::ops::Range<u32>],
+    ) {
+        let stage_idx = stage as usize;
+        self.draw_oit_runs(
+            pass,
+            stage_idx,
+            indices,
+            ranges.iter().flat_map(|r| {
+                let start = (r.start as usize).min(self.oit_runs.len());
+                let end = (r.end as usize).min(self.oit_runs.len());
+                self.oit_runs[start..end]
+                    .iter()
+                    .filter(move |run| run.stage == stage_idx)
+            }),
+        );
+    }
+
+    fn draw_oit_runs<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'_>,
+        stage_idx: usize,
+        indices: &wgpu::Buffer,
+        runs: impl Iterator<Item = &'a Run>,
+    ) {
+        let mut index_bound = false;
+        for run in runs {
+            let Some(Some(compiled)) = self.pipelines.get(run.slot) else {
+                continue;
+            };
+            let Some(oit) = &compiled.oit else {
+                continue;
+            };
+            let oit_stage = &oit.stages[stage_idx];
+            let Some(group) = &oit_stage.group else {
+                continue;
+            };
+            let pipeline = if run.modifier_stack == ModifierStacks::EMPTY {
+                &oit_stage.pipeline
+            } else {
+                match oit_stage.variants.get(run.modifier_stack as usize) {
+                    Some(Some(CachedVariant::Base)) => &oit_stage.pipeline,
+                    Some(Some(CachedVariant::Compiled(p))) => p,
+                    _ => continue,
+                }
+            };
+            if !index_bound {
+                index_bound = true;
+                pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+            }
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, group, &[]);
+            for (buffer, range) in self.oit_vertices.ranges(0, run.quads.clone()) {
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                pass.draw_indexed(range.start * 6..range.end * 6, 0, 0..1);
+            }
+        }
+    }
+
     fn draw_runs<'a>(
         &'a self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -768,7 +1419,17 @@ impl ModPipelines {
                     Some(Some(p)) => p,
                     _ => continue,
                 },
-                None => &compiled.pipeline,
+                None => {
+                    if run.modifier_stack == ModifierStacks::EMPTY {
+                        &compiled.pipeline
+                    } else {
+                        match compiled.variants.get(run.modifier_stack as usize) {
+                            Some(Some(CachedVariant::Base)) => &compiled.pipeline,
+                            Some(Some(CachedVariant::Compiled(p))) => p,
+                            _ => continue,
+                        }
+                    }
+                }
             };
             if !index_bound {
                 index_bound = true;
@@ -1271,13 +1932,19 @@ void main() {
             quad([32.0, 32.0, 64.0, 64.0], 2.0, white),
         ]
         .concat();
-        let run = |slot, stage, quads| PipelineRun { slot, stage, quads };
+        let run = |slot, stage, quads| PipelineRun {
+            slot,
+            stage,
+            quads,
+            modifier_stack: 0,
+        };
         let runs = [run(0, 0, 2), run(1, 2, 1), run(3, 0, 1), run(4, 0, 1)];
         let batch = Batch {
             set: Some(&set),
             vertices: &vertices,
             runs: &runs,
             time: 1.0,
+            ..Default::default()
         };
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let mut primitives = WorldPrimitives::new(&gpu.0, (format, false));
@@ -1369,6 +2036,7 @@ void main() { fragColor = vec4(0.72974, -0.5, 1.0, 1.0); }
             slot: 0,
             stage: 4,
             quads: 1,
+            modifier_stack: 0,
         }];
         let format = wgpu::TextureFormat::Rgba16Float;
 
@@ -1380,6 +2048,7 @@ void main() { fragColor = vec4(0.72974, -0.5, 1.0, 1.0); }
                 vertices: &vertices,
                 runs: &runs,
                 time: 0.0,
+                ..Default::default()
             };
             render(&gpu, p, format, batch, STAGES - 1)(32, 32)
         };
@@ -1464,11 +2133,13 @@ void main() {
                 slot: 0,
                 stage: 0,
                 quads: 1,
+                modifier_stack: 0,
             },
             PipelineRun {
                 slot: 1,
                 stage: 0,
                 quads: 1,
+                modifier_stack: 0,
             },
         ];
         let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -1482,6 +2153,7 @@ void main() {
                 vertices: &vertices,
                 runs: &runs,
                 time: 0.0,
+                ..Default::default()
             },
             STAGES - 1,
         );
@@ -1598,6 +2270,7 @@ void main() {
             slot,
             stage: 4,
             quads: 1,
+            modifier_stack: 0,
         });
         let pixel = render(
             &gpu,
@@ -1608,6 +2281,7 @@ void main() {
                 vertices: &vertices,
                 runs: &runs,
                 time: 0.0,
+                ..Default::default()
             },
             STAGES - 1,
         );
@@ -1657,11 +2331,13 @@ void main() {
                 slot: 0,
                 stage: 0,
                 quads: first_count,
+                modifier_stack: 0,
             },
             PipelineRun {
                 slot: 0,
                 stage: (STAGES - 1) as u32,
                 quads: 1,
+                modifier_stack: 0,
             },
         ];
         let at = render(
@@ -1673,6 +2349,7 @@ void main() {
                 vertices: &vertices,
                 runs: &runs,
                 time: 0.0,
+                ..Default::default()
             },
             STAGES - 1,
         );
@@ -1690,6 +2367,190 @@ void main() {
             at(48, 32),
             [0.0, 255.0, 0.0, 255.0],
             "later stage over earlier stage"
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn modifier_through_walls_nested_outermost_wins_and_refused_line_skips_only_its_runs() {
+        use mod_api::PipelineModifier;
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some(adapter) = crate::gfx::test_gpu::adapter() else {
+            return;
+        };
+        // Request a device WITHOUT POLYGON_MODE_LINE so a Line modifier is guaranteed refused.
+        let gpu = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: wgpu::Features::empty(),
+            ..Default::default()
+        }))
+        .expect("GPU device without POLYGON_MODE_LINE");
+
+        let set = load(
+            91,
+            &[(PASS, PipelineBlend::Translucent, WorldDepth::Tested)],
+        );
+        let modifiers = [
+            PipelineModifier::new(Identifier::parse("test:xray").unwrap())
+                .depth(WorldDepth::ThroughWalls),
+            PipelineModifier::new(Identifier::parse("test:tested").unwrap())
+                .depth(WorldDepth::Tested),
+            PipelineModifier::new(Identifier::parse("test:wireframe").unwrap())
+                .polygon(PolygonMode::Line),
+        ];
+        let mut stacks = ModifierStacks::new();
+        let xray = stacks.intern(&[0]);
+        // Nested: outer = xray (0), inner = tested (1) -> outermost (xray) wins!
+        let nested_xray = stacks.intern(&[0, 1]);
+        // Nested: outer = tested (1), inner = xray (0) -> outermost (tested) wins!
+        let nested_tested = stacks.intern(&[1, 0]);
+        let wireframe = stacks.intern(&[2]);
+
+        // render() puts a nearer depth wall on x=16..32 at z=4.0 (quads at z=8.0 are behind it).
+        let vertices = [
+            // Behind wall, with xray modifier -> visible red.
+            quad([16.0, 0.0, 24.0, 32.0], 8.0, [255, 0, 0, 255]),
+            // Behind wall, nested [xray, tested] -> outermost xray wins -> visible green.
+            quad([24.0, 0.0, 32.0, 32.0], 8.0, [0, 255, 0, 255]),
+            // Behind wall, nested [tested, xray] -> outermost tested wins -> hidden by wall.
+            quad([16.0, 32.0, 32.0, 64.0], 8.0, [0, 0, 255, 255]),
+            // Refused Line modifier on right half -> skipped, leaving clear colour.
+            quad([32.0, 0.0, 48.0, 64.0], 2.0, [255, 255, 0, 255]),
+            // Unmodified quad beside refused run -> still draws normally!
+            quad([48.0, 0.0, 64.0, 64.0], 2.0, [0, 255, 255, 255]),
+        ]
+        .concat();
+        let runs = [
+            PipelineRun {
+                slot: 0,
+                stage: 0,
+                quads: 1,
+                modifier_stack: xray,
+            },
+            PipelineRun {
+                slot: 0,
+                stage: 0,
+                quads: 1,
+                modifier_stack: nested_xray,
+            },
+            PipelineRun {
+                slot: 0,
+                stage: 0,
+                quads: 1,
+                modifier_stack: nested_tested,
+            },
+            PipelineRun {
+                slot: 0,
+                stage: 0,
+                quads: 1,
+                modifier_stack: wireframe,
+            },
+            PipelineRun {
+                slot: 0,
+                stage: 0,
+                quads: 1,
+                modifier_stack: 0,
+            },
+        ];
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut primitives = WorldPrimitives::new(&gpu.0, (format, false));
+        let at = render(
+            &gpu,
+            &mut primitives,
+            format,
+            Batch {
+                set: Some(&set),
+                vertices: &vertices,
+                runs: &runs,
+                modifiers: Some(&stacks),
+                modifier_defs: Some(&modifiers),
+                time: 0.0,
+                ..Default::default()
+            },
+            STAGES - 1,
+        );
+        let clear = [64.0, 64.0, 64.0, 255.0];
+        assert_near(
+            at(20, 16),
+            [255.0, 0.0, 0.0, 255.0],
+            1.0,
+            "ThroughWalls modifier draws behind nearer depth",
+        );
+        assert_near(
+            at(28, 16),
+            [0.0, 255.0, 0.0, 255.0],
+            1.0,
+            "nested [xray, tested]: outermost ThroughWalls wins",
+        );
+        assert_near(
+            at(24, 48),
+            clear,
+            0.0,
+            "nested [tested, xray]: outermost Tested wins and hides behind wall",
+        );
+        assert_near(
+            at(40, 32),
+            clear,
+            0.0,
+            "refused Line modifier variant skips its run",
+        );
+        assert_near(
+            at(56, 32),
+            [0.0, 255.0, 255.0, 255.0],
+            1.0,
+            "other runs still draw beside a refused modifier variant",
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn opaque_pipeline_writes_solid_color_without_blending() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some(gpu) = device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let registered = [RenderPipeline::new(
+            Identifier::parse("test:opaque").unwrap(),
+            Identifier::parse("test:core/opaque").unwrap(),
+            PipelineBlend::Opaque,
+            WorldDepth::Tested,
+        )
+        .depth_write(true)
+        .optional()];
+        let set = Pipelines::build(&registered, 92, |file| match file {
+            "assets/test/shaders/core/opaque.vsh" => Ok(Some(VSH.to_owned())),
+            "assets/test/shaders/core/opaque.fsh" => Ok(Some(PASS.to_owned())),
+            other => Ok(stub_asset(other)),
+        })
+        .unwrap();
+        // Half-alpha red quad: Opaque writes raw RGB (255, 0, 0) instead of alpha-blending with clear 64.
+        let vertices = quad([0.0, 0.0, 64.0, 64.0], 2.0, [255, 0, 0, 128]);
+        let runs = [PipelineRun {
+            slot: 0,
+            stage: 0,
+            quads: 1,
+            modifier_stack: 0,
+        }];
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut primitives = WorldPrimitives::new(&gpu.0, (format, false));
+        let at = render(
+            &gpu,
+            &mut primitives,
+            format,
+            Batch {
+                set: Some(&set),
+                vertices: &vertices,
+                runs: &runs,
+                time: 0.0,
+                ..Default::default()
+            },
+            STAGES - 1,
+        );
+        assert_near(
+            at(32, 32),
+            [255.0, 0.0, 0.0, 128.0],
+            1.0,
+            "Opaque writes raw colour without alpha blending",
         );
     }
 }

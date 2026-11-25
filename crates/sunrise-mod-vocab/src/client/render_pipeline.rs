@@ -35,10 +35,14 @@ pub struct RenderPipeline {
     pub defines: Vec<(String, Option<String>)>,
     /// What the pipeline's draws are made of.
     pub vertex_format: PipelineVertexFormat,
-    /// How the shader's result joins the frame.
-    pub blend: PipelineBlend,
-    /// Whether nearer world surfaces hide the draw. No pipeline writes depth.
-    pub depth: WorldDepth,
+    /// Fixed-function blend, depth, depth-write, culling, colour-write, and polygon-mode state.
+    pub state: PipelineState,
+    /// Whether this pipeline opts in to order-independent transparency
+    /// (`RenderLevelStage::OitTranslucent`, NeoForge's `registerOitPipelineSet`). When `true`
+    /// and `state.blend != PipelineBlend::Opaque`, the engine translates three OIT variants at
+    /// load (`OIT_DEPTH_BOUNDS`, `OIT_TRANSMITTANCE`, `OIT_ACCUMULATE`, plus `OIT_ADDITIVE` for
+    /// [`PipelineBlend::Additive`]).
+    pub order_independent: bool,
     /// Whether a resource load may go on without this pipeline (NeoForge's
     /// `registerOptionalPipeline`). A required pipeline (NeoForge's `registerPipeline`, the
     /// default) that a load cannot build fails the load: the game does not start, and a reload
@@ -76,8 +80,8 @@ impl RenderPipeline {
             vertex_shader: None,
             defines: Vec::new(),
             vertex_format: PipelineVertexFormat::PositionTexColor,
-            blend,
-            depth,
+            state: PipelineState::new(blend, depth),
+            order_independent: false,
             optional: false,
             texture: None,
             geometry_class: None,
@@ -129,6 +133,61 @@ impl RenderPipeline {
             }
         }
         Ok(())
+    }
+
+    /// Replace all fixed-function state fields at once ([`PipelineState`]).
+    pub fn state(mut self, state: PipelineState) -> Self {
+        self.state = state;
+        self
+    }
+
+    /// Set how fragments join the colour target ([`PipelineState::blend`]).
+    pub fn blend(mut self, blend: PipelineBlend) -> Self {
+        self.state.blend = blend;
+        self
+    }
+
+    /// Set depth testing behaviour ([`PipelineState::depth`]).
+    pub fn depth(mut self, depth: WorldDepth) -> Self {
+        self.state.depth = depth;
+        self
+    }
+
+    /// Set whether fragments write to the depth buffer (`DepthStencilState` write). Default:
+    /// `false`.
+    pub fn depth_write(mut self, write: bool) -> Self {
+        self.state.depth_write = write;
+        self
+    }
+
+    /// Set whether back faces are culled (`withCull`). Default: `false` (two-sided).
+    pub fn cull(mut self, cull: bool) -> Self {
+        self.state.cull = cull;
+        self
+    }
+
+    /// Set which colour channels fragments write (`ColorTargetState` write mask). Default:
+    /// [`ColorWrite::ALL`].
+    pub fn color_write(mut self, write: ColorWrite) -> Self {
+        self.state.color_write = write;
+        self
+    }
+
+    /// Set triangle fill or wireframe mode (`PolygonMode`). Default: [`PolygonMode::Fill`].
+    /// [`PolygonMode::Line`] requires the device's wireframe feature.
+    pub fn polygon(mut self, polygon: PolygonMode) -> Self {
+        self.state.polygon = polygon;
+        self
+    }
+
+    /// Opt this pipeline in to order-independent transparency (`RenderLevelStage::OitTranslucent`,
+    /// NeoForge's `registerOitPipelineSet`). The fragment shader must include
+    /// `<minecraft:oit.glsl>`, declare no colour output under `OIT_ALPHA_ONLY` while calling
+    /// `executeAlphaOnlyPhase(gl_FragCoord.z, alpha)`, and pass its output colour through
+    /// `sampleColorForAccumulation(color)` under `OIT_ACCUMULATE`.
+    pub fn order_independent(mut self) -> Self {
+        self.order_independent = true;
+        self
     }
 
     /// Let a resource load that cannot build this pipeline go on without it (NeoForge's
@@ -752,14 +811,241 @@ pub enum PipelineVertexFormat {
 }
 
 /// How a pipeline's fragments join the frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 // no wire: local client render-pipeline blend mode.
 pub enum PipelineBlend {
+    /// Solid colour written directly without alpha blending (vanilla's no-blend target state).
+    Opaque,
     /// Laid over the frame by the fragment's alpha, as [`crate::WorldQuad`] is.
     Translucent,
     /// Added to the frame, scaled by the fragment's alpha.
     Additive,
+}
+
+/// Which colour channels a pipeline writes (`ColorTargetState` write mask).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline colour write mask.
+pub struct ColorWrite {
+    /// Write red, green and blue channels.
+    pub color: bool,
+    /// Write the alpha channel.
+    pub alpha: bool,
+}
+
+impl ColorWrite {
+    /// Write RGB and alpha (the default).
+    pub const ALL: Self = Self {
+        color: true,
+        alpha: true,
+    };
+    /// Write only RGB, leaving alpha unchanged.
+    pub const COLOR: Self = Self {
+        color: true,
+        alpha: false,
+    };
+    /// Write only alpha, leaving RGB unchanged.
+    pub const ALPHA: Self = Self {
+        color: false,
+        alpha: true,
+    };
+    /// Write no colour channels (depth-only pass).
+    pub const NONE: Self = Self {
+        color: false,
+        alpha: false,
+    };
+
+    /// Construct a write mask with explicit `color` (RGB) and `alpha` toggles.
+    pub const fn new(color: bool, alpha: bool) -> Self {
+        Self { color, alpha }
+    }
+}
+
+impl Default for ColorWrite {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
+/// How polygons are rasterized (vanilla's `PolygonMode`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline polygon mode.
+pub enum PolygonMode {
+    /// Fill triangles (the default).
+    #[default]
+    Fill,
+    /// Wireframe edges; requires the device's wireframe feature, so pipelines or modifier
+    /// variants using `Line` are refused when the GPU lacks it.
+    Line,
+}
+
+/// Fixed-function rasterization, depth, blend, and colour-write state of a [`RenderPipeline`]
+/// (vanilla's `RenderPipeline` state).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline fixed state.
+pub struct PipelineState {
+    /// How fragments join the colour target.
+    pub blend: PipelineBlend,
+    /// Whether nearer world surfaces hide the draw.
+    pub depth: WorldDepth,
+    /// Whether fragments write to the depth buffer (`DepthStencilState` write). Default: `false`.
+    pub depth_write: bool,
+    /// Whether back faces are culled (`withCull`). Default: `false` (two-sided).
+    pub cull: bool,
+    /// Which colour channels fragments write (`ColorTargetState` write mask). Default:
+    /// [`ColorWrite::ALL`].
+    pub color_write: ColorWrite,
+    /// Triangle fill or wireframe (`PolygonMode`). Default: [`PolygonMode::Fill`].
+    pub polygon: PolygonMode,
+}
+
+impl PipelineState {
+    /// Default state for `blend` and `depth` (`depth_write: false`, `cull: false`,
+    /// `color_write: ColorWrite::ALL`, `polygon: PolygonMode::Fill`).
+    pub const fn new(blend: PipelineBlend, depth: WorldDepth) -> Self {
+        Self {
+            blend,
+            depth,
+            depth_write: false,
+            cull: false,
+            color_write: ColorWrite::ALL,
+            polygon: PolygonMode::Fill,
+        }
+    }
+}
+
+/// Data-only state overrides registered by `Hooks::register_pipeline_modifiers` (NeoForge's
+/// `RegisterPipelineModifiersEvent` / `PipelineModifier`).
+///
+/// Every field is optional: `None` leaves the underlying pipeline's value unchanged. Because a
+/// modifier is pure data, applying it is idempotent by construction and the renderer caches each
+/// `(pipeline, modifier stack)` variant lazily.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+// no wire: local client pipeline-modifier registration descriptor.
+pub struct PipelineModifier {
+    owner: String,
+    /// The modifier's own name (`mymod:xray`), unique among registered modifiers.
+    pub id: Identifier,
+    /// Override [`PipelineState::blend`]. Ignored for OIT variants where OIT supplies blending.
+    pub blend: Option<PipelineBlend>,
+    /// Override [`PipelineState::depth`].
+    pub depth: Option<WorldDepth>,
+    /// Override [`PipelineState::depth_write`]. Ignored for OIT variants where depth is read-only.
+    pub depth_write: Option<bool>,
+    /// Override [`PipelineState::cull`].
+    pub cull: Option<bool>,
+    /// Override [`PipelineState::color_write`].
+    pub color_write: Option<ColorWrite>,
+    /// Override [`PipelineState::polygon`].
+    pub polygon: Option<PolygonMode>,
+}
+
+impl PipelineModifier {
+    /// Describe a modifier with no overrides set.
+    pub fn new(id: Identifier) -> Self {
+        Self {
+            owner: String::new(),
+            id,
+            blend: None,
+            depth: None,
+            depth_write: None,
+            cull: None,
+            color_write: None,
+            polygon: None,
+        }
+    }
+
+    /// The owning mod, assigned by the host after registration.
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    /// Override [`PipelineState::blend`].
+    pub fn blend(mut self, blend: PipelineBlend) -> Self {
+        self.blend = Some(blend);
+        self
+    }
+
+    /// Override [`PipelineState::depth`].
+    pub fn depth(mut self, depth: WorldDepth) -> Self {
+        self.depth = Some(depth);
+        self
+    }
+
+    /// Override [`PipelineState::depth_write`].
+    pub fn depth_write(mut self, write: bool) -> Self {
+        self.depth_write = Some(write);
+        self
+    }
+
+    /// Override [`PipelineState::cull`].
+    pub fn cull(mut self, cull: bool) -> Self {
+        self.cull = Some(cull);
+        self
+    }
+
+    /// Override [`PipelineState::color_write`].
+    pub fn color_write(mut self, write: ColorWrite) -> Self {
+        self.color_write = Some(write);
+        self
+    }
+
+    /// Override [`PipelineState::polygon`].
+    pub fn polygon(mut self, polygon: PolygonMode) -> Self {
+        self.polygon = Some(polygon);
+        self
+    }
+
+    /// Apply this modifier's non-`None` overrides to `state`.
+    pub const fn apply(&self, mut state: PipelineState) -> PipelineState {
+        if let Some(blend) = self.blend {
+            state.blend = blend;
+        }
+        if let Some(depth) = self.depth {
+            state.depth = depth;
+        }
+        if let Some(depth_write) = self.depth_write {
+            state.depth_write = depth_write;
+        }
+        if let Some(cull) = self.cull {
+            state.cull = cull;
+        }
+        if let Some(color_write) = self.color_write {
+            state.color_write = color_write;
+        }
+        if let Some(polygon) = self.polygon {
+            state.polygon = polygon;
+        }
+        state
+    }
+
+    /// Whether this modifier overrides no state fields.
+    pub const fn is_noop(&self) -> bool {
+        self.blend.is_none()
+            && self.depth.is_none()
+            && self.depth_write.is_none()
+            && self.cull.is_none()
+            && self.color_write.is_none()
+            && self.polygon.is_none()
+    }
+}
+
+/// A registered pipeline modifier, resolved through
+/// [`crate::RenderAssets::pipeline_modifier`]. Retain it between frames; modifiers are static
+/// across resource reloads, though re-resolving in `client_resources_reloaded` is valid.
+// no wire: process-local handle to a registered client pipeline modifier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+// exhaustive: private field; only the engine resolves modifier handles
+pub struct PipelineModifierRef(pub(crate) u32);
+
+impl PipelineModifierRef {
+    pub(crate) fn from_slot(slot: u32) -> Self {
+        Self(slot)
+    }
 }
 
 /// A registered pipeline as the current resources built it, resolved through
@@ -844,6 +1130,17 @@ impl crate::RegisterRenderPipelinesEvent<'_> {
     pub fn register(&mut self, mut entry: RenderPipeline) {
         entry.owner = self.mod_id.to_owned();
         self.pipelines.push(entry);
+    }
+}
+
+impl crate::RegisterPipelineModifiersEvent<'_> {
+    /// Register one pipeline modifier without exposing earlier registrations.
+    ///
+    /// The entry is attributed to this listener immediately. Duplicate modifier IDs fail
+    /// client startup naming both mods when the engine freezes registrations.
+    pub fn register(&mut self, mut entry: PipelineModifier) {
+        entry.owner = self.mod_id.to_owned();
+        self.modifiers.push(entry);
     }
 }
 
@@ -1161,5 +1458,55 @@ mod tests {
                 "expected invalid define value {bad_val:?} to fail"
             );
         }
+    }
+
+    #[test]
+    fn pipeline_state_builders_and_modifier_overrides_apply_cleanly() {
+        let p = pipeline("example:solid")
+            .blend(PipelineBlend::Opaque)
+            .depth(WorldDepth::Tested)
+            .depth_write(true)
+            .cull(true)
+            .color_write(ColorWrite::COLOR)
+            .polygon(PolygonMode::Line)
+            .order_independent();
+        assert_eq!(
+            p.state,
+            PipelineState {
+                blend: PipelineBlend::Opaque,
+                depth: WorldDepth::Tested,
+                depth_write: true,
+                cull: true,
+                color_write: ColorWrite::COLOR,
+                polygon: PolygonMode::Line,
+            }
+        );
+        assert!(p.order_independent);
+
+        let noop = PipelineModifier::new(Identifier::parse("example:noop").unwrap());
+        assert!(noop.is_noop());
+        assert_eq!(noop.apply(p.state), p.state);
+
+        let xray = PipelineModifier::new(Identifier::parse("example:xray").unwrap())
+            .depth(WorldDepth::ThroughWalls)
+            .depth_write(false)
+            .polygon(PolygonMode::Fill);
+        assert!(!xray.is_noop());
+        let modified = xray.apply(p.state);
+        assert_eq!(modified.depth, WorldDepth::ThroughWalls);
+        assert!(!modified.depth_write);
+        assert_eq!(modified.polygon, PolygonMode::Fill);
+        assert_eq!(modified.blend, PipelineBlend::Opaque);
+        assert!(modified.cull);
+        assert_eq!(modified.color_write, ColorWrite::COLOR);
+
+        let mut modifiers = Vec::new();
+        let mut event = crate::RegisterPipelineModifiersEvent {
+            mod_id: "mod_b",
+            modifiers: &mut modifiers,
+        };
+        event.register(xray);
+        assert_eq!(modifiers.len(), 1);
+        assert_eq!(modifiers[0].owner(), "mod_b");
     }
 }

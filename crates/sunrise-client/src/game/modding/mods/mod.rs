@@ -862,6 +862,7 @@ pub(super) fn register_client_presentations(
     register_dimension_transition_screens(role);
     register_entity_spectator_shaders(role);
     register_render_pipelines(role, vanilla_root)?;
+    register_pipeline_modifiers(role)?;
     register_entity_renderers(role);
     Ok(())
 }
@@ -907,6 +908,17 @@ fn register_render_pipelines(
     let mut pipelines = Vec::new();
     Game::native_register_render_pipelines(&RegistrationContext::new(), &mut pipelines);
     sunrise_client_render::mod_pipelines::register(pipelines, vanilla_root)?;
+    Ok(())
+}
+
+/// Keep the mods' pipeline modifier registrations once at startup, before resources load.
+fn register_pipeline_modifiers(role: ExecutionRole) -> sunrise_client::Result<()> {
+    if !role.is_client() {
+        return Ok(());
+    }
+    let mut modifiers = Vec::new();
+    Game::native_register_pipeline_modifiers(&RegistrationContext::new(), &mut modifiers);
+    sunrise_client_render::mod_pipelines::register_modifiers(modifiers)?;
     Ok(())
 }
 

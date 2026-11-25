@@ -599,6 +599,20 @@ pub trait WorldDrawContext {
         let _ = (model, instances);
         unimplemented!("WorldDrawContext::draw_model_instances")
     }
+    /// Run `draw` with `modifier` pushed onto the active pipeline modifier stack (NeoForge's
+    /// `RenderSystem.renderWithPipelineModifier`). Applies to `lines`, `quads`, `pipeline_quads`,
+    /// and `draw_model_instances` drawn inside `draw` (not `name_tag` labels).
+    ///
+    /// Scopes nest: the most recently pushed modifier applies first, then older ones, so for a
+    /// field set by two modifiers the outermost wins (`PipelineModifierStack.apply`). The
+    /// modifier is popped automatically when `draw` returns or unwinds.
+    fn with_pipeline_modifier(
+        &mut self,
+        modifier: PipelineModifierRef,
+        draw: &mut dyn FnMut(&mut dyn WorldDrawContext),
+    ) {
+        let _ = (modifier, draw);
+    }
     /// Supply this frame's value for a mod-declared shader-pack uniform ([`PackUniformDecl`]).
     /// Returns `true` when `name` matches a registered mod uniform with the matching
     /// [`PackUniformType`], and `false` otherwise (never panics). When the declaration specifies
@@ -635,6 +649,21 @@ pub trait PrepareRenderBuffersContext {
         stage: RenderLevelStage,
         quads: &[WorldQuad],
     ) -> Result<PreparedWorldDraw, DrawError>;
+
+    /// Prepare a batch of mod-pipeline quads for `stage` (standard pass stages or
+    /// [`RenderLevelStage::OitTranslucent`]). At `OitTranslucent`, a pipeline without
+    /// [`RenderPipeline::order_independent`] or with [`PipelineBlend::Opaque`] is refused with
+    /// [`PipelineDrawError::Pipeline`] (`RenderPipelineError::Invalid`), logged once per mod and
+    /// pipeline. Individual quads with non-finite coordinates or UVs are skipped.
+    fn pipeline_quads(
+        &mut self,
+        stage: RenderLevelStage,
+        pipeline: RenderPipelineRef,
+        quads: &[PipelineQuad],
+    ) -> Result<PreparedWorldDraw, PipelineDrawError> {
+        let _ = (stage, pipeline, quads);
+        Err(PipelineDrawError::Pipeline(RenderPipelineError::Invalid))
+    }
 }
 
 /// Draw batches prepared for the active standard render stage, in call order.

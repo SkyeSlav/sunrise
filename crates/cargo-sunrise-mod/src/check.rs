@@ -490,6 +490,15 @@ pub fn pipeline_shaders(
         };
         if let Err(problems) = sunrise_mod_pipeline::translate(&sources, &options, &include) {
             refused.extend(problems.into_iter().map(|p| p.to_string()));
+        } else if (fsh_text.contains("oit.glsl")
+            || fsh_text.contains("OIT_ALPHA_ONLY")
+            || fsh_text.contains("OIT_ACCUMULATE")
+            || fsh_text.contains("executeAlphaOnlyPhase")
+            || fsh_text.contains("sampleColorForAccumulation"))
+            && let Err(problems) =
+                sunrise_mod_pipeline::translate_oit(&sources, &options, false, &include)
+        {
+            refused.extend(problems.into_iter().map(|p| p.to_string()));
         }
     }
     (count, refused)
@@ -725,5 +734,67 @@ mod tests {
             assert!(text.contains(word), "{text}");
         }
         assert_eq!(report.json()["dependencies"], dependencies);
+    }
+
+    #[test]
+    fn pipeline_shaders_validates_oit_variants_and_refuses_alpha_only_color_output() {
+        let mut files = BTreeMap::new();
+        files.insert(
+            "assets/example/shaders/core/good_oit.fsh".to_owned(),
+            b"\
+#version 330
+#include <minecraft:dynamictransforms.glsl>
+#include <minecraft:oit.glsl>
+in vec2 texCoord0;
+in vec4 vertexColor;
+#ifndef OIT_ALPHA_ONLY
+out vec4 fragColor;
+#endif
+void main() {
+    vec4 color = vertexColor * ColorModulator;
+#ifdef OIT_ALPHA_ONLY
+    executeAlphaOnlyPhase(gl_FragCoord.z, color.a);
+#else
+#ifdef OIT_ACCUMULATE
+    color = sampleColorForAccumulation(color);
+#endif
+    fragColor = color;
+#endif
+}
+"
+            .to_vec(),
+        );
+        let (count, refused) = pipeline_shaders(&files, None);
+        assert_eq!(count, 1);
+        assert!(
+            refused.is_empty(),
+            "expected valid OIT shader to pass: {refused:?}"
+        );
+
+        files.insert(
+            "assets/example/shaders/core/bad_oit.fsh".to_owned(),
+            b"\
+#version 330
+#include <minecraft:oit.glsl>
+in vec4 vertexColor;
+out vec4 fragColor;
+void main() {
+#ifdef OIT_ALPHA_ONLY
+    executeAlphaOnlyPhase(gl_FragCoord.z, vertexColor.a);
+#else
+    fragColor = sampleColorForAccumulation(vertexColor);
+#endif
+}
+"
+            .to_vec(),
+        );
+        let (count, refused) = pipeline_shaders(&files, None);
+        assert_eq!(count, 2);
+        assert!(
+            refused
+                .iter()
+                .any(|r| r.contains("bad_oit.fsh") && r.contains("OIT depth_bounds")),
+            "expected bad OIT shader refusal at depth_bounds, got: {refused:?}"
+        );
     }
 }

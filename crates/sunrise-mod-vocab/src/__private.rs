@@ -349,6 +349,10 @@ pub mod built {
         crate::RenderPipelineRef::from_parts(generation, slot)
             .expect("published pipeline generation")
     }
+    /// Wrap a registered pipeline modifier slot.
+    pub fn pipeline_modifier_ref(slot: u32) -> crate::PipelineModifierRef {
+        crate::PipelineModifierRef::from_slot(slot)
+    }
 }
 
 /// What the game reads of handles and calls on the API's own types.
@@ -555,6 +559,16 @@ pub mod game {
                 generation: self.0,
                 slot: self.1,
             }
+        }
+    }
+
+    pub struct PipelineModifierRefFields {
+        pub slot: u32,
+    }
+    impl Fields for PipelineModifierRef {
+        type Fields<'a> = PipelineModifierRefFields;
+        fn fields(&self) -> PipelineModifierRefFields {
+            PipelineModifierRefFields { slot: self.0 }
         }
     }
 

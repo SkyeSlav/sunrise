@@ -101,8 +101,13 @@ impl sunrise_client::gfx::world_primitives::FrameHooks for GameWorldStageDriver<
         self.draw.finalize();
         self.game.resolve_submitted_groups(self.draw);
         let camera = DVec3::from(self.draw.camera());
-        self.game
-            .bake_model_instances(self.draw, camera, &mut out.entities, &mut out.entity_spans);
+        self.game.bake_model_instances(
+            self.draw,
+            camera,
+            &mut out.entities,
+            &mut out.entity_spans,
+            Some(&mut out.see_through),
+        );
         self.draw.sort_labels();
         let [world, see_through] = self.draw.labels();
         if !world.is_empty()
@@ -461,8 +466,10 @@ impl Game<'_> {
         };
         let mut stage_copy = |index: usize, copy: &world_geometry::ModelCopy| {
             // The instance route draws one fixed index range per model: a copy that needs
-            // other faces, another colour, translucency or a block state takes the CPU route.
-            if copy.overlay != 0
+            // other faces, another colour, translucency, a ThroughWalls modifier, or a block state
+            // takes the CPU route.
+            if copy.through_walls
+                || copy.overlay != 0
                 || copy.color != u32::MAX
                 || copy.hidden_faces != 0
                 || cpu_only
@@ -513,18 +520,26 @@ impl Game<'_> {
         camera: DVec3,
         entities: &mut Vec<Vertex>,
     ) {
-        self.bake_model_instances(draw, camera, entities, &mut self.entity_spans.borrow_mut());
+        self.bake_model_instances(
+            draw,
+            camera,
+            entities,
+            &mut self.entity_spans.borrow_mut(),
+            None,
+        );
     }
 
     /// Bake CPU copies onto the entity stream with their pack spans. Opaque standalone copies
     /// go as block entities, one run per overlay. Material copies follow and the renderer sorts
-    /// their translucent quads far to near.
+    /// their translucent quads far to near. Copies carrying a `ThroughWalls` pipeline modifier
+    /// bake into `see_through` when provided.
     fn bake_model_instances(
         &self,
         draw: &mut WorldGeometry,
         camera: DVec3,
         entities: &mut Vec<Vertex>,
         spans: &mut Vec<sunrise_client::gfx::pack_draw::EntitySpan>,
+        mut see_through: Option<&mut Vec<Vertex>>,
     ) {
         let capacity = self.entity_quad_capacity();
         let reserved_quads = self.entity_batch_reserved_quads();
@@ -544,6 +559,27 @@ impl Game<'_> {
             let Some(slot) = self.standalone_geometry.instance_slot(copy.slot) else {
                 continue;
             };
+            if copy.through_walls {
+                if let (Some(out), Some(faces)) = (
+                    see_through.as_deref_mut(),
+                    self.standalone_geometry.faces(copy.slot),
+                ) {
+                    submit_opaque_model_copy(
+                        out,
+                        capacity,
+                        0,
+                        faces,
+                        copy.transform,
+                        (DVec3::from(copy.origin) - camera).as_vec3(),
+                        copy.light,
+                        copy.tint,
+                        copy.color,
+                        copy.overlay,
+                        copy.hidden_faces,
+                    );
+                }
+                continue;
+            }
             if slot.translucent || slot.state || copy.color >> 24 != 0xFF {
                 materials.push(index as u32);
                 continue;
