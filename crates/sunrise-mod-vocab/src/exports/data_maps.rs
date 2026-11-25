@@ -3,6 +3,5 @@ pub use world::data_maps::{
 };
 
 mod __private {
-    pub use crate::parts::installed_data_maps;
     pub use crate::world::data_maps::RegisteredDataMap;
 }
