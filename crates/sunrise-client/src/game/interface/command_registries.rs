@@ -34,17 +34,11 @@ impl Game<'_> {
     /// Active `minecraft:timeline` and `minecraft:world_clock` snapshot for `/time` commands
     /// and `wake_time` (`ServerClockManager.init`, `TimeCommand`).
     pub(super) fn sync_timeline_registries(&mut self) {
-        let (timelines, markers) = match self.world_tables.as_ref() {
-            Some(tables) => timelines_and_markers(&tables.timelines),
-            None => {
-                let source = sunrise_assets::resource_source::ResourceSource::directory(
-                    self.options.resources.clone(),
-                );
-                timelines_and_markers(&sunrise_client::environment::TimelineTable::from_source(
-                    &source,
-                ))
-            }
-        };
+        let (timelines, markers) = self
+            .world_tables
+            .as_ref()
+            .map(|tables| timelines_and_markers(&tables.timelines))
+            .unwrap_or_default();
         self.ui.timelines = timelines;
         self.ui.markers = markers;
         let reg = &mut self.ui.registries;

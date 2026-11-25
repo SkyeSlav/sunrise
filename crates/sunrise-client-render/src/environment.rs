@@ -38,8 +38,7 @@ pub struct TimelineTable {
 }
 
 impl TimelineTable {
-    /// Reads the prepared/default timelines from a resource source (used for startup defaults
-    /// before a world opens and standalone parity probes).
+    /// Reads the timelines of a resource source (standalone dimension loads and parity probes).
     pub fn from_source(root: &ResourceSource) -> Self {
         let mut timelines = BTreeMap::new();
         for file in root.list_under("data", &["timeline"]) {

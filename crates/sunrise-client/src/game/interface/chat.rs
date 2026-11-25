@@ -432,7 +432,6 @@ struct ResourceIds {
     enchantments: Vec<String>,
     structures: Vec<String>,
     biomes: Vec<String>,
-    clocks: Vec<String>,
 }
 static RESOURCE_IDS: Mutex<Vec<(PathBuf, Arc<ResourceIds>)>> = Mutex::new(Vec::new());
 
@@ -469,7 +468,6 @@ fn resource_ids(root: &Path) -> Arc<ResourceIds> {
         enchantments: json_ids_of_every_namespace(root, "enchantment"),
         structures: json_ids_in(&data.join("worldgen/structure")),
         biomes: json_ids_in(&data.join("worldgen/biome")),
-        clocks: json_ids_in(&data.join("world_clock")),
     });
     cache.push((root.to_owned(), ids.clone()));
     ids
@@ -829,8 +827,9 @@ impl Game<'_> {
         reg.enchantments = ids.enchantments.clone();
         reg.structures = ids.structures.clone();
         reg.biomes = ids.biomes.clone();
-        reg.clocks = ids.clocks.clone();
-        // The mods' clocks (`register_world_clock`) for `/time of`.
+        // The mods' clocks (`register_world_clock`) for `/time of`; the world's own
+        // join them when it opens (`sync_timeline_registries`).
+        reg.clocks = Vec::new();
         reg.clocks
             .extend(mod_api::__private::world_clock_declarations());
         reg.clocks.sort();
