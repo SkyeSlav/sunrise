@@ -67,13 +67,24 @@ impl DataPack {
             return root;
         }
         let mut files = BTreeMap::new();
+        let layers: Vec<_> = overlays
+            .iter()
+            .filter_map(|d| root.subdirectory(d).ok().map(|layer| (d, layer)))
+            .collect();
+        // An overlay folder's own files are not the pack's: only its `data/` joins the index.
         for name in root.list("") {
+            if layers.iter().any(|(dir, _)| {
+                name.strip_prefix(dir.as_str())
+                    .is_some_and(|r| r.starts_with('/'))
+            }) {
+                continue;
+            }
             files.insert(
                 name.clone(),
                 crate::resource_source::Resource::file(root.clone(), name),
             );
         }
-        for layer in overlays.iter().filter_map(|d| root.subdirectory(d).ok()) {
+        for (_, layer) in &layers {
             for name in layer.list("data/") {
                 files.insert(
                     name.clone(),
@@ -375,7 +386,12 @@ pub(crate) fn discover_folder_with(
                 .read("pack.mcmeta")
                 .and_then(|bytes| crate::packs::first_json(&bytes).map_err(std::io::Error::other))
             {
-                Ok(meta) => filter_of(&meta),
+                Ok(meta) => {
+                    if !accepted_overlays(&meta, &name) {
+                        continue;
+                    }
+                    filter_of(&meta)
+                }
                 Err(error) => {
                     log::error!("Failed to read the filter section from data pack {name}: {error}");
                     Vec::new()
@@ -397,7 +413,21 @@ fn folder_metadata(path: &Path) -> Option<serde_json::Value> {
     let meta = std::fs::read(path.join("pack.mcmeta"))
         .ok()
         .and_then(|bytes| crate::packs::parse_meta(&bytes))?;
-    (!meta["pack"]["description"].is_null()).then_some(meta)
+    if meta["pack"]["description"].is_null() {
+        return None;
+    }
+    accepted_overlays(&meta, &path.display().to_string()).then_some(meta)
+}
+/// `Pack.readPackMetadata` reads the `overlays` section through `OverlayMetadataSection`'s
+/// codec: one that fails refuses the pack, which is logged and not loaded.
+fn accepted_overlays(meta: &serde_json::Value, pack: &str) -> bool {
+    match crate::packs::validate_overlays(meta, sunrise_core::version::DATA_PACK_FORMAT) {
+        Ok(()) => true,
+        Err(error) => {
+            log::warn!("Failed to read pack {pack} metadata: {error}");
+            false
+        }
+    }
 }
 /// The resources root's built-in feature packs (`ServerPacksSource`
 /// scanning the game's `data/minecraft/datapacks`): every folder with a
@@ -3001,8 +3031,8 @@ mod tests {
         let format = sunrise_core::version::DATA_PACK_FORMAT.0;
         let meta = format!(
             r#"{{"pack":{{"description":"root"}},"overlays":{{"entries":[
-                {{"directory":"in_range","formats":[{format},{format}]}},
-                {{"directory":"out_of_range","formats":[{0},{0}]}}]}}}}"#,
+                {{"directory":"in_range","min_format":[{format},0],"max_format":[{format},0]}},
+                {{"directory":"out_of_range","min_format":[{0},0],"max_format":[{0},0]}}]}}}}"#,
             format + 1000
         );
         for (path, text) in [
@@ -3028,6 +3058,14 @@ mod tests {
             b"say overlay"
         );
         assert_eq!(packs[0].description(), "root".into());
+        // The overlay folder's own files (its `pack.mcmeta`, its `data/` under its name) are not
+        // paths of the pack.
+        assert!(
+            packs[0]
+                .list("")
+                .iter()
+                .all(|name| !name.starts_with("in_range/"))
+        );
         assert_eq!(
             packs[0].list_kinds(&["function"]),
             [
@@ -3043,5 +3081,126 @@ mod tests {
             store.functions["test:a"],
             parse_function("test:a", "say overlay").unwrap()
         );
+    }
+
+    fn overlaid_zip(path: &Path, meta: &str) {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+        for (name, bytes) in [
+            ("pack.mcmeta", meta),
+            ("data/test/function/a.mcfunction", "say root"),
+            ("in_range/data/test/function/a.mcfunction", "say overlay"),
+            ("in_range/data/test/function/b.mcfunction", "say b"),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    /// The same composition for a zip pack, found by `discover_folder` and opened directly
+    /// through `DataPack::from_source`, the route feature packs and mod layers take.
+    #[test]
+    fn a_zip_pack_s_in_range_overlay_serves_reads_and_listings() {
+        let scratch = tempfile::tempdir().unwrap();
+        let format = sunrise_core::version::DATA_PACK_FORMAT.0;
+        let meta = format!(
+            r#"{{"pack":{{"description":"root"}},"overlays":{{"entries":[
+                {{"directory":"in_range","min_format":[{format},0],"max_format":[{format},0]}}]}}}}"#
+        );
+        let path = scratch.path().join("overlaid.zip");
+        overlaid_zip(&path, &meta);
+        let found = discover_folder(scratch.path());
+        let direct =
+            DataPack::from_source("direct".into(), ResourceSource::archive(&path).unwrap());
+        for pack in [&found[0], &direct] {
+            assert_eq!(
+                pack.read("data/test/function/a.mcfunction").unwrap(),
+                b"say overlay"
+            );
+            assert_eq!(
+                pack.list_kinds(&["function"]),
+                [
+                    "data/test/function/a.mcfunction",
+                    "data/test/function/b.mcfunction"
+                ]
+            );
+            assert!(
+                pack.list("")
+                    .iter()
+                    .all(|name| !name.starts_with("in_range/"))
+            );
+        }
+        assert_eq!(found.len(), 1);
+    }
+
+    /// `Pack.readPackMetadata` refuses a pack whose `overlays` section fails its codec, folder
+    /// or zip alike; a well-formed section next to the same files loads.
+    #[test]
+    fn a_pack_with_a_bad_overlays_section_is_not_loaded() {
+        let format = sunrise_core::version::DATA_PACK_FORMAT.0;
+        let good =
+            format!(r#"{{"directory":"ok","min_format":[{format},0],"max_format":[{format},0]}}"#);
+        let wrap = |entries: &str| {
+            format!(r#"{{"pack":{{"description":"d"}},"overlays":{{"entries":[{entries}]}}}}"#)
+        };
+        let scratch = tempfile::tempdir().unwrap();
+        for (name, meta, loads) in [
+            ("good", wrap(&good), true),
+            (
+                "nested_directory",
+                wrap(r#"{"directory":"a/b","min_format":[200,0],"max_format":[200,0]}"#),
+                false,
+            ),
+            (
+                "bad_formats",
+                wrap(&format!(r#"{good},{{"directory":"x","formats":"all"}}"#)),
+                false,
+            ),
+            (
+                "formats_only_above_81",
+                wrap(&format!(
+                    r#"{{"directory":"x","formats":[{format},{format}]}}"#
+                )),
+                false,
+            ),
+            (
+                "half_range",
+                wrap(r#"{"directory":"x","min_format":[200,0]}"#),
+                false,
+            ),
+            (
+                "inverted_range",
+                wrap(r#"{"directory":"x","min_format":[200,0],"max_format":[199,0]}"#),
+                false,
+            ),
+            (
+                "no_entries",
+                r#"{"pack":{"description":"d"},"overlays":{}}"#.to_owned(),
+                false,
+            ),
+        ] {
+            let dir = scratch.path().join(name);
+            fs::create_dir_all(dir.join("data")).unwrap();
+            fs::write(dir.join("pack.mcmeta"), &meta).unwrap();
+            overlaid_zip(&scratch.path().join(format!("{name}_z.zip")), &meta);
+            let found: Vec<String> = discover_folder(scratch.path())
+                .into_iter()
+                .map(|p| p.id)
+                .collect();
+            assert_eq!(
+                found.contains(&format!("file/{name}")),
+                loads,
+                "folder {name}"
+            );
+            assert_eq!(
+                found.contains(&format!("file/{name}_z.zip")),
+                loads,
+                "zip {name}"
+            );
+            fs::remove_dir_all(&dir).unwrap();
+            fs::remove_file(scratch.path().join(format!("{name}_z.zip"))).unwrap();
+        }
     }
 }
