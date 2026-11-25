@@ -865,13 +865,19 @@ pub(in crate::game) fn with_stack_view<R>(
         #[cfg(test)]
         STACK_OVERRIDE_PROJECTIONS.set(STACK_OVERRIDE_PROJECTIONS.get() + 1);
         let bare = id.strip_prefix('!').unwrap_or(id);
-        let value =
+        let value = if id == "minecraft:map_post_processing" {
+            stack
+                .data()
+                .and_then(|data| data.map_post_processing)
+                .map(map_post_processing_tag)
+        } else {
             match sunrise_items::item_data::encode_extra_components_matching(stack, |name| {
                 name == bare
             }) {
                 Some(Tag::Compound(mut patch)) => patch.remove(&JavaString::from(id)),
                 _ => None,
-            };
+            }
+        };
         overrides.insert(id.to_owned(), value.clone());
         value
     };
@@ -882,14 +888,30 @@ pub(in crate::game) fn with_stack_view<R>(
     )))
 }
 
+fn map_post_processing_tag(mode: u8) -> Tag {
+    Tag::String(if mode == 0 { "lock" } else { "scale" }.into())
+}
+
 /// Encode and normalize the patch using the scalars already read from this same stack.
+/// Transient `minecraft:map_post_processing` is kept on live stack reads even though
+/// the persistence encoder omits it.
 pub(in crate::game) fn project_stack(
     stack: &EngineStack,
     metadata: StackReadMetadata,
 ) -> Result<ApiStack, StackReadError> {
     #[cfg(test)]
     STACK_PROJECTIONS.set(STACK_PROJECTIONS.get() + 1);
-    let patch = sunrise_items::item_data::encode_extra_components(stack);
+    let mut patch = sunrise_items::item_data::encode_extra_components(stack);
+    if let Some(mode) = stack.data().and_then(|data| data.map_post_processing) {
+        let entries = match patch.get_or_insert_with(|| Tag::Compound(Compound::new())) {
+            Tag::Compound(entries) => entries,
+            _ => unreachable!("encoded component patch is a compound"),
+        };
+        entries.insert(
+            JavaString::from("minecraft:map_post_processing"),
+            map_post_processing_tag(mode),
+        );
+    }
     projected_stack(metadata, patch)
 }
 
@@ -2308,6 +2330,32 @@ mod stack_limit_tests {
                 "write {patch:?}"
             );
             assert_eq!(original, back, "round trip {patch:?}");
+        }
+    }
+
+    #[test]
+    fn live_stack_read_preserves_map_post_processing() {
+        let items = catalog();
+        for (mode, expected) in [(0u8, "lock"), (1u8, "scale")] {
+            let mut stack = EngineStack::new("minecraft:stick", 1);
+            stack.data_mut().map_post_processing = Some(mode);
+            let api = stack.try_into_api().unwrap();
+            assert_eq!(
+                api.components().and_then(|c| c
+                    .as_nbt()
+                    .get(&JavaString::from("minecraft:map_post_processing"))),
+                Some(&Tag::String(expected.into())),
+            );
+            with_stack_view(Some(&stack), |view| {
+                let projected = view.unwrap().project().unwrap();
+                assert_eq!(projected, api);
+            });
+            let decoded = stack_value(&api).unwrap();
+            assert_eq!(
+                decoded.data().and_then(|d| d.map_post_processing),
+                Some(mode)
+            );
+            assert!(stack.same_item_same_components_with_prototype(&decoded, &items));
         }
     }
 

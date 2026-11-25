@@ -54,7 +54,10 @@ pub fn component_equal(id: &str, a: &ItemStack, b: &ItemStack) -> bool {
             }
             pages(a) == pages(b)
         }
-        "minecraft:waxed" | "minecraft:intangible_projectile" | "minecraft:glider" => {
+        "minecraft:waxed"
+        | "minecraft:intangible_projectile"
+        | "minecraft:glider"
+        | "minecraft:creative_slot_lock" => {
             matches!(a.data().and_then(|d| d.other(id)), Some(Tag::Compound(_)))
                 && matches!(b.data().and_then(|d| d.other(id)), Some(Tag::Compound(_)))
         }
@@ -141,7 +144,7 @@ pub fn component_equal(id: &str, a: &ItemStack, b: &ItemStack) -> bool {
                 _ => false,
             }
         }
-        "minecraft:attack_animation" => {
+        "minecraft:attack_animation" | "minecraft:interact_animation" => {
             use crate::properties::swing_animation::SwingAnimation;
             let animation = |stack: &ItemStack| {
                 stack
@@ -262,11 +265,11 @@ pub fn component_equal(id: &str, a: &ItemStack, b: &ItemStack) -> bool {
             };
             nutrition(a) == nutrition(b)
         }
-        "minecraft:block_entity_data" => block_entity_equal(
+        "minecraft:block_entity_data" | "minecraft:entity_data" => block_entity_equal(
             a.data().and_then(|d| d.other(id)),
             b.data().and_then(|d| d.other(id)),
         ),
-        "minecraft:custom_data" => match (
+        "minecraft:custom_data" | "minecraft:bucket_entity_data" => match (
             a.data().and_then(|d| d.other(id)),
             b.data().and_then(|d| d.other(id)),
         ) {
@@ -336,7 +339,255 @@ pub fn component_equal(id: &str, a: &ItemStack, b: &ItemStack) -> bool {
             (Some(Tag::String(a)), Some(Tag::String(b))) => a == b,
             _ => false,
         },
+        "minecraft:fireworks" => fireworks_equal(a, b),
+        "minecraft:firework_explosion" => firework_explosion_equal(a, b),
+        "minecraft:map_post_processing" => {
+            map_post_processing(a).is_some_and(|mode| Some(mode) == map_post_processing(b))
+        }
+        "minecraft:pot_decorations" => pot_decorations_equal(a, b),
+        "minecraft:potion_contents" => potion_contents_equal(a, b),
+        "minecraft:consumable" => match (
+            a.data().and_then(|d| {
+                d.consumable
+                    .as_ref()
+                    .map(|v| &v.raw)
+                    .or_else(|| d.other(id))
+            }),
+            b.data().and_then(|d| {
+                d.consumable
+                    .as_ref()
+                    .map(|v| &v.raw)
+                    .or_else(|| d.other(id))
+            }),
+        ) {
+            (Some(a), Some(b)) => normalized_tag_equal(a, b),
+            (None, None) => true,
+            _ => false,
+        },
+        "minecraft:kinetic_weapon" => match (
+            a.data().and_then(|d| {
+                d.kinetic_weapon
+                    .as_ref()
+                    .map(|v| v.raw())
+                    .or_else(|| d.other(id))
+            }),
+            b.data().and_then(|d| {
+                d.kinetic_weapon
+                    .as_ref()
+                    .map(|v| v.raw())
+                    .or_else(|| d.other(id))
+            }),
+        ) {
+            (Some(a), Some(b)) => normalized_tag_equal(a, b),
+            (None, None) => true,
+            _ => false,
+        },
+        _ if !MODELLED.contains(&id) => match (
+            a.data().and_then(|d| d.other(id)),
+            b.data().and_then(|d| d.other(id)),
+        ) {
+            (Some(a), Some(b)) => normalized_tag_equal(a, b),
+            (None, None) => true,
+            _ => false,
+        },
         _ => stored_component_equal(id, a, b),
+    }
+}
+
+fn fireworks_from_tag(tag: &Tag) -> Option<(u8, Vec<crate::firework::FireworkExplosion>)> {
+    let Tag::Compound(_) = tag else {
+        return None;
+    };
+    let flight = tag
+        .get("flight_duration")
+        .and_then(int)
+        .unwrap_or(0)
+        .clamp(0, 255) as u8;
+    let explosions = match tag.get("explosions") {
+        Some(Tag::List(list)) => list.iter().map(explosion_from).collect(),
+        _ => Vec::new(),
+    };
+    Some((flight, explosions))
+}
+
+fn fireworks_equal(a: &ItemStack, b: &ItemStack) -> bool {
+    enum FireworksRef<'a> {
+        Borrowed(u8, &'a [crate::firework::FireworkExplosion]),
+        Owned(u8, Vec<crate::firework::FireworkExplosion>),
+    }
+    impl FireworksRef<'_> {
+        fn parts(&self) -> (u8, &[crate::firework::FireworkExplosion]) {
+            match self {
+                Self::Borrowed(flight, explosions) => (*flight, explosions),
+                Self::Owned(flight, explosions) => (*flight, explosions.as_slice()),
+            }
+        }
+    }
+    let decode = |stack: &ItemStack| -> Option<FireworksRef<'_>> {
+        let data = stack.data()?;
+        if let Some((flight, explosions)) = &data.fireworks {
+            return Some(FireworksRef::Borrowed(*flight, explosions));
+        }
+        let (flight, explosions) = fireworks_from_tag(data.other("minecraft:fireworks")?)?;
+        Some(FireworksRef::Owned(flight, explosions))
+    };
+    match (decode(a), decode(b)) {
+        (Some(a), Some(b)) => a.parts() == b.parts(),
+        _ => false,
+    }
+}
+
+fn firework_explosion_equal(a: &ItemStack, b: &ItemStack) -> bool {
+    let decode =
+        |stack: &ItemStack| -> Option<std::borrow::Cow<'_, crate::firework::FireworkExplosion>> {
+            let data = stack.data()?;
+            if let Some(explosion) = &data.firework_explosion {
+                return Some(std::borrow::Cow::Borrowed(explosion));
+            }
+            let tag @ Tag::Compound(_) = data.other("minecraft:firework_explosion")? else {
+                return None;
+            };
+            Some(std::borrow::Cow::Owned(explosion_from(tag)))
+        };
+    match (decode(a), decode(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn map_post_processing(stack: &ItemStack) -> Option<u8> {
+    let data = stack.data()?;
+    if let Some(mode) = data.map_post_processing {
+        return Some(mode);
+    }
+    match data.other("minecraft:map_post_processing") {
+        Some(Tag::String(s)) => Some(u8::from(!java_is(s, "lock"))),
+        Some(tag) => int(tag).map(|v| v.clamp(0, 1) as u8),
+        None => None,
+    }
+}
+
+fn pot_decorations_equal(a: &ItemStack, b: &ItemStack) -> bool {
+    enum SidesRef<'a> {
+        Borrowed(&'a [Option<ItemStack>; 4]),
+        Owned([Option<ItemStack>; 4]),
+    }
+    impl SidesRef<'_> {
+        fn sides(&self) -> &[Option<ItemStack>; 4] {
+            match self {
+                Self::Borrowed(sides) => sides,
+                Self::Owned(sides) => sides,
+            }
+        }
+    }
+    let decode = |stack: &ItemStack| -> Option<SidesRef<'_>> {
+        let data = stack.data()?;
+        if let Some(sides) = &data.pot_decorations {
+            return Some(SidesRef::Borrowed(sides));
+        }
+        let tag @ Tag::Compound(_) = data.other("minecraft:pot_decorations")? else {
+            return None;
+        };
+        let side = |name: &str| tag.get(name).and_then(template_from);
+        Some(SidesRef::Owned([
+            side("back"),
+            side("left"),
+            side("right"),
+            side("front"),
+        ]))
+    };
+    match (decode(a), decode(b)) {
+        (Some(a), Some(b)) => a
+            .sides()
+            .iter()
+            .zip(b.sides().iter())
+            .all(|(a, b)| match (a, b) {
+                (Some(a), Some(b)) => a.matches(b),
+                (None, None) => true,
+                _ => false,
+            }),
+        _ => false,
+    }
+}
+
+fn str_identifier_equal(a: &str, b: &str) -> bool {
+    let norm = |s: &str| {
+        if let Some(rest) = s.strip_prefix(':') {
+            ("minecraft:", rest)
+        } else if s.contains(':') {
+            ("", s)
+        } else {
+            ("minecraft:", s)
+        }
+    };
+    let (ap, ar) = norm(a);
+    let (bp, br) = norm(b);
+    ap.bytes()
+        .chain(ar.bytes())
+        .eq(bp.bytes().chain(br.bytes()))
+}
+
+fn potion_contents_equal(a: &ItemStack, b: &ItemStack) -> bool {
+    let (Some(a), Some(b)) = (a.data(), b.data()) else {
+        return false;
+    };
+    let valid = |d: &StackData| {
+        d.potion.is_some()
+            || !d.potion_extra.is_empty()
+            || matches!(d.other("minecraft:potion_contents"), Some(Tag::Compound(_)))
+    };
+    if !valid(a) || !valid(b) {
+        return false;
+    }
+    let potion_eq = match (a.potion.as_deref(), b.potion.as_deref()) {
+        (Some(a), Some(b)) => str_identifier_equal(a, b),
+        (None, None) => true,
+        _ => false,
+    };
+    if !potion_eq {
+        return false;
+    }
+    let lookup = |list: &[(String, Tag)], key: &str| {
+        list.iter().find(|(k, _)| k == key).map(|(_, value)| value)
+    };
+    a.potion_extra
+        .iter()
+        .all(|(key, value)| match lookup(&b.potion_extra, key) {
+            Some(other) => normalized_tag_equal(value, other),
+            None => is_empty_list(value),
+        })
+        && b.potion_extra
+            .iter()
+            .all(|(key, value)| lookup(&a.potion_extra, key).is_some() || is_empty_list(value))
+}
+
+fn is_empty_list(tag: &Tag) -> bool {
+    matches!(tag, Tag::List(values) if values.is_empty())
+}
+
+/// Compare two component tags by codec-default semantics when no dedicated decoded
+/// type exists: compound key order does not matter, an omitted field equals an empty
+/// list, and floats/doubles follow Java's NaN-canonicalizing equality.
+fn normalized_tag_equal(a: &Tag, b: &Tag) -> bool {
+    match (a, b) {
+        (Tag::Float(a), Tag::Float(b)) => {
+            a == b || (f32::from_bits(*a).is_nan() && f32::from_bits(*b).is_nan())
+        }
+        (Tag::Double(a), Tag::Double(b)) => {
+            a == b || (f64::from_bits(*a).is_nan() && f64::from_bits(*b).is_nan())
+        }
+        (Tag::Compound(a), Tag::Compound(b)) => {
+            a.iter().all(|(key, value)| match b.get(key) {
+                Some(other) => normalized_tag_equal(value, other),
+                None => is_empty_list(value),
+            }) && b
+                .iter()
+                .all(|(key, value)| a.contains_key(key) || is_empty_list(value))
+        }
+        (Tag::List(a), Tag::List(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| normalized_tag_equal(a, b))
+        }
+        _ => a == b,
     }
 }
 
@@ -1051,6 +1302,51 @@ mod tests {
         assert!(!component_equal("minecraft:base_color", &a, &b));
         b.data_mut().base_color = None;
         assert!(!component_equal("minecraft:base_color", &a, &b));
+    }
+
+    #[test]
+    fn fireworks_equality_uses_decoded_defaults() {
+        let id = "minecraft:fireworks";
+        let omitted = parse_stack(
+            r#"{id:"minecraft:paper",count:1,components:{"minecraft:fireworks":{flight_duration:1}}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        let empty_list = parse_stack(
+            r#"{id:"minecraft:paper",count:1,components:{"minecraft:fireworks":{flight_duration:1,explosions:[]}}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        let other_flight = parse_stack(
+            r#"{id:"minecraft:paper",count:1,components:{"minecraft:fireworks":{flight_duration:2}}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        let items = crate::items::Items::default();
+        assert!(component_equal(id, &omitted, &empty_list));
+        assert!(!stored_component_equal(id, &omitted, &empty_list));
+        assert!(omitted.same_item_same_components_with_prototype(&empty_list, &items));
+        assert!(empty_list.same_item_same_components_with_prototype(&omitted, &items));
+        assert!(!omitted.same_item_same_components_with_prototype(&other_flight, &items));
+
+        // Fallback tag normalization treats omitted lists as equal to empty lists.
+        let dp_omitted = parse_stack(
+            r#"{id:"minecraft:paper",count:1,components:{"minecraft:death_protection":{}}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        let dp_empty = parse_stack(
+            r#"{id:"minecraft:paper",count:1,components:{"minecraft:death_protection":{death_effects:[]}}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        let dp_non_empty = parse_stack(
+            r#"{id:"minecraft:paper",count:1,components:{"minecraft:death_protection":{death_effects:[{type:"minecraft:clear_all_effects"}]}}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(dp_omitted.same_item_same_components_with_prototype(&dp_empty, &items));
+        assert!(!dp_omitted.same_item_same_components_with_prototype(&dp_non_empty, &items));
     }
 
     #[test]

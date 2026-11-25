@@ -166,6 +166,9 @@ impl Compound {
     pub fn contains_key(&self, key: &JavaString) -> bool {
         self.get(key).is_some()
     }
+    pub fn contains_str(&self, key: &str) -> bool {
+        with_key(key, |key| self.contains_key(key))
+    }
     pub fn insert(&mut self, key: JavaString, value: Tag) -> Option<Tag> {
         self.0
             .get_or_insert_with(|| Box::new(JavaHashMap::default()))

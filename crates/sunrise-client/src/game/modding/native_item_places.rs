@@ -2993,6 +2993,58 @@ pub(super) mod tests {
 
     #[test]
     #[ignore = "daily"]
+    fn player_slot_extract_matches_filled_map_with_pending_lock() {
+        crate::game::in_own_process(
+            "game::native_item_places::tests::player_slot_extract_matches_filled_map_with_pending_lock",
+            || {
+                with_game(|game| {
+                    open_to_lan(game);
+                    game.lan.as_mut().unwrap().hub.guests.push(guest(1));
+                    let slot = ItemPlace::PlayerSlot {
+                        player: 123,
+                        slot: 3,
+                    };
+                    let mut map = ItemStack::new("minecraft:filled_map", 2);
+                    map.data_mut().map_id = Some(7);
+                    map.data_mut().map_post_processing = Some(0);
+                    game.lan.as_mut().unwrap().hub.guests.update(0, |guest| {
+                        guest.inventory[3] = Some(map.clone());
+                    });
+                    let resource = slot.resource(game).unwrap();
+                    assert_eq!(
+                        resource
+                            .as_stack()
+                            .components()
+                            .and_then(|c| c.as_nbt().get(&sunrise_core::nbt::JavaString::from(
+                                "minecraft:map_post_processing"
+                            ))),
+                        Some(&mod_api::Tag::String("lock".into())),
+                    );
+
+                    let mut unlocked = ItemStack::new("minecraft:filled_map", 1);
+                    unlocked.data_mut().map_id = Some(7);
+                    let unlocked = ItemResource::of(&unlocked.try_into_api().unwrap());
+                    assert_eq!(
+                        game.transaction(|host, tx| slot.extract(host, tx, &unlocked, 1)),
+                        Ok(0),
+                    );
+
+                    assert_eq!(
+                        game.transaction(|host, tx| slot.extract(host, tx, &resource, 1)),
+                        Ok(1),
+                    );
+                    map.count = 1;
+                    assert_eq!(
+                        game.lan.as_ref().unwrap().hub.guests[0].inventory[3],
+                        Some(map),
+                    );
+                });
+            },
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
     fn a_creative_players_selected_stack_takes_what_fits_and_keeps_it() {
         with_game(|game| {
             open_to_lan(game);

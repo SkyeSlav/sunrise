@@ -1548,10 +1548,10 @@ impl ItemStack {
             return true;
         }
         let matches_patch = |stack: &Self, other: &Self| {
-            let keep = component_patch_filter(stack, items);
+            let keep = component_patch_filter_str(stack, items);
             let mut matches = true;
             ingredient_components::visit_components(stack, |id| {
-                if matches && keep(&JavaString::from(id), false) {
+                if matches && keep(id, false) {
                     matches = other.carries_component(None, id)
                         && ingredient_components::component_equal(id, stack, other);
                 }
@@ -1562,10 +1562,7 @@ impl ItemStack {
                     .into_iter()
                     .flat_map(StackData::preserved_components)
                     .filter_map(|(id, _)| id.strip_prefix('!'))
-                    .all(|id| {
-                        !keep(&JavaString::from(id), true)
-                            || ingredient_components::removed(other, id)
-                    })
+                    .all(|id| !keep(id, true) || ingredient_components::removed(other, id))
         };
         matches_patch(self, other) && matches_patch(other, self)
     }
@@ -2120,6 +2117,31 @@ pub fn component_patch_filter<'a>(
                     stack,
                     &info.component_prototype,
                 )
+        }
+    }
+}
+
+/// Borrowed `&str` counterpart of [`component_patch_filter`]: checks the prototype without
+/// allocating a UTF-16 key or decoding back to UTF-8 per component.
+fn component_patch_filter_str<'a>(
+    stack: &'a ItemStack,
+    items: &'a crate::items::Items,
+) -> impl Fn(&str, bool) -> bool + 'a {
+    let prototype = items
+        .component_defaults
+        .get(stack.item.as_ref())
+        .zip(items.get(&stack.item));
+    move |id, removed| {
+        let Some((keys, info)) = prototype else {
+            return true;
+        };
+        let present = keys.contains_str(id);
+        if removed {
+            present
+        } else {
+            // Equality belongs to the component codec, not its saved NBT numeric width.
+            !present
+                || !ingredient_components::component_equal(id, stack, &info.component_prototype)
         }
     }
 }
