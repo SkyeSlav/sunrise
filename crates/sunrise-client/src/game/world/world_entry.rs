@@ -470,6 +470,12 @@ impl Game<'_> {
                 &read_errors,
             )?)
         };
+        let frozen_tests = frozen.map(|tables| {
+            (
+                tables.test_environments.clone(),
+                tables.test_instances.clone(),
+            )
+        });
         view.ids.insert(
             BIOME_REGISTRY.into(),
             biomes
@@ -809,6 +815,13 @@ impl Game<'_> {
         loot.set_global_modifiers(modifiers);
         items.set_loot_data(&loot);
         let loot = Arc::new(loot);
+        let (test_environments, test_instances) = if let Some(tables) = frozen_tests {
+            tables
+        } else {
+            let mut functions = mod_api::GameTestFunctions::default();
+            self.native_register_game_tests(&mut functions);
+            test_instances::build_game_test_tables(&packed_registry_definitions, &functions)
+        };
         Ok(super::condition_reload_state::StagedWorldTables {
             tables: Some(WorldTables {
                 conditions,
@@ -833,6 +846,8 @@ impl Game<'_> {
                 data_maps,
                 pack_tags,
                 gameplay,
+                test_environments,
+                test_instances,
             }),
             advancements,
             health,
@@ -869,6 +884,7 @@ impl Game<'_> {
         self.sync_timeline_registries();
         self.share_mob_maps();
         self.share_biome_keys();
+        self.sync_test_registry_ids();
         sunrise_client::datapack_net::serve(self.mods.datapack_registries.clone());
         Ok(())
     }
