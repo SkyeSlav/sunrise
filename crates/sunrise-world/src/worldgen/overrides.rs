@@ -379,6 +379,44 @@ impl WorldgenOverrides {
             PackFile::Other
         }
     }
+
+    /// Evaluates `neoforge:conditions` on every winning worldgen / dimension JSON entry
+    /// (`RegistryDataLoader` / `ConditionalOps`), removing entries whose conditions fail
+    /// or fail to decode. Called after all packs have been added so a failing higher-priority
+    /// file drops the entry and never uncovers a lower pack's version. Tags ignore conditions
+    /// (`TagLoader`), and unparseable JSON is kept untouched for the owning decoder's error
+    /// diagnostic. Returns formatted diagnostics for entries whose conditions failed to decode
+    /// or evaluate without mutating `conditions`'s shared diagnostics.
+    pub fn filter_conditions(
+        &mut self,
+        conditions: &crate::conditions::LoadConditions,
+    ) -> Vec<String> {
+        let mut diagnostics = Vec::new();
+        for (bundle, entries) in &mut self.entries {
+            let Some(kind) = KINDS
+                .iter()
+                .find(|(_, candidate)| candidate == bundle)
+                .map(|(kind, _)| *kind)
+            else {
+                continue;
+            };
+            entries.retain(|id, json| {
+                let Ok(value) = serde_json::from_str::<Value>(json) else {
+                    return true;
+                };
+                let (ns, path) = id.split_once(':').unwrap_or(("minecraft", id));
+                let file_path = format!("data/{ns}/{kind}/{path}.json");
+                match conditions.allows_file_isolated(&value, &file_path) {
+                    Ok(allowed) => allowed,
+                    Err(error) => {
+                        diagnostics.push(format!("{file_path}: {error}"));
+                        false
+                    }
+                }
+            });
+        }
+        diagnostics
+    }
     /// After the last pack: leaves out the packs' new biomes (`known` says
     /// which the game has), and what names them names the rest without
     /// them: their biome tags' other biomes, and the climate points of the
@@ -940,6 +978,100 @@ mod level_facts_tests {
                 .ambient_light,
             0.5
         );
+    }
+
+    #[test]
+    fn filter_conditions_drops_failing_winners_keeps_tags_and_malformed_json() {
+        let mut overrides = WorldgenOverrides::default();
+        // Low pack provides an unconditional feature; high pack overrides it with a failing
+        // condition. Filtering after pack selection must drop it, never uncovering the low pack.
+        assert_eq!(
+            overrides.add_file("low", "data/demo/worldgen/feature/oak.json", || {
+                Some(r#"{"type":"minecraft:tree","config":{}}"#.into())
+            }),
+            PackFile::Read
+        );
+        assert_eq!(
+            overrides.add_file("high", "data/demo/worldgen/feature/oak.json", || {
+                Some(
+                    r#"{"neoforge:conditions":[{"type":"neoforge:mod_loaded","modid":"absent"}],"type":"minecraft:tree","config":{}}"#
+                        .into(),
+                )
+            }),
+            PackFile::Read
+        );
+        // Passing mod_loaded + tag_empty condition keeps the entry.
+        assert_eq!(
+            overrides.add_file("high", "data/demo/worldgen/feature/pine.json", || {
+                Some(
+                    r#"{"neoforge:conditions":[{"type":"neoforge:mod_loaded","modid":"present"},{"type":"neoforge:not","value":{"type":"neoforge:tag_empty","registry":"minecraft:block","tag":"demo:soil"}}],"type":"minecraft:tree","config":{}}"#
+                        .into(),
+                )
+            }),
+            PackFile::Read
+        );
+        // Failing tag_empty condition drops the entry.
+        assert_eq!(
+            overrides.add_file("high", "data/demo/worldgen/feature/empty_tag.json", || {
+                Some(
+                    r#"{"neoforge:conditions":[{"type":"neoforge:tag_empty","registry":"minecraft:block","tag":"demo:soil"}],"type":"minecraft:tree","config":{}}"#
+                        .into(),
+                )
+            }),
+            PackFile::Read
+        );
+        // Unparseable JSON stays untouched for the owning worldgen decoder.
+        assert_eq!(
+            overrides.add_file("high", "data/demo/worldgen/feature/broken.json", || {
+                Some("{not valid json".into())
+            }),
+            PackFile::Read
+        );
+        // Tags ignore neoforge:conditions.
+        assert_eq!(
+            overrides.add_file("high", "data/demo/tags/block/soil.json", || {
+                Some(
+                    r#"{"neoforge:conditions":[{"type":"neoforge:false"}],"values":["minecraft:dirt"]}"#
+                        .into(),
+                )
+            }),
+            PackFile::Read
+        );
+
+        let conditions = crate::conditions::LoadConditions::new(["present"])
+            .with_tags([("minecraft:block", ["demo:soil"])]);
+        assert!(overrides.filter_conditions(&conditions).is_empty());
+        let features: Vec<&str> = overrides.entries("features").map(|(id, _)| id).collect();
+        assert!(!features.contains(&"demo:oak"));
+        assert!(features.contains(&"demo:pine"));
+        assert!(!features.contains(&"demo:empty_tag"));
+        assert!(features.contains(&"demo:broken"));
+        assert_eq!(overrides.tags("block_tags").count(), 1);
+    }
+
+    #[test]
+    fn filter_conditions_reports_unknown_condition_without_mutating_shared_diagnostics() {
+        let mut overrides = WorldgenOverrides::default();
+        assert_eq!(
+            overrides.add_file("high", "data/demo/worldgen/feature/bad_cond.json", || {
+                Some(
+                    r#"{"neoforge:conditions":[{"type":"unknown:bogus"}],"type":"minecraft:tree","config":{}}"#
+                        .into(),
+                )
+            }),
+            PackFile::Read
+        );
+        let conditions = crate::conditions::LoadConditions::new(["present"]);
+        let diagnostics = overrides.filter_conditions(&conditions);
+        assert!(overrides.entries("features").next().is_none());
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics[0].contains("data/demo/worldgen/feature/bad_cond.json")
+                && diagnostics[0].contains("unknown:bogus"),
+            "expected file path and unknown condition id, got: {:?}",
+            diagnostics
+        );
+        assert_eq!(conditions.check_errors(), Ok(()));
     }
 
     #[test]

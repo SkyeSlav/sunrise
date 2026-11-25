@@ -824,7 +824,7 @@ fn content_id(file: &str) -> Option<String> {
         "recipe" | "recipe_filter" | "loot_table" | "advancement" | "trade_set"
         | "villager_trade" | "dialog" | "damage_type" | "dimension_type" | "data_maps"
         | "enchantment" | "jukebox_song" | "instrument" | "painting_variant" | "banner_pattern"
-        | "predicate" | "item_modifier" | "world_clock" => kind,
+        | "predicate" | "item_modifier" | "slot_source" | "world_clock" => kind,
         "worldgen" => {
             return resource_id(file, "worldgen/biome", ".json")
                 .map(|id| format!("worldgen/biome/{id}"));
@@ -1047,16 +1047,6 @@ impl DataStore {
                         slot.clear();
                     }
                     slot.extend(entries);
-                } else if let Some(id) = resource_id(&f, "predicate", ".json")
-                    && let Some(bytes) = pack.read(&f)
-                    && let Ok(v) = serde_json::from_slice(&bytes)
-                {
-                    s.predicates.insert(id, v);
-                } else if let Some(id) = resource_id(&f, "item_modifier", ".json")
-                    && let Some(bytes) = pack.read(&f)
-                    && let Ok(v) = serde_json::from_slice(&bytes)
-                {
-                    s.item_modifiers.insert(id, v);
                 } else if let Some(id) = resource_id(&f, "tags/slot_source", ".json")
                     && let Some(bytes) = pack.read(&f)
                     && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
@@ -1074,41 +1064,9 @@ impl DataStore {
                         slot.clear();
                     }
                     slot.extend(entries);
-                } else if let Some(id) = resource_id(&f, "slot_source", ".json")
-                    && let Some(bytes) = pack.read(&f)
-                    && let Ok(v) = serde_json::from_slice(&bytes)
-                {
-                    s.slot_sources.insert(id, v);
                 }
             }
         }
-        s.predicates.retain(|id, value| {
-            match sunrise_world::loot::validate_loot_condition(value) {
-                Ok(()) => true,
-                Err(error) => {
-                    log::warn!("predicate {id} rejected: {error}");
-                    false
-                }
-            }
-        });
-        s.item_modifiers.retain(|id, value| {
-            match sunrise_world::loot::validate_item_modifier(value) {
-                Ok(()) => true,
-                Err(error) => {
-                    log::warn!("item modifier {id} rejected: {error}");
-                    false
-                }
-            }
-        });
-        s.slot_sources.retain(
-            |id, value| match sunrise_world::loot::validate_slot_source(value) {
-                Ok(()) => true,
-                Err(error) => {
-                    log::warn!("slot source {id} rejected: {error}");
-                    false
-                }
-            },
-        );
         s
     }
     /// `ServerFunctionLibrary.getTag`: only valid function tags expand
@@ -1402,8 +1360,9 @@ pub fn dimension_stems(packs: &[&DataPack]) -> BTreeMap<String, serde_json::Valu
 pub fn worldgen_overrides(
     packs: &[&DataPack],
     biomes: impl Fn(&str) -> bool,
+    conditions: &sunrise_world::conditions::LoadConditions,
 ) -> (WorldgenOverrides, Vec<String>) {
-    worldgen_overrides_over(overrides::mod_dimensions(), packs, biomes)
+    worldgen_overrides_over(overrides::mod_dimensions(), packs, biomes, conditions)
 }
 
 /// [`worldgen_overrides`] over the levels `mods` registered, which sit below
@@ -1412,6 +1371,7 @@ pub fn worldgen_overrides_over(
     mods: &[overrides::ModDimension],
     packs: &[&DataPack],
     biomes: impl Fn(&str) -> bool,
+    conditions: &sunrise_world::conditions::LoadConditions,
 ) -> (WorldgenOverrides, Vec<String>) {
     let mut out = WorldgenOverrides::default();
     for dimension in mods {
@@ -1438,6 +1398,7 @@ pub fn worldgen_overrides_over(
             }
         }
     }
+    warnings.extend(out.filter_conditions(conditions));
     warnings.extend(out.finish(biomes));
     for (kind, files) in not_read {
         warnings.push(format!("{kind}: {files} files the generator does not read"));
@@ -1643,7 +1604,12 @@ mod tests {
             sea_level: None,
         }];
         let height = |packs: &[&DataPack]| {
-            let (o, _) = worldgen_overrides_over(&mods, packs, |_| true);
+            let (o, _) = worldgen_overrides_over(
+                &mods,
+                packs,
+                |_| true,
+                &sunrise_world::conditions::LoadConditions::vanilla(),
+            );
             o.level_height("test:pocket").unwrap().height
         };
         assert_eq!(height(&[]), 448);
@@ -1723,12 +1689,20 @@ mod tests {
         write_archive(2);
         let old =
             DataPack::from_source("passive".into(), ResourceSource::archive(&archive).unwrap());
-        let (before, warnings) = worldgen_overrides(&[&old], |_| true);
+        let (before, warnings) = worldgen_overrides(
+            &[&old],
+            |_| true,
+            &sunrise_world::conditions::LoadConditions::vanilla(),
+        );
         assert!(warnings.is_empty(), "{warnings:?}");
         write_archive(5);
         let new =
             DataPack::from_source("passive".into(), ResourceSource::archive(&archive).unwrap());
-        let (after, warnings) = worldgen_overrides(&[&new], |_| true);
+        let (after, warnings) = worldgen_overrides(
+            &[&new],
+            |_| true,
+            &sunrise_world::conditions::LoadConditions::vanilla(),
+        );
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_ne!(
             before, after,
@@ -1995,7 +1969,11 @@ mod tests {
             .iter()
             .map(|id| packs.iter().find(|p| &p.id == id).unwrap())
             .collect();
-        let (o, warnings) = worldgen_overrides(&enabled, |b| b == "minecraft:plains");
+        let (o, warnings) = worldgen_overrides(
+            &enabled,
+            |b| b == "minecraft:plains",
+            &sunrise_world::conditions::LoadConditions::vanilla(),
+        );
         assert_eq!(
             o.entries("noises").collect::<Vec<_>>(),
             [("minecraft:cave", "a")]
@@ -2185,7 +2163,7 @@ mod tests {
             store.tag_functions("minecraft:tick"),
             ["mine:a", "mine:sub/b"]
         );
-        assert!(store.predicates.contains_key("mine:p"));
+        assert!(store.files.contains_key("predicate/mine:p"));
         // Dialogs reach the synchronized registry through the content files.
         assert_eq!(
             store.files["dialog/mine:config/points"],
@@ -2290,6 +2268,7 @@ mod tests {
             "instrument",
             "predicate",
             "item_modifier",
+            "slot_source",
         ];
         let mut packs = Vec::new();
         for name in ["low", "high"] {
@@ -2317,8 +2296,11 @@ mod tests {
                 "high"
             );
         }
-        assert!(store.predicates.contains_key("demo:nested/entry"));
-        assert!(store.item_modifiers.contains_key("demo:nested/entry"));
+        // Predicates, item modifiers and slot sources are loaded solely through
+        // LootData + LoadConditions, never duplicated in DataStore::load.
+        assert!(store.predicates.is_empty());
+        assert!(store.item_modifiers.is_empty());
+        assert!(store.slot_sources.is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2330,10 +2312,10 @@ mod tests {
             std::env::temp_dir().join(format!("sunrise-1381-datapack-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let nested = serde_json::json!([{"type": "absent:condition"}]);
-        let predicate = serde_json::json!({"condition": "minecraft:all_of", "terms": [
-            {"condition": "minecraft:random_chance", "chance": 0.5, "neoforge:conditions": nested}]});
+        let predicate = serde_json::json!({"type": "minecraft:all_of", "terms": [
+            {"type": "minecraft:random_chance", "chance": 0.5, "neoforge:conditions": nested}]});
         let modifier = serde_json::json!([
-            {"function": "minecraft:set_count", "count": 2, "neoforge:conditions": nested}]);
+            {"type": "minecraft:set_count", "count": 2, "neoforge:conditions": nested}]);
         for (kind, value) in [("predicate", &predicate), ("item_modifier", &modifier)] {
             let file = root.join(format!("data/demo/{kind}/entry.json"));
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -2341,9 +2323,16 @@ mod tests {
         }
         let pack = DataPack::from_source("pack".into(), ResourceSource::directory(root.clone()));
         let store = DataStore::load(&[&pack]);
+        let files: Vec<_> = store.files.into_iter().collect();
+        let overlay = sunrise_world::loot::PackOverlay::new(&files);
+        let empty_root = root.join("empty");
+        std::fs::create_dir_all(&empty_root).unwrap();
+        std::fs::write(empty_root.join("items.json"), "{}").unwrap();
+        let defaults = sunrise_world::item_defaults::read(&empty_root).unwrap();
+        let loot = sunrise_world::loot::LootData::load(&empty_root, &overlay, &defaults).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
-        assert_eq!(store.predicates.get("demo:entry"), Some(&predicate));
-        assert_eq!(store.item_modifiers.get("demo:entry"), Some(&modifier));
+        assert_eq!(loot.predicates().get("demo:entry"), Some(&predicate));
+        assert_eq!(loot.item_modifiers().get("demo:entry"), Some(&modifier));
     }
 
     #[test]

@@ -114,6 +114,9 @@ impl Game<'_> {
             let registry = self.pack.assets.registry;
             // The chosen packs' worldgen over the game's own:
             // `applyNewPackConfig` reloads with the new pack config.
+            let base_conditions = self
+                .worldgen_base_conditions()
+                .unwrap_or_else(|_| sunrise_world::conditions::LoadConditions::vanilla());
             let overrides = title
                 .creation_packs()
                 .map(|(dir, packs)| {
@@ -123,6 +126,7 @@ impl Game<'_> {
                         &packs,
                         self.res.biomes(),
                         &self.pack.additional_data,
+                        &base_conditions,
                     )
                 })
                 .unwrap_or_default();
@@ -584,6 +588,17 @@ impl Game<'_> {
                 }
             }
         }
+        if !view.tags.contains_key("minecraft:villager_trade")
+            && let Ok(tags) = sunrise_client::items::load_tags(root, "villager_trade", &tag_files)
+        {
+            view.tags.insert(
+                "minecraft:villager_trade".to_owned(),
+                tags.into_iter()
+                    .filter(|(_, members)| !members.is_empty())
+                    .map(|(tag, _)| tag)
+                    .collect(),
+            );
+        }
 
         let datapack_candidate =
             Self::stage_datapack_registries(stack, root, &registry_overlay, &mut view);
@@ -766,6 +781,9 @@ impl Game<'_> {
                 biomes.table.registered_keys().iter().cloned(),
             ));
         drop(registries);
+        // Check again after `StationData::from_sources` (`Trades::load`) and other late
+        // condition readers, before live state (`resolve_enchantment_registry`) changes.
+        conditions.check_errors()?;
         // The API's key order is live state as well: do not change it for a
         // candidate refused by the condition readers.
         api_values::resolve_enchantment_registry(&items)?;

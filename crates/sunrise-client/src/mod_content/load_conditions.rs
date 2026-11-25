@@ -202,6 +202,8 @@ pub fn build_with_conditions(
     }
     let mut modifier_files = BTreeMap::new();
     let mut modifier_order = 0;
+    let mut worldgen_files = BTreeMap::new();
+    let mut worldgen_order = 0;
     let mut namespaces: std::collections::BTreeSet<String> = mods
         .iter()
         .flat_map(|m| m.content.namespaces.iter().cloned())
@@ -249,9 +251,12 @@ pub fn build_with_conditions(
                         modifier_order += 1;
                         continue;
                     }
-                    if worldgen_entry(&file).is_none() {
+                    if let Some((bundle, id)) = worldgen_entry(&file) {
+                        worldgen_files.insert(file, (worldgen_order, &m.id, layer, bundle, id));
+                        worldgen_order += 1;
                         continue;
                     }
+                    continue;
                 }
                 let bytes = layer.data.read(&file).ok_or_else(|| {
                     std::io::Error::new(
@@ -259,27 +264,17 @@ pub fn build_with_conditions(
                         format!("{}: {file}", layer.assets.id),
                     )
                 })?;
-                if is_tag {
-                    let doc: J =
-                        serde_json::from_slice(&bytes).map_err(|e| format!("{file}: {e}"))?;
-                    let Some(J::Arr(values)) = doc.get("values") else {
-                        return Err(format!("{}: {file}: no values", m.id).into());
-                    };
-                    let replace = doc.get("replace") == Some(&J::Bool(true));
-                    let ns = file.split('/').nth(1).unwrap_or_default();
-                    let shared = !m.content.namespaces.iter().any(|n| n == ns);
-                    let merge = tags.entry(file.clone()).or_default();
-                    warnings.extend(merge.add(&m.id, &file, replace, shared, values));
-                    if let Some((_, remove)) = merge.layers.last_mut() {
-                        remove.extend(tag_list(&doc, "remove").iter().cloned());
-                    }
-                } else if let Some((bundle, id)) = worldgen_entry(&file) {
-                    let text = String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
-                    let entries = worldgen.entry(bundle).or_default();
-                    match Addition::read(bundle, &text).map_err(|e| format!("{file}: {e}"))? {
-                        Some(addition) => additions.entry(bundle).or_default().push(addition),
-                        None => entries.push((id, text)),
-                    }
+                let doc: J = serde_json::from_slice(&bytes).map_err(|e| format!("{file}: {e}"))?;
+                let Some(J::Arr(values)) = doc.get("values") else {
+                    return Err(format!("{}: {file}: no values", m.id).into());
+                };
+                let replace = doc.get("replace") == Some(&J::Bool(true));
+                let ns = file.split('/').nth(1).unwrap_or_default();
+                let shared = !m.content.namespaces.iter().any(|n| n == ns);
+                let merge = tags.entry(file.clone()).or_default();
+                warnings.extend(merge.add(&m.id, &file, replace, shared, values));
+                if let Some((_, remove)) = merge.layers.last_mut() {
+                    remove.extend(tag_list(&doc, "remove").iter().cloned());
                 }
             }
         }
@@ -298,7 +293,28 @@ pub fn build_with_conditions(
             accepted.push((file, owner, text, structure));
         }
     }
+    let mut worldgen_winners: Vec<_> = worldgen_files.into_iter().collect();
+    worldgen_winners.sort_by_key(|(_, (order, ..))| *order);
+    let mut accepted_worldgen = Vec::new();
+    for (file, (_, owner, layer, bundle, id)) in worldgen_winners {
+        let bytes = layer
+            .data
+            .read(&file)
+            .ok_or_else(|| format!("mod {owner}: {file}: unreadable"))?;
+        let text = String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
+        let doc = serde_json::from_str(&text).map_err(|e| format!("mod {owner}: {file}: {e}"))?;
+        if conditions.allows_file(&doc, &file) {
+            accepted_worldgen.push((file, bundle, id, text));
+        }
+    }
     conditions.check_errors()?;
+    for (file, bundle, id, text) in accepted_worldgen {
+        let entries = worldgen.entry(bundle).or_default();
+        match Addition::read(bundle, &text).map_err(|e| format!("{file}: {e}"))? {
+            Some(addition) => additions.entry(bundle).or_default().push(addition),
+            None => entries.push((id, text)),
+        }
+    }
     let native = mod_api::__private::biome_modifier_declarations()
         .iter()
         .map(|decl| (&decl.mod_id, decl.file()))

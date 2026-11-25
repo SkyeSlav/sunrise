@@ -199,6 +199,14 @@ impl Catalog {
             .map(|id| self.definitions[id.0].name.as_str())
     }
 
+    /// Names of every bound damage-type tag holding at least one entry, for `neoforge:tag_empty`.
+    pub fn non_empty_tags(&self) -> impl Iterator<Item = &str> {
+        self.tags
+            .iter()
+            .filter(|(_, members)| !members.is_empty())
+            .map(|(tag, _)| tag.as_str())
+    }
+
     /// RegistryDataLoader's world-load snapshot. Existing local definition
     /// indices stay stable; new names append in sorted order. Wire IDs remain
     /// the separately synchronized registry's, looked up by name.
