@@ -370,13 +370,24 @@ fn enter_listener(entry: &'static ModEntry, hook: &'static str) -> ((), &'static
     ENTERED.with(|entered| entered.borrow_mut().push((index, hook)));
     ((), &*entry.hooks)
 }
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Side {
+    Both,
+    Client,
+    Server,
+}
 struct ModEntry {
     id: &'static str,
     hooks: Box<dyn Hooks>,
+    side: Side,
 }
 impl ModEntry {
     fn new(id: &'static str, hooks: Box<dyn Hooks>) -> Self {
-        Self { id, hooks }
+        Self {
+            id,
+            hooks,
+            side: Side::Both,
+        }
     }
 }
 trait Registrar {}
