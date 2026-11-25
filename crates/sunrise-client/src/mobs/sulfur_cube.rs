@@ -379,6 +379,7 @@ fn test_archetype_items() {
                      physics: [f64; 6],
                      power: [f64; 2],
                      sound: [f64; 2]| {
+        // The multiplier amounts are the files' doubles: a float constant widened, minus one.
         let [kb, ek, bounce, friction, drag, _] = physics;
         let mut value = json!({
             "items": format!("#minecraft:sulfur_cube_archetype/{name}"),
@@ -386,8 +387,8 @@ fn test_archetype_items() {
                 {"attribute": "minecraft:knockback_resistance", "id": format!("minecraft:{name}_add_knockback_resistance"), "amount": kb, "operation": "add_value"},
                 {"attribute": "minecraft:explosion_knockback_resistance", "id": format!("minecraft:{name}_add_explosion_knockback_resistance"), "amount": ek, "operation": "add_value"},
                 {"attribute": "minecraft:bounciness", "id": format!("minecraft:{name}_add_bounciness"), "amount": bounce, "operation": "add_value"},
-                {"attribute": "minecraft:friction_modifier", "id": format!("minecraft:{name}_mul_friction_modifier"), "amount": friction - 1.0, "operation": "add_multiplied_total"},
-                {"attribute": "minecraft:air_drag_modifier", "id": format!("minecraft:{name}_mul_air_drag_modifier"), "amount": drag - 1.0, "operation": "add_multiplied_total"},
+                {"attribute": "minecraft:friction_modifier", "id": format!("minecraft:{name}_mul_friction_modifier"), "amount": f64::from(friction as f32) - 1.0, "operation": "add_multiplied_total"},
+                {"attribute": "minecraft:air_drag_modifier", "id": format!("minecraft:{name}_mul_air_drag_modifier"), "amount": f64::from(drag as f32) - 1.0, "operation": "add_multiplied_total"},
             ],
             "buoyant": physics[5] != 0.0,
             "knockback_modifiers": {"horizontal_power": power[0], "vertical_power": power[1]},
