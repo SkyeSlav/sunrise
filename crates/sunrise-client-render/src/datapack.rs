@@ -2002,7 +2002,7 @@ mod tests {
             sea_level: None,
         }];
         let height = |packs: &[&DataPack]| {
-            let (o, _) = worldgen_overrides_over(&mods, packs, |_| true);
+            let (o, _) = worldgen_overrides_over(&mods, &DataPacks::new(packs), |_| true);
             o.level_height("test:pocket").unwrap().height
         };
         assert_eq!(height(&[]), 448);
