@@ -136,6 +136,7 @@ fn goat_horn_use_plays_the_data_pack_instrument() {
     );
     let played = |instrument: Option<&str>| {
         let mut played = Vec::new();
+        let mut cooldowns = Vec::new();
         with_game(|game| {
             game.load_world(request(root)).unwrap();
             // `finish_open_world` clears `self.player`; `play_player_bound_sound` looks up the
@@ -156,6 +157,7 @@ fn goat_horn_use_plays_the_data_pack_instrument() {
             game.inventory[0] = Some(horn);
             game.offhand = None;
             game.audio.capture = Some(Vec::new());
+            game.cooldowns = Default::default();
             assert!(game.use_item().unwrap().is_some());
             played = game
                 .audio
@@ -165,19 +167,32 @@ fn goat_horn_use_plays_the_data_pack_instrument() {
                 .into_iter()
                 .map(|sound| (sound.event, sound.volume))
                 .collect::<Vec<_>>();
+            cooldown = game
+                .cooldowns
+                .remaining()
+                .map(|(group, ticks)| (group.to_string(), ticks))
+                .collect::<Vec<_>>();
         });
-        played
+        (played, cooldown)
     };
-    // The default horn is the overridden ponder one: range 32 is volume 32 / 16.
+    // The default horn is the overridden ponder one: range 32 is volume 32 / 16, and
+    // `use_duration` 3 s is a 60 tick cooldown (`Mth.floor(useDuration * 20)`).
     assert_eq!(
         played(None),
-        [("minecraft:item.goat_horn.sound.1".to_owned(), 2.0)]
+        (
+            vec![("minecraft:item.goat_horn.sound.1".to_owned(), 2.0)],
+            vec![("minecraft:goat_horn".to_owned(), 60)]
+        )
     );
     assert_eq!(
         played(Some("test:horn")),
-        [("minecraft:item.goat_horn.sound.2".to_owned(), 4.0)]
+        (
+            vec![("minecraft:item.goat_horn.sound.2".to_owned(), 4.0)],
+            vec![("minecraft:goat_horn".to_owned(), 100)]
+        )
     );
 }
+
 fn power(game: &crate::game::Game<'_>) -> DatapackValue {
     let set = game.mods.datapack_registries.as_ref().unwrap();
     set.get("registry_test:spell", "registry_test:fire")
