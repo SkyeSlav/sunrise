@@ -162,6 +162,11 @@ impl Host {
         for event in self.hub.tick(&mut ctx) {
             if let HostEvent::Joined(conn, _) = event {
                 self.joined.push(conn);
+                if let Some(i) = self.hub.begin_player_join(conn, &ctx) {
+                    self.hub
+                        .send_commands(i, self.hub.commands_packet(self.hub.guests[i].permission));
+                    self.hub.finish_player_join(i, &ctx);
+                }
             }
         }
     }
@@ -179,10 +184,14 @@ fn connect(port: u16, name: &str, data: &Arc<ItemData>) -> Session {
     )
 }
 
-fn drive_join(host: &mut Host, session: &Session) -> Result<(), String> {
+type SyncPayload = (String, HashMap<String, Vec<(String, Tag)>>);
+
+fn drive_join(host: &mut Host, session: &Session) -> Result<Vec<SyncPayload>, String> {
     let deadline = Instant::now() + Duration::from_secs(30);
+    let mut pending = Vec::new();
     loop {
         host.tick();
+        let mut joined = false;
         for receipt in session.poll() {
             let (event, _credit) = receipt.into_parts();
             let event = match event {
@@ -203,10 +212,20 @@ fn drive_join(host: &mut Host, session: &Session) -> Result<(), String> {
                 event => event,
             };
             match event {
-                Event::Joined { .. } => return Ok(()),
+                Event::Joined { .. } => joined = true,
                 Event::Disconnected { reason, .. } => return Err(reason),
+                Event::Packet(packet) => {
+                    if let play::Clientbound::CustomPayload(p) = *packet
+                        && p.channel == data_map_net::SYNC_CHANNEL
+                    {
+                        pending.push(data_map_net::decode_sync_payload(&p.data).unwrap());
+                    }
+                }
                 _ => {}
             }
+        }
+        if joined {
+            return Ok(pending);
         }
         assert!(Instant::now() < deadline, "timed out waiting for join");
         std::thread::sleep(Duration::from_millis(10));
@@ -216,8 +235,12 @@ fn drive_join(host: &mut Host, session: &Session) -> Result<(), String> {
 fn wait_data_map_sync(
     host: &mut Host,
     session: &Session,
+    pending: &mut Vec<SyncPayload>,
     expected_registry: &str,
 ) -> HashMap<String, Vec<(String, Tag)>> {
+    if let Some(pos) = pending.iter().position(|(reg, _)| reg == expected_registry) {
+        return pending.remove(pos).1;
+    }
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         host.tick();
@@ -231,6 +254,7 @@ fn wait_data_map_sync(
                 if registry == expected_registry {
                     return maps;
                 }
+                pending.push((registry, maps));
             }
         }
         assert!(
@@ -285,10 +309,10 @@ fn optional_and_required_maps_sync_on_join_and_update_on_reload() {
     let (_resources, data) = Resources::new("join-and-reload");
     let mut host = Host::start(SyncData::empty());
     let session = connect(host.port(), "SyncClient", &data);
-    drive_join(&mut host, &session).expect("matching Sunrise client must join");
+    let mut pending = drive_join(&mut host, &session).expect("matching Sunrise client must join");
 
     // Wait for initial play-phase sync payload.
-    let synced = wait_data_map_sync(&mut host, &session, "minecraft:item");
+    let synced = wait_data_map_sync(&mut host, &session, &mut pending, "minecraft:item");
     assert_eq!(
         synced["chemlib:fuel"],
         vec![
@@ -320,7 +344,7 @@ fn optional_and_required_maps_sync_on_join_and_update_on_reload() {
         data_map_net::sync_connection(&guest.sender);
     }
 
-    let updated = wait_data_map_sync(&mut host, &session, "minecraft:item");
+    let updated = wait_data_map_sync(&mut host, &session, &mut pending, "minecraft:item");
     assert_eq!(
         updated["chemlib:fuel"],
         vec![("minecraft:coal".to_owned(), Tag::Int(2400))]
