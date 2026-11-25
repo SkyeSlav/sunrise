@@ -77,21 +77,23 @@ impl crate::game::Game<'_> {
             r.level_pack_environment = None;
             return;
         };
+        let timelines = r.synced_timelines();
         if let Some(e) = r
             .level_environments
             .get_mut(name)
             .filter(|e| e.json == *json)
         {
             if !same_stacks(e.stacks.as_ref(), stacks) {
-                e.pack = pack_environment(name, json, stacks);
+                e.pack = pack_environment(name, json, stacks, &timelines);
                 e.stacks = stacks.map(Arc::downgrade);
             }
             r.level_environment = e.own.clone();
             r.level_pack_environment = e.pack.clone();
             return;
         }
-        let own = Environment::with_type(self.res.environment_of(name), json).map(Arc::new);
-        let pack = pack_environment(name, json, stacks);
+        let own =
+            Environment::with_type(self.res.environment_of(name), json, &timelines).map(Arc::new);
+        let pack = pack_environment(name, json, stacks, &timelines);
         r.level_environments.insert(
             name.clone(),
             LevelEnvironments {
@@ -108,7 +110,7 @@ impl crate::game::Game<'_> {
 
 /// The environments `Game::build_level_environments` built from one synchronized dimension type,
 /// and what they were built from.
-pub(super) struct LevelEnvironments {
+pub(in crate::game) struct LevelEnvironments {
     /// The type's JSON both were built from.
     json: serde_json::Value,
     /// Over the client's own environment of the type: gameplay's.
@@ -126,6 +128,7 @@ fn pack_environment(
     name: &str,
     json: &serde_json::Value,
     stacks: Option<&Arc<[Environment; 3]>>,
+    timelines: &sunrise_client::environment::TimelineTable,
 ) -> Option<Arc<Environment>> {
     let base = match name {
         "minecraft:overworld" => &stacks?[0],
@@ -133,7 +136,7 @@ fn pack_environment(
         "minecraft:the_end" => &stacks?[2],
         _ => return None,
     };
-    Environment::with_type(base, json).map(Arc::new)
+    Environment::with_type(base, json, timelines).map(Arc::new)
 }
 
 /// Whether `built` are the packs' current stacks `now`.
