@@ -102,16 +102,18 @@ impl fmt::Display for MoveBlocksError {
             Self::BlockEntityRefused { at } => {
                 write!(f, "block entity at {at:?} refused to move")
             }
-            Self::Transaction(err) => err.fmt(f),
+            Self::Transaction(TransactionError::InvalidContext) => {
+                f.write_str("invalid transaction context")
+            }
+            Self::Transaction(TransactionError::Unavailable) => {
+                f.write_str("transaction unavailable")
+            }
+            Self::Transaction(TransactionError::CommitRefused) => {
+                f.write_str("transaction commit refused")
+            }
+            Self::Transaction(TransactionError::Aborted(())) => f.write_str("transaction aborted"),
         }
     }
 }
 
-impl std::error::Error for MoveBlocksError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Transaction(err) => Some(err),
-            Self::NotLoaded { .. } | Self::BlockEntityRefused { .. } => None,
-        }
-    }
-}
+impl std::error::Error for MoveBlocksError {}
