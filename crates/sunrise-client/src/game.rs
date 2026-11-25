@@ -11501,7 +11501,7 @@ impl Game<'_> {
         let on_top = g.on_top;
         pr.lap("pr_debug");
         let visuals = if self.title.is_none() {
-            self.native_frame_visuals(alpha, &mut lines)
+            self.native_frame_visuals(&mut lines)
         } else {
             native_visuals::FrameVisuals::default()
         };
@@ -11911,7 +11911,7 @@ impl Game<'_> {
         // After the mods' world geometry, whose labels add see-through copies.
         let see_through = std::mem::take(&mut self.see_through_vertices);
         let colored_lights = if self.title.is_none() {
-            visuals.finish(self, camera)
+            visuals.finish(camera)
         } else {
             Vec::new()
         };

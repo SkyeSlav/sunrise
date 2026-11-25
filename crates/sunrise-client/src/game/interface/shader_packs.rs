@@ -1,8 +1,8 @@
 //! Shader packs: the one picked on Options > Sunrise Settings > Shader Packs, or
 //! `SUNRISE_SHADER_PACK=<name>` (development; it wins over the pick), runs `shaderpacks/<name>`
-//! (a folder or a zip beside `options.txt`) over the world; Sunrise's own packs go to
-//! `game/modding/native_shaders.rs`. The programs of the current dimension's folder are loaded when the
-//! dimension changes (spec 1.2).
+//! (a folder or a zip beside `options.txt`) over the world. The programs of the current
+//! dimension's folder are loaded when the dimension changes (spec 1.2). A pick in the removed
+//! WGSL format is turned off with a note (`shader_pack_unsupported`).
 
 use super::remote_camera::CameraFogEffects;
 use sunrise_client::camera::CameraFluid;
@@ -10,7 +10,6 @@ use sunrise_client::gfx::pack_uniforms::{PackInputs, PlayerStatus, ViewEntity};
 use sunrise_client::mod_list::ModList;
 use sunrise_client::shader_options::ShaderOptions;
 use sunrise_client::text::Text;
-use sunrise_shader_api::Api;
 use sunrise_shaders::{BlockIds, Macros, Pack, Properties, dimension_folder_named, load_post};
 
 use super::native_shaders::{fingerprint, outcome, refused, remember};
@@ -33,10 +32,6 @@ pub(super) fn read_shader_options(
     language: &str,
     macros: &Macros,
 ) -> Option<ShaderOptions> {
-    // Native options come from the manifest; the shared screen opens either kind.
-    if name.starts_with("sunrise:") {
-        return None;
-    }
     let pack = match Pack::open(&Game::shader_packs_dir().join(name)) {
         Ok(pack) => pack,
         Err(e) => {
@@ -163,63 +158,35 @@ pub(crate) struct PickedPack {
     pub draws_flat: bool,
     /// Its passes read the solid quads' vertices (`pack_reads_vertices`): they start wide.
     pub starts_wide: bool,
-    /// It is a shader API 0.2 pack under `SUNRISE_HDR_FRAME=float`, with its `[frame] blend`:
-    /// the frame is float.
-    pub linear: Option<sunrise_shader_api::Blend>,
-    /// Under `SUNRISE_HDR_FRAME=float`, with no pack available or a 0.2 one: the frame is the
-    /// layered float one where HDR output is on (the renderer decides, `FrameRequest::hdr_float`).
+    /// Under `SUNRISE_HDR_FRAME=float`, with no pack available: the frame is the layered float
+    /// one where HDR output is on (the renderer decides, `FrameRequest::hdr_float`).
     pub hdr_float: bool,
 }
 impl PickedPack {
     /// What it asks of the renderer's frame.
     pub(crate) fn frame(self) -> sunrise_client::gfx::FrameRequest {
-        sunrise_client::gfx::FrameRequest::new()
-            .with_linear_pack(self.linear.is_some())
-            .with_linear_blend(self.linear == Some(sunrise_shader_api::Blend::Linear))
-            .with_hdr_float(self.hdr_float)
+        sunrise_client::gfx::FrameRequest::new().with_hdr_float(self.hdr_float)
     }
 }
 
 pub(super) fn picked_pack_shape(settings: &sunrise_client::settings::Settings) -> PickedPack {
     let picked = picked_pack(settings);
     let dir = Game::shader_packs_dir();
-    let path = if dev_pack().is_some() {
-        dir.join(picked)
-    } else {
-        sunrise_client::shader_pack_list::resolve(&dir, picked).1
-    };
+    let path = dir.join(picked);
+    let switch = super::native_shaders::linear_frame_switch();
     let active = !picked.is_empty()
-        && (!super::native_shaders::linear_frame_switch()
-            || (path.exists() && outcome(&path) != Some(None)))
+        && !sunrise_client::shader_pack_list::unsupported(&dir, picked)
+        && (!switch || (path.exists() && outcome(&path) != Some(false)))
         && path
             .file_name()
             .is_none_or(|f| !active_pack(&f.to_string_lossy(), &settings.mods).is_empty());
-    let linear = (active && super::native_shaders::linear_frame_switch())
-        .then(|| sunrise_shader_api::Pack::read_manifest(&path).ok())
-        .flatten()
-        .filter(|m| m.api == sunrise_shader_api::Api::V0_2)
-        .map(|m| m.blend);
+    // A pack draws the terrain flat where the device can, and its passes read the solid quads'
+    // vertices: the sections are laid out so.
     PickedPack {
-        draws_flat: active && pack_draws_flat(&path),
-        starts_wide: active && pack_reads_vertices(&path),
-        linear,
-        hdr_float: (!active || linear.is_some()) && super::native_shaders::linear_frame_switch(),
+        draws_flat: active,
+        starts_wide: active,
+        hdr_float: !active && switch,
     }
-}
-
-/// Whether the pack at `path` has passes that draw the terrain flat where the device can,
-/// reading translucent quads beside their section's solid ones: a `shaders/` pack, taken to
-/// draw terrain, or one of Sunrise's own with a `[shadow]` pass.
-fn pack_draws_flat(path: &std::path::Path) -> bool {
-    !sunrise_shader_api::package::is_pack(path)
-        || sunrise_shader_api::Pack::read_manifest(path).is_ok_and(|m| m.shadow.is_some())
-}
-
-/// Whether the pack at `path` reads the solid quads as vertices, not their compact records: a
-/// `shaders/` pack, taken to draw terrain. Sunrise's own read the records, `[displacement]`
-/// too (gfx/displace.rs).
-fn pack_reads_vertices(path: &std::path::Path) -> bool {
-    !sunrise_shader_api::package::is_pack(path)
 }
 
 // A native mod can bundle a pack as `native-<mod-id>`; its Mods toggle controls it too.
@@ -235,7 +202,7 @@ pub(super) fn active_pack<'a>(picked: &'a str, mods: &ModList) -> &'a str {
     }
 }
 
-/// A selected pack may read resource-pack material maps, whether native or GLSL.
+/// A selected pack may read resource-pack material maps.
 pub(super) fn picks_material_pack(settings: &sunrise_client::settings::Settings) -> bool {
     let dev = std::env::var("SUNRISE_SHADER_PACK").ok();
     let picked = active_pack(
@@ -246,11 +213,10 @@ pub(super) fn picks_material_pack(settings: &sunrise_client::settings::Settings)
         return false;
     }
     let dir = Game::shader_packs_dir();
-    let path = if dev.is_some() {
-        dir.join(picked)
-    } else {
-        sunrise_client::shader_pack_list::resolve(&dir, picked).1
-    };
+    if sunrise_client::shader_pack_list::unsupported(&dir, picked) {
+        return false;
+    }
+    let path = dir.join(picked);
     path.file_name()
         .is_none_or(|f| !active_pack(&f.to_string_lossy(), &settings.mods).is_empty())
 }
@@ -331,19 +297,23 @@ impl Game<'_> {
             self.all_sections_changed();
         }
         let selected = picked_pack(&self.settings).to_owned();
-        let path = self.native_shaders.resolve_path(
-            &Self::shader_packs_dir(),
-            &selected,
-            dev_pack().is_some(),
-        );
+        let dir = Self::shader_packs_dir();
+        let path = dir.join(&selected);
+        let unsupported = sunrise_client::shader_pack_list::unsupported(&dir, &selected);
+        if unsupported {
+            self.shader_pack_unsupported(&selected);
+        }
         let file = path.file_name().unwrap_or_default().to_string_lossy();
-        let picked = if selected.is_empty() || active_pack(&file, &self.settings.mods).is_empty() {
+        let picked = if selected.is_empty()
+            || unsupported
+            || active_pack(&file, &self.settings.mods).is_empty()
+        {
             String::new()
         } else {
             path.to_string_lossy().into_owned()
         };
         if self.native_shaders.picked != picked {
-            self.native_shaders.select(&picked);
+            self.native_shaders.picked = picked.clone();
             self.set_translucent_layers(Vec::new());
             self.pack_ids = None;
             if let Some(renderer) = &mut self.renderer {
@@ -356,7 +326,7 @@ impl Game<'_> {
         {
             match report {
                 Ok(Some((programs, notes))) => {
-                    remember(&path, fingerprint(&path), Some(Api::V0_1));
+                    remember(&path, fingerprint(&path), true);
                     for note in notes {
                         log::warn!("shader pack {name}: {note}");
                     }
@@ -367,7 +337,7 @@ impl Game<'_> {
                         started.elapsed().as_millis()
                     );
                 }
-                Ok(None) => remember(&path, fingerprint(&path), None),
+                Ok(None) => remember(&path, fingerprint(&path), false),
                 // Stopped because it isn't wanted any more: not the pack's failure.
                 Err(refused) if refused.is_cancelled() => {}
                 Err(refused) => {
@@ -392,12 +362,7 @@ impl Game<'_> {
             Dim::Nether => -1,
             Dim::End => 1,
         };
-        if (dev_pack().is_none() && selected.starts_with("sunrise:"))
-            || sunrise_shader_api::package::is_pack(&path)
-        {
-            // One of Sunrise's own packs (game/modding/native_shaders.rs).
-            self.tick_native_shader_pack(&path);
-        } else if let Some(renderer) = &mut self.renderer
+        if let Some(renderer) = &mut self.renderer
             && renderer.shader_pack_dimension() != Some(dimension)
             && !(super::native_shaders::linear_frame_switch() && refused(&path, fingerprint(&path)))
         {
@@ -511,7 +476,7 @@ impl Game<'_> {
                         renderer.load_shader_pack(dimension, post, table, name.to_owned(), started);
                     }
                     Err(e) => {
-                        remember(&path, fingerprint(&path), None);
+                        remember(&path, fingerprint(&path), false);
                         self.pack_ids = None;
                         log::warn!("shader pack {name}: {e}");
                         // Without a pack this can't fail.
@@ -730,7 +695,7 @@ impl Game<'_> {
     /// says so.
     fn shader_pack_failed(&mut self, name: &str, dimension: i32, error: &str) {
         let path = Self::shader_packs_dir().join(name);
-        remember(&path, fingerprint(&path), None);
+        remember(&path, fingerprint(&path), false);
         log::error!("shader pack {name}: turned off: {error}");
         self.pack_ids = None;
         if let Some(renderer) = &mut self.renderer {
@@ -746,6 +711,24 @@ impl Game<'_> {
             format!("Shader pack {name} could not be loaded and was turned off"),
             0xFF5555,
         ));
+    }
+
+    /// Turns off the pick `name` in the removed WGSL format: no pack runs in its place, and the
+    /// chat says so once. A saved pick falls back to no pack and is saved so; the developer
+    /// override (`SUNRISE_SHADER_PACK`) stays as it is.
+    fn shader_pack_unsupported(&mut self, name: &str) {
+        if dev_pack().is_none() {
+            self.settings.set_shader_pick("");
+            self.settings.save(&Self::options_path());
+        }
+        if self.native_shaders.noted != name {
+            self.native_shaders.noted = name.to_owned();
+            log::warn!("shader pack {name}: no longer supported (the WGSL format)");
+            self.system_message(Text::tr(
+                sunrise_client::shader_pack_list::UNSUPPORTED_NOTE,
+                &[&name],
+            ));
+        }
     }
 
     /// Whether the game's vignette draws: the option, unless the loaded pack turns it off.
@@ -1265,14 +1248,13 @@ mod rendered_item_tests {
 
 #[cfg(test)]
 mod native_pack_tests {
-    use super::{active_pack, pack_draws_flat, pack_reads_vertices, picked_pack_shape};
+    use super::{active_pack, picked_pack_shape};
     use sunrise_client::mod_list::{Installed, ModList, NativePage};
 
     #[test]
     fn unknown_pack_is_optimistic_but_refusal_owner_and_presence_override_it() {
-        use crate::game::native_shaders::{fingerprint, remember};
+        use crate::game::native_shaders::{fingerprint, linear_frame_switch, remember};
         use sunrise_client::settings::Settings;
-        use sunrise_shader_api::{Api, Blend};
         let mut settings = Settings::default();
         settings.sunrise.hdr = sunrise_client_render::graphics::HdrMode::On;
         settings.mods.installed.push(Installed {
@@ -1286,86 +1268,33 @@ mod native_pack_tests {
         let root =
             std::env::temp_dir().join(format!("sunrise-frame-policy-{}", std::process::id()));
         let path = root.join("native-frame_owner");
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(path.join(sunrise_shader_api::MANIFEST),
-            "schema = 1\nid = \"fixture\"\nname = \"Fixture\"\nversion = \"1\"\napi = \"0.2\"\n[[post]]\nfile = \"p.wgsl\"\n").unwrap();
+        std::fs::create_dir_all(path.join("shaders")).unwrap();
         settings.sunrise.shader_pack = path.to_string_lossy().into_owned();
-        let switch = crate::game::native_shaders::linear_frame_switch();
-        // A 0.2 pack with HDR on asks for the layered frame, as no pack does.
+        let switch = linear_frame_switch();
+        // A pack nobody answered for draws; it asks no float frame.
         let shape = picked_pack_shape(&settings);
-        assert_eq!(shape.linear, switch.then_some(Blend::Gamma));
+        assert!(shape.draws_flat && shape.starts_wide);
+        assert!(!shape.hdr_float);
+        remember(&path, fingerprint(&path), true);
+        assert!(!picked_pack_shape(&settings).hdr_float);
+        // Refused, the frame is the one no pack asks for.
+        remember(&path, fingerprint(&path), false);
+        let shape = picked_pack_shape(&settings);
+        assert_eq!(shape.draws_flat, !switch);
         assert_eq!(shape.hdr_float, switch);
-        for api in [Api::V0_1, Api::V0_2] {
-            let manifest = path.join(sunrise_shader_api::MANIFEST);
-            let text = std::fs::read_to_string(&manifest).unwrap();
-            std::fs::write(
-                &manifest,
-                text.replace("api = \"0.2\"", &format!("api = \"{api}\""))
-                    .replace("api = \"0.1\"", &format!("api = \"{api}\"")),
-            )
-            .unwrap();
-            remember(&path, fingerprint(&path), Some(api));
-            let shape = picked_pack_shape(&settings);
-            assert_eq!(shape.linear.is_some(), switch && api == Api::V0_2);
-            assert_eq!(shape.hdr_float, switch && api == Api::V0_2);
-        }
-        // The frame's blend comes with it: the frame a pack that changes it asks for is
-        // another, so the game makes the renderer again (`follow_frame`).
-        let manifest = path.join(sunrise_shader_api::MANIFEST);
-        let text = std::fs::read_to_string(&manifest).unwrap();
-        std::fs::write(&manifest, text.clone() + "[frame]\nblend = \"linear\"\n").unwrap();
-        remember(&path, fingerprint(&path), Some(Api::V0_2));
-        let shape = picked_pack_shape(&settings);
-        assert_eq!(shape.linear, switch.then_some(Blend::Linear));
-        assert_eq!(shape.frame().linear_blend(), switch);
-        std::fs::write(&manifest, text).unwrap();
-        remember(&path, fingerprint(&path), Some(Api::V0_2));
-        assert!(!picked_pack_shape(&settings).frame().linear_blend());
+        remember(&path, fingerprint(&path), true);
+        // Its mod off, it does not run.
         settings.mods.disabled.insert("frame_owner".into());
         let shape = picked_pack_shape(&settings);
-        assert_eq!(shape.linear, None);
+        assert!(!shape.draws_flat && !shape.starts_wide);
         assert_eq!(shape.hdr_float, switch);
         settings.mods.disabled.clear();
-        assert_eq!(picked_pack_shape(&settings).linear.is_some(), switch);
-        remember(&path, fingerprint(&path), None);
-        assert_eq!(picked_pack_shape(&settings).hdr_float, switch);
-        remember(&path, fingerprint(&path), Some(Api::V0_2));
+        assert!(picked_pack_shape(&settings).draws_flat);
+        // Gone, it does not run under the switch.
         std::fs::remove_dir_all(root).unwrap();
         let missing = picked_pack_shape(&settings);
-        assert_eq!(missing.linear, None);
+        assert_eq!(missing.draws_flat, !switch);
         assert_eq!(missing.hdr_float, switch);
-    }
-
-    #[test]
-    fn shaders_packs_and_packs_with_a_shadow_pass_draw_flat() {
-        let root = std::env::temp_dir().join(format!("sunrise-flat-packs-{}", std::process::id()));
-        // A folder without a manifest is a `shaders/` pack; with one, a pack of Sunrise's own.
-        let pack = |name: &str, manifest: Option<&str>| {
-            let dir = root.join(name);
-            std::fs::create_dir_all(&dir).unwrap();
-            if let Some(extra) = manifest {
-                std::fs::write(dir.join("material.wgsl"), "").unwrap();
-                let text = format!(
-                    "schema = 1\nid = \"{name}\"\nname = \"{name}\"\nversion = \"1\"\napi = \"{}\"\n\
-                     [material]\nfile = \"material.wgsl\"\n{extra}",
-                    sunrise_shader_api::API
-                );
-                std::fs::write(dir.join(sunrise_shader_api::MANIFEST), text).unwrap();
-            }
-            dir
-        };
-        assert!(pack_draws_flat(&pack("shaders_pack", None)));
-        assert!(!pack_draws_flat(&pack("unshadowed", Some(""))));
-        assert!(pack_draws_flat(&pack("shadowed", Some("[shadow]\n"))));
-        // Only a `shaders/` pack reads the solid quads' vertices: a material, a shadow pass
-        // and `[displacement]` start in the compact layout.
-        assert!(pack_reads_vertices(&root.join("shaders_pack")));
-        assert!(!pack_reads_vertices(&root.join("shadowed")));
-        assert!(!pack_reads_vertices(&pack(
-            "displaced",
-            Some("[displacement]\n")
-        )));
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -1383,20 +1312,6 @@ mod native_pack_tests {
         assert_eq!(active_pack(owned, &mods), owned);
         mods.disabled.insert("sunrise_better_visuals".into());
         assert_eq!(active_pack(owned, &mods), "");
-        let root =
-            std::env::temp_dir().join(format!("sunrise-bundled-shader-{}", std::process::id()));
-        let pack = root.join(owned);
-        std::fs::create_dir_all(&pack).unwrap();
-        std::fs::write(pack.join(sunrise_shader_api::MANIFEST),
-            "schema = 1\nid = \"bundled\"\nname = \"Bundled\"\nversion = \"1\"\napi = \"0.1\"\n[[post]]\nfile = \"p.wgsl\"\n").unwrap();
-        let (key, path) = sunrise_client::shader_pack_list::resolve(&root, owned);
-        assert_eq!(key, "sunrise:bundled");
-        assert_eq!(path, pack);
-        assert_eq!(
-            active_pack(&path.file_name().unwrap().to_string_lossy(), &mods),
-            ""
-        );
-        std::fs::remove_dir_all(root).unwrap();
         assert_eq!(active_pack("golden_hour", &mods), "golden_hour");
         mods.installed[0].native = None;
         assert_eq!(active_pack(owned, &mods), owned);

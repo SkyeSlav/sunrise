@@ -6,11 +6,11 @@ use super::*;
 pub(super) struct FrameAttempt<K = FrameKey>(Option<K>);
 
 /// The frame the renderer would be made with (`Renderer::requested_frame`), the pick's path,
-/// its outcome.
+/// whether the loader accepted it.
 type FrameKey = (
     Option<sunrise_client::gfx::FrameConfiguration>,
     PathBuf,
-    Option<Option<sunrise_shader_api::Api>>,
+    Option<bool>,
 );
 
 impl<K: PartialEq> FrameAttempt<K> {
@@ -70,19 +70,17 @@ impl Game<'_> {
             return;
         }
         let picked = shader_packs::picked_pack(&self.settings);
-        let path = self.native_shaders.resolve_path(
-            &Self::shader_packs_dir(),
-            picked,
-            shader_packs::dev_pack().is_some(),
-        );
+        let dir = Self::shader_packs_dir();
+        let path = dir.join(picked);
         let available = path.exists()
+            && !sunrise_client::shader_pack_list::unsupported(&dir, picked)
             && path.file_name().is_none_or(|f| {
                 !shader_packs::active_pack(&f.to_string_lossy(), &self.settings.mods).is_empty()
             });
         let outcome = if available {
             native_shaders::outcome(&path)
         } else {
-            Some(None)
+            Some(false)
         };
         // The renderer's offer can change while the game runs (Vulkan's formats follow desktop
         // HDR and the window's output), and the frame with it.
@@ -284,9 +282,6 @@ impl Game<'_> {
             let context = self.worker_context();
             self.streaming.reload_resources(&mut self.world, context);
         }
-        self.native_shaders = native_shaders::NativeShaders::picking(&std::mem::take(
-            &mut self.native_shaders.picked,
-        ));
         self.apply_ui_settings();
     }
 
@@ -305,7 +300,6 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::FrameAttempt;
-    use sunrise_shader_api::Api;
 
     #[test]
     fn failed_frame_attempt_waits_for_a_policy_or_setting_change() {
@@ -317,10 +311,10 @@ mod tests {
             ("8-bit", "p", None),
             // HDR output offered later, with HDR On: the frame is looked at again.
             ("float", "p", None),
-            ("float", "p", Some(Some(Api::V0_2))),
-            ("float", "p", Some(Some(Api::V0_2))),
-            ("float", "p", Some(None)),
-            ("float", "p", Some(None)),
+            ("float", "p", Some(true)),
+            ("float", "p", Some(true)),
+            ("float", "p", Some(false)),
+            ("float", "p", Some(false)),
             ("float", "q", None),
             ("8-bit", "q", None),
         ] {

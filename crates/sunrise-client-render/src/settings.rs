@@ -363,7 +363,7 @@ impl Settings {
                 .map(|read| read.text),
             None => None,
         });
-        let mut sunrise = path
+        let sunrise = path
             .parent()
             .map(|dir| {
                 crate::graphics::Graphics::load_text(
@@ -373,16 +373,6 @@ impl Settings {
             })
             .unwrap_or_default();
         crate::mipmap::set_dither_cutouts(sunrise.dither_cutout_mips);
-        if let Some(dir) = path.parent() {
-            let (key, _) = crate::shader_pack_list::resolve(
-                &crate::logging::shared_dir(dir).join(crate::shader_pack_list::DIR),
-                &sunrise.shader_pack,
-            );
-            if key != sunrise.shader_pack {
-                sunrise.shader_pack = key;
-                sunrise.save(dir);
-            }
-        }
         let controller = path
             .parent()
             .map(crate::gamepad::PadSettings::load)

@@ -1519,7 +1519,7 @@ pub enum Page {
     NativeMod(usize),
     /// A page a crate registered (`sunrise_hooks::pages`): its index in `OptionsUi::pages`.
     Added(usize),
-    /// Sunrise's shader packs, either kind (`shader_pack_list`).
+    /// The shader packs (`shader_pack_list`).
     ShaderPacks,
     /// The picked pack's options: the shader screen (`shader_ui`) at the pack's main screen.
     ShaderOptions,
@@ -1738,9 +1738,6 @@ pub enum Event {
     OpenShaderOptions,
     /// The Shader Options page closed with changes: save them and load the pack again.
     ShaderOptions,
-    /// The options of `shader_packs[.0]`, a Sunrise pack, changed: save them (the pack reloads
-    /// with them).
-    NativePackOptions(usize),
     /// Native mod `.0`'s page opened: the game reads its settings' kept values again.
     NativeSettings(usize),
     /// Config was pressed for native mod `.0`, which has its own config screen
@@ -5351,16 +5348,8 @@ mod tests {
     /// read, and leaving the shader screen applies them.
     #[test]
     fn the_shader_screen_saves_changed_options_before_reading_the_next_packs() {
-        use crate::shader_pack_list::{Entry, Kind};
-        let entry = |file: &str| Entry {
-            file: file.into(),
-            key: file.into(),
-            title: file.into(),
-            kind: Kind::Classic,
-            options: Vec::new(),
-            values: Vec::new(),
-            pages: Vec::new(),
-        };
+        use crate::shader_pack_list::Entry;
+        let entry = |file: &str| Entry { file: file.into() };
         let mut s = Settings {
             shader_packs: vec![entry("A.zip"), entry("B.zip")],
             ..Settings::default()
