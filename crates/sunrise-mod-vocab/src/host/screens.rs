@@ -104,6 +104,22 @@ pub trait ScreensClientHost {
     /// closes a screen (back to the game, or to the title screen with no world).
     fn mod_screen_close(&mut self, mod_id: &str);
     /// Side: client.
+    /// Takes (`grab` true) or gives back (`grab` false) the pointer for mod `mod_id`'s own
+    /// open screen: the cursor is hidden and held, and the screen hears the device's relative
+    /// motion as `screen_pointer_motion`, unscaled, while it stays a screen that draws, takes
+    /// keys (Escape included) and has widgets. Vanilla's own screens never hold a grabbed
+    /// pointer (`MouseHandler.grabMouse` closes the screen), so this is a Sunrise capability
+    /// with no vanilla limit. A mod that wants click-to-capture grabs from its click hook and
+    /// releases with `false`.
+    ///
+    /// The grab ends by itself when the screen closes by any route, when the window loses focus
+    /// (it is not taken back on refocus: grab again), or when this is called with `false`.
+    /// Returns whether the pointer is now in the requested state: `false` when `mod_id`'s
+    /// screen is not the open one (another mod's screen is never grabbed from here), when the
+    /// window is unfocused, or when the system refused the grab. Releasing a screen that holds no
+    /// grab returns `true`. A screen's grab never reaches the camera.
+    fn set_pointer_grab(&mut self, mod_id: &str, grab: bool) -> bool;
+    /// Side: client.
     /// Closes the open screen as its Escape key does: a container screen
     /// closes as the player's container close (`ServerboundContainerClosePacket`
     /// with the menu's id, then the client menu closed), a pause menu closes

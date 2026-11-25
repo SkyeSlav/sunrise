@@ -1,0 +1,16 @@
+ids = [
+    "hook:screen_mouse_moved_pre",
+    "method:Hooks::screen_mouse_moved_pre",
+    "type:ScreenMouseMovedPreEvent",
+    "type:ScreenMouseMovedPreEvent.screen",
+    "type:ScreenMouseMovedPreEvent.delta",
+    "type:ScreenMouseMovedPreEvent.modifiers",
+    "hook:screen_pointer_motion",
+    "method:Hooks::screen_pointer_motion",
+    "type:ScreenPointerMotionEvent",
+    "type:ScreenPointerMotionEvent.screen",
+    "type:ScreenPointerMotionEvent.delta",
+    "method:ClientHost::set_pointer_grab",
+]
+why = "#5617: a mod screen (a VM, a 3D preview, a node editor) needs the pointer's hover motion and, once clicked into, relative motion with the cursor held. screen_mouse_moved_pre is vanilla's Screen.mouseMoved (MouseHandler.handleAccumulatedMovement calls it for every movement, held button or not, before mouseDragged); NeoForge's ScreenEvent has no event for it. ClientHost::set_pointer_grab(mod_id, grab) takes or gives back the pointer for the mod's own open screen; it ends when the screen closes, when the window loses focus, or by the mod's call, and Escape reaches the screen like any key. screen_pointer_motion reports winit's raw DeviceEvent::MouseMotion while the grab holds, unscaled by the sensitivity option. New items only."
+migrate = "Nothing to change."

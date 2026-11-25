@@ -15,6 +15,7 @@ enum Cancel {
     Drag,
     ScreenWheel,
     GameWheel,
+    Move,
 }
 
 #[derive(Debug, PartialEq)]
@@ -32,11 +33,15 @@ enum Seen {
     ScreenWheelChild([f64; 2]),
     ScreenWheelPost([f64; 2]),
     GameWheel([f64; 2], [i32; 2], [bool; 3], [f32; 2], u32),
+    Moved([f32; 2], [f32; 2]),
+    Motion(String, [f64; 2]),
 }
 
 #[derive(Default)]
 struct State {
     cancel: Cancel,
+    /// Whether the moved and motion hooks record: the other tests do not look for them.
+    record_pointer: bool,
     seen: Vec<Seen>,
 }
 
@@ -193,6 +198,33 @@ impl Hooks for Observe {
         _: &mut ScreenMouseDraggedPostEvent<'_>,
     ) {
         self.0.lock().unwrap().seen.push(Seen::DragPost);
+    }
+
+    fn screen_mouse_moved_pre(
+        &self,
+        _: &dyn ClientHost,
+        event: &mut mod_api::ScreenMouseMovedPreEvent<'_>,
+    ) -> Flow {
+        let mut state = self.0.lock().unwrap();
+        if !state.record_pointer {
+            return Flow::Continue;
+        }
+        state
+            .seen
+            .push(Seen::Moved(event.delta, event.screen.mouse));
+        flow(state.cancel == Cancel::Move)
+    }
+
+    fn screen_pointer_motion(
+        &self,
+        _: &dyn ClientHost,
+        event: &mut mod_api::ScreenPointerMotionEvent<'_>,
+    ) {
+        let mut state = self.0.lock().unwrap();
+        if state.record_pointer {
+            let owner = event.screen.mod_screen.unwrap_or("").to_owned();
+            state.seen.push(Seen::Motion(owner, event.delta));
+        }
     }
 
     fn screen_mouse_scrolled_pre(
@@ -659,5 +691,93 @@ fn release_drag_and_wheel_cancellation_preserve_input_bookkeeping() {
                 .iter()
                 .all(|event| !matches!(event, Seen::GameWheel(..)))
         );
+    });
+}
+
+#[test]
+#[ignore = "daily"]
+fn hover_moves_fire_before_drag_and_a_screen_grab_ends_with_the_screen() {
+    if run_fresh_cases(
+        "game::native_hooks::base::screen_widgets_tests::input_routing::hover_moves_fire_before_drag_and_a_screen_grab_ends_with_the_screen",
+        "SUNRISE_SCREEN_POINTER_GRAB_CHILD",
+        &["grab"],
+    ) {
+        return;
+    }
+    with_input_game(|game, id, state| {
+        state.lock().unwrap().record_pointer = true;
+        // No screen: nothing fires.
+        move_mouse(game, id, 20.0, 20.0);
+        assert!(take(state).is_empty());
+        assert!(game.mod_screen_open("input_route"));
+        assert!(!game.set_pointer_grab("someone_else", true) && !game.screen_grab);
+
+        // A hover move, then a held-button move: the moved hook comes first both times.
+        move_mouse(game, id, 300.0, 100.0);
+        assert_eq!(take(state), [Seen::Moved([280.0, 80.0], [300.0, 100.0])]);
+        move_mouse(game, id, 300.0, 100.0);
+        assert!(take(state).is_empty(), "a zero delta fires nothing");
+        send_mouse_button(game, id, MouseButton::Left, true);
+        take(state);
+        move_mouse(game, id, 310.0, 120.0);
+        assert_eq!(
+            take(state),
+            [
+                Seen::Moved([10.0, 20.0], [310.0, 120.0]),
+                Seen::DragPre(0, [10.0, 20.0], [310.0, 120.0]),
+                Seen::DragPost
+            ]
+        );
+        send_mouse_button(game, id, MouseButton::Left, false);
+        take(state);
+
+        // Cancel skips the drag too, and the cursor still moves.
+        state.lock().unwrap().cancel = Cancel::Move;
+        send_mouse_button(game, id, MouseButton::Left, true);
+        take(state);
+        move_mouse(game, id, 312.0, 123.0);
+        assert_eq!(take(state), [Seen::Moved([2.0, 3.0], [312.0, 123.0])]);
+        assert_eq!(game.cursor(), [312.0, 123.0]);
+        send_mouse_button(game, id, MouseButton::Left, false);
+        state.lock().unwrap().cancel = Cancel::None;
+        take(state);
+
+        // The pad's pointer is not the mouse.
+        game.pad.menu.synthetic = true;
+        move_mouse(game, id, 330.0, 130.0);
+        game.pad.menu.synthetic = false;
+        assert!(take(state).is_empty());
+
+        // The grab: raw motion goes to the screen, not the camera or the moved hook.
+        assert!(game.set_pointer_grab("input_route", true));
+        assert!(game.captured && game.mod_screen_grabs_pointer());
+        game.screen_pointer_motion([3.5, -2.0]);
+        game.screen_pointer_motion([0.0, 0.0]);
+        assert_eq!(
+            take(state),
+            [Seen::Motion("input_route".into(), [3.5, -2.0])]
+        );
+        move_mouse(game, id, 340.0, 140.0);
+        assert!(
+            take(state).is_empty(),
+            "the grab's own cursor moves are not hover"
+        );
+        // Focus loss releases it, and refocus does not take it back on a screen.
+        send(game, id, WindowEvent::Focused(false));
+        assert!(!game.captured && !game.screen_grab);
+        send(game, id, WindowEvent::Focused(true));
+        assert!(!game.captured);
+        // The mod's own call, both ways.
+        assert!(game.set_pointer_grab("input_route", true));
+        assert!(game.set_pointer_grab("input_route", false));
+        assert!(!game.captured && !game.screen_grab);
+        game.screen_pointer_motion([1.0, 1.0]);
+        assert!(take(state).is_empty(), "motion is the grab's");
+        // Closing the screen releases it.
+        assert!(game.set_pointer_grab("input_route", true));
+        game.mod_screen_close("input_route");
+        assert_eq!(game.screen, Screen::Playing);
+        assert!(!game.screen_grab);
+        assert!(!game.set_pointer_grab("input_route", true));
     });
 }

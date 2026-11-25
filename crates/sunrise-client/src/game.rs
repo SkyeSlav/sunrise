@@ -3515,6 +3515,10 @@ struct Game<'a> {
     /// wanting it takes it again (`MouseHandler.grabMouse`, whose grab
     /// outlives the window's focus).
     regrab_on_refocus: bool,
+    /// The open mod screen holds the pointer (`ClientHost::set_pointer_grab`): `captured` is
+    /// its grab, and the device's motion goes to `screen_pointer_motion`, not the camera.
+    /// Cleared by any release and when the screen changes.
+    screen_grab: bool,
     /// Controller connection notices.
     controller_notice: sunrise_client::controller_notice::NoticeSlot,
     focused: bool,
@@ -12901,6 +12905,12 @@ impl Game<'_> {
                             self.drag_button
                                 .filter(|b| self.physical_buttons.contains(b))
                         };
+                        if self.screen_mouse_moved(delta) {
+                            return Ok(());
+                        }
+                        if self.screen_state.screen_instance != initial_instance {
+                            return Ok(());
+                        }
                         match self.screen_mouse_dragged(delta) {
                             native_hooks::ScreenMousePre::Canceled => return Ok(()),
                             native_hooks::ScreenMousePre::Passed(post) => mouse_post = Some(post),
@@ -14176,6 +14186,7 @@ impl<'a> Game<'a> {
             captured: false,
             capture_mode: None,
             regrab_on_refocus: false,
+            screen_grab: false,
             controller_notice: Default::default(),
             focused: true,
             unclaimed_window: false,

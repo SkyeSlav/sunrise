@@ -176,7 +176,10 @@ impl Game<'_> {
         }
         // The real pointer takes over from an agent's.
         self.agent_pointer = false;
-        if capture && !self.captured && !cfg!(target_os = "macos") {
+        if !capture {
+            self.screen_grab = false;
+        }
+        if capture && !self.captured && !self.screen_grab && !cfg!(target_os = "macos") {
             // MouseHandler.grabMouse: KeyMapping.setAll unless
             // InputQuirks.RESTORE_KEY_STATE_AFTER_MOUSE_GRAB is off (macOS).
             self.restore_held_keys();
@@ -261,6 +264,34 @@ impl Game<'_> {
         {
             self.set_window_cursor(projection.window.physical_sample(pos), projection);
         }
+    }
+    /// The open mod screen holds the pointer (`ClientHost::set_pointer_grab`) and the
+    /// window has it: the device's motion is the screen's.
+    pub(super) fn mod_screen_grabs_pointer(&self) -> bool {
+        self.screen_grab && self.captured && self.screen == Screen::Mod
+    }
+    /// `ClientHost::set_pointer_grab`: the grab of mod `mod_id`'s own open screen. The
+    /// screen's own `capture(true)` skips vanilla's `KeyMapping.setAll` (the screen, not the
+    /// game, has the keyboard) and is not refused by an earlier `screen_opening` answer,
+    /// which only meant that caller's grab after that change. Released by `capture(false)`,
+    /// which every screen change and focus loss run.
+    pub(in crate::game) fn set_pointer_grab(&mut self, mod_id: &str, grab: bool) -> bool {
+        if self.mod_screen() != Some(mod_id) {
+            return false;
+        }
+        if !grab {
+            if self.screen_grab {
+                self.capture(false);
+            }
+            return true;
+        }
+        self.screen_grab = true;
+        self.screen_state.answered.set(false);
+        self.capture(true);
+        if !self.captured {
+            self.screen_grab = false;
+        }
+        self.captured
     }
     /// The game's pointer grab leaves the system pointer where the person at the computer has
     /// it: a genuinely hidden `--offscreen` run, an agent's window no one has clicked yet, or a

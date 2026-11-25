@@ -1125,6 +1125,25 @@ impl Game<'_> {
     ) {
         self.fire_screen_mouse_button_released_pre(screen, button, modifiers, canceled);
     }
+    /// The pointer moved over the open screen (`Screen.mouseMoved`): before the drag hook
+    /// of the same move. Cancel keeps the new cursor position and skips the rest of the move.
+    pub(in crate::game) fn native_screen_mouse_moved_pre(
+        &self,
+        screen: &ScreenView<'_>,
+        delta: [f32; 2],
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        self.fire_screen_mouse_moved_pre(screen, delta, modifiers, canceled);
+    }
+    /// Raw device motion while the open mod screen holds the pointer grab.
+    pub(in crate::game) fn native_screen_pointer_motion(
+        &self,
+        screen: &ScreenView<'_>,
+        delta: [f64; 2],
+    ) {
+        self.fire_screen_pointer_motion(screen, delta);
+    }
     /// Before a real held-button movement reaches screen drag handlers.
     /// `screen.mouse` is the current GUI position; `delta` is its GUI-space movement.
     /// Cancel keeps the new cursor position but skips all screen drag handlers.

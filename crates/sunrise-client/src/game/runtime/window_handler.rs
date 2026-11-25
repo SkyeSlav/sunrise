@@ -558,10 +558,11 @@ impl ApplicationHandler for Game<'_> {
             && self.captured
             && self.focused
             && !self.options.offscreen
-            && self.screen == Screen::Playing
+            && (self.screen == Screen::Playing || self.mod_screen_grabs_pointer())
             && let DeviceEvent::MouseMotion { delta: (x, y) } = event
         {
-            if self.pad_radial_captures() {
+            let screen_grab = self.mod_screen_grabs_pointer();
+            if !screen_grab && self.pad_radial_captures() {
                 return;
             }
             if x != 0.0 || y != 0.0 {
@@ -572,7 +573,11 @@ impl ApplicationHandler for Game<'_> {
                 input_trace::InputOrigin::User,
                 input_trace::TraceKind::Motion { x, y },
             );
-            self.mouse.on_move(0.0, 0.0, x, y, true, true);
+            if screen_grab {
+                self.screen_pointer_motion([x, y]);
+            } else {
+                self.mouse.on_move(0.0, 0.0, x, y, true, true);
+            }
             self.last_input = Instant::now();
         }
     }

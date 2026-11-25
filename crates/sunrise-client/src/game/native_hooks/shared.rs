@@ -575,6 +575,10 @@ impl Game<'_> {
     /// What `set_screen` does once the hooks have answered: `screen` opens,
     /// and the mod `owner`'s own screen when one answered `ModScreen`.
     fn apply_screen(&mut self, screen: Screen, owner: Option<&str>) {
+        // A screen's pointer grab ends with the screen, by any route.
+        if self.screen_grab {
+            self.capture(false);
+        }
         // `before` may already have closed it. Overlays that keep Inventory
         // underneath don't pass through this replacement path.
         if screen != Screen::Inventory {
@@ -1568,6 +1572,41 @@ impl Game<'_> {
         // Any release ends the drag, as vanilla's `MouseHandler.onButton` clears `activeButton`:
         // left down, right down, left up sends no drag while right is still held.
         self.drag_button = pressed.then_some(button);
+    }
+    /// `Screen.mouseMoved`, asked before the move's drag: whether a mod cancelled the move.
+    /// Nothing is built with no listener. A screen holding the pointer grab hears
+    /// `screen_pointer_motion` instead (the grab's own cursor warps are not moves).
+    pub(super) fn screen_mouse_moved(&self, delta: [f32; 2]) -> bool {
+        if self.pad_synthetic_input()
+            || delta == [0.0; 2]
+            || self.screen_grab
+            || !mod_api::__private::listened(mod_api::HookId::ScreenMouseMovedPre)
+        {
+            return false;
+        }
+        let Some(receiver) = self.observed_input_screen() else {
+            return false;
+        };
+        let mut canceled = false;
+        self.native_screen_mouse_moved_pre(
+            &receiver.view(),
+            delta,
+            super::glfw_modifiers(self.modifiers),
+            &mut canceled,
+        );
+        canceled
+    }
+    /// The grabbing mod screen's raw pointer motion (`screen_pointer_motion`), unscaled.
+    pub(in crate::game) fn screen_pointer_motion(&self, delta: [f64; 2]) {
+        if delta == [0.0; 2]
+            || !self.mod_screen_grabs_pointer()
+            || !mod_api::__private::listened(mod_api::HookId::ScreenPointerMotion)
+        {
+            return;
+        }
+        if let Some(receiver) = self.observed_input_screen() {
+            self.native_screen_pointer_motion(&receiver.view(), delta);
+        }
     }
     pub(super) fn screen_mouse_dragged(&self, delta: [f32; 2]) -> ScreenMousePre {
         if self.pad_synthetic_input() || delta == [0.0; 2] {

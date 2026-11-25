@@ -649,3 +649,13 @@ fn render_gui_post(&self, _: &dyn ClientHost, event: &mut RenderGuiPostEvent<'_>
 For a fallible, transactional group of GUI primitives [on a canvas](gui-paint.md#drawing-directly-with-a-canvas),
 pass `Some(rect)` to `canvas.scope`. That scissor uses the child scope's pose at entry; later
 pose changes do not move it.
+
+## Hover and pointer grab
+
+A mod screen hears every pointer move through `screen_mouse_moved_pre` (vanilla's
+`Screen.mouseMoved`; it fires before `screen_mouse_dragged_pre` when a button is held). For a
+screen that wants relative motion with the cursor held (a virtual machine's display, a 3D
+preview), call `host.set_pointer_grab("my_mod", true)` from your click hook and read
+`screen_pointer_motion`; release with `set_pointer_grab("my_mod", false)`. The grab also ends
+when the screen closes or the window loses focus, and Escape reaches your screen like any key, so
+handle it yourself. The rustdoc of the hooks and `set_pointer_grab` has the contract.
