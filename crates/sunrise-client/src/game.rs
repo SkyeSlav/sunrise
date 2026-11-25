@@ -9916,10 +9916,15 @@ impl Game<'_> {
             registry,
             pos,
         };
+        let extra = self
+            .world_tables
+            .as_ref()
+            .and_then(|tables| tables.data_maps.extra_transformers.get(&id))
+            .map(Vec::as_slice);
         let vanilla = self
             .res
             .transformers()
-            .apply(self.items(), registry, &id, face_name, &around)
+            .apply_with_extra(extra, self.items(), registry, &id, face_name, &around)
             .and_then(|(_, t, state)| Some((registry.resolve(&state).ok()?, t)));
         let result = |new, t: &sunrise_client::block_transform::Transform| {
             (

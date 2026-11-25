@@ -227,6 +227,7 @@ pub(crate) struct DataMaps {
     pub(super) biome_keys: std::sync::Arc<mod_api::__private::BiomeKeys>,
     maps: BTreeMap<String, HashMap<String, Vec<(String, Tag)>>>,
     pub(super) mob_maps: std::sync::Arc<sunrise_client::neoforge_mob_maps::NeoForgeMobMaps>,
+    pub(super) extra_transformers: HashMap<String, Vec<sunrise_client::block_transform::Transform>>,
 }
 
 /// `minecraft:` for an id written without a namespace.
@@ -433,6 +434,28 @@ impl DataMaps {
             }
         }
         self.mob_maps = builtin.snapshot;
+        self
+    }
+
+    pub(crate) fn with_transform_maps(
+        mut self,
+        loaded: super::neoforge_block_maps::LoadedTransformMaps,
+    ) -> Self {
+        for (registry, id, values) in loaded.values {
+            if self
+                .maps
+                .entry(registry.to_owned())
+                .or_default()
+                .insert(id.to_owned(), values)
+                .is_some()
+            {
+                log::warn!(
+                    "Sunrise: builtin data map {} is reserved: engine definition kept",
+                    id
+                );
+            }
+        }
+        self.extra_transformers = loaded.extra_transformers;
         self
     }
 

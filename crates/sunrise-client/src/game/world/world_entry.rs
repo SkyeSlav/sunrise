@@ -751,12 +751,18 @@ impl Game<'_> {
                     .is_ok(),
             },
         )?;
+        let transform_maps = neoforge_block_maps::load_transform_maps(
+            &overlay,
+            &registries,
+            self.pack.assets.registry,
+        );
         let data_maps = native_data_maps::DataMaps::load(
             mod_api::__private::installed_data_maps(),
             &overlay,
             &registries,
         )
         .with_builtins(builtin)
+        .with_transform_maps(transform_maps)
         .with_biome_keys(mod_api::__private::BiomeKeys::new(
             next_biome_keys_session(),
             biomes.table.registered_keys().iter().cloned(),

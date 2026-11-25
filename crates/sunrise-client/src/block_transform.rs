@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::{collections::HashMap, fs, path::Path};
 use sunrise_world::{chunk::BlockState, registry::BlockRegistry};
 
+#[derive(Clone)]
 enum Predicate {
     Blocks(Vec<String>),
     Tag { tag: String, offset: [i32; 3] },
@@ -15,6 +16,7 @@ enum Predicate {
     AnyOf(Vec<Predicate>),
 }
 
+#[derive(Clone)]
 enum Provider {
     Rules(Vec<(Predicate, Provider)>),
     State(BlockState),
@@ -23,6 +25,7 @@ enum Provider {
 }
 
 /// One `BlockTransformData`.
+#[derive(Clone)]
 pub struct Transform {
     provider: Provider,
     pub disallowed_faces: Vec<String>,
@@ -112,8 +115,79 @@ fn provider(value: &Value, registry: &BlockRegistry) -> Option<Provider> {
             &value["source"],
             registry,
         )?))),
+        Some("minecraft:simple_state_provider") => {
+            state_of(&value["state"], registry).map(Provider::State)
+        }
         _ => state_of(value, registry).map(Provider::State),
     }
+}
+
+/// Decode one `BlockTransformer.BlockTransformData` JSON object, validating field types when
+/// present and filling vanilla's defaults when omitted (used by `neoforge:transformables`
+/// and `neoforge:block_transform_appenders`).
+pub fn parse_transform(
+    value: &Value,
+    registry: &BlockRegistry,
+) -> std::result::Result<Transform, String> {
+    let Some(object) = value.as_object() else {
+        return Err("block transform data must be an object".into());
+    };
+    let Some(raw_provider) = object.get("block_state_provider") else {
+        return Err("block transform data missing block_state_provider".into());
+    };
+    let Some(provider) = provider(raw_provider, registry) else {
+        return Err("invalid block_state_provider in block transform data".into());
+    };
+    let string_field = |key: &str, default: &str| -> std::result::Result<String, String> {
+        match object.get(key) {
+            None => Ok(default.to_owned()),
+            Some(Value::String(text)) => Ok(text.clone()),
+            Some(_) => Err(format!("expected string in {key}")),
+        }
+    };
+    let bool_field = |key: &str, default: bool| -> std::result::Result<bool, String> {
+        match object.get(key) {
+            None => Ok(default),
+            Some(Value::Bool(flag)) => Ok(*flag),
+            Some(_) => Err(format!("expected boolean in {key}")),
+        }
+    };
+    let disallowed_faces = match object.get("disallowed_faces") {
+        None => Vec::new(),
+        Some(Value::Array(faces)) => faces
+            .iter()
+            .map(|face| {
+                face.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "expected face string in disallowed_faces".to_owned())
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?,
+        Some(_) => return Err("expected array in disallowed_faces".into()),
+    };
+    let loot = match object.get("loot") {
+        None => None,
+        Some(Value::String(text)) => Some(text.clone()),
+        Some(_) => return Err("expected string in loot".into()),
+    };
+    let damage = match object.get("item_damage_per_use") {
+        None => 0,
+        Some(raw) => raw
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| "expected non-negative integer in item_damage_per_use".to_owned())?,
+    };
+    Ok(Transform {
+        provider,
+        disallowed_faces,
+        sound: string_field("sound", "minecraft:empty")?,
+        particle: string_field("particle", "none")?,
+        loot,
+        drop_strategy: string_field("drop_strategy", "from_middle")?,
+        update_from_neighbors: bool_field("update_from_neighbors", true)?,
+        transform_type: string_field("transform_type", "single_block")?,
+        consume_on_use: bool_field("consume_on_use", true)?,
+        damage,
+    })
 }
 
 /// `BlockState.withPropertiesOf`: the properties both blocks have.
@@ -179,6 +253,13 @@ impl Provider {
 }
 
 impl Transformers {
+    /// An empty transformer table (used in unit tests).
+    pub fn empty() -> Self {
+        Self {
+            transformers: HashMap::new(),
+        }
+    }
+
     /// Reads `data/minecraft/block_transformer/*.json`.
     pub fn load(root: &Path, registry: &BlockRegistry) -> Result<Self> {
         let mut transformers = HashMap::new();
@@ -231,9 +312,28 @@ impl Transformers {
         face: &str,
         around: &dyn Around,
     ) -> Option<(usize, &'a Transform, BlockState)> {
-        self.transformers
-            .get(id)?
-            .iter()
+        self.apply_with_extra(None, items, registry, id, face, around)
+    }
+
+    /// `DataMapHooks.appendDatamapTransformers`: evaluate `id`'s base transforms
+    /// followed by any data-map appended transforms (`neoforge:block_transform_appenders`
+    /// then `neoforge:transformables`).
+    pub fn apply_with_extra<'a>(
+        &'a self,
+        extra: Option<&'a [Transform]>,
+        items: &Items,
+        registry: &BlockRegistry,
+        id: &str,
+        face: &str,
+        around: &dyn Around,
+    ) -> Option<(usize, &'a Transform, BlockState)> {
+        let base = self.transformers.get(id).map(Vec::as_slice).unwrap_or(&[]);
+        let extra = extra.unwrap_or(&[]);
+        if base.is_empty() && extra.is_empty() {
+            return None;
+        }
+        base.iter()
+            .chain(extra.iter())
             .enumerate()
             .filter(|(_, t)| !t.disallowed_faces.iter().any(|f| f == face))
             .find_map(|(i, t)| Some((i, t, t.provider.state(items, registry, around)?)))
