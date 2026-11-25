@@ -679,3 +679,30 @@ pub trait RenderLevelStageContext {
         }
     }
 }
+/// Per-view render state writer passed to
+/// [`Hooks::extract_level_render_state`](crate::Hooks::extract_level_render_state).
+///
+/// Store and read typed values using `set_render_data` and `get_render_data` on
+/// `dyn LevelRenderStateWrite` with a [`RenderDataKey`] registered during
+/// [`Hooks::register`](crate::Hooks::register). Values live for the current view only and are
+/// cleared automatically before the next view's extraction and dropped when the view finishes.
+pub trait LevelRenderStateWrite {
+    /// Store a typed value for the current view under `id`.
+    // hidden: object-safe backing method for `dyn LevelRenderStateWrite::set_render_data`.
+    #[doc(hidden)]
+    fn set_render_data_raw(
+        &mut self,
+        id: &'static str,
+        value: Box<dyn std::any::Any + Send + Sync>,
+    ) {
+        let _ = (id, value);
+        unimplemented!("LevelRenderStateWrite::set_render_data_raw")
+    }
+    /// Borrow a typed value stored earlier in the current view's extraction under `id`.
+    // hidden: object-safe backing method for `dyn LevelRenderStateWrite::get_render_data`.
+    #[doc(hidden)]
+    fn get_render_data_raw(&self, id: &'static str) -> Option<&(dyn std::any::Any + Send + Sync)> {
+        let _ = id;
+        None
+    }
+}

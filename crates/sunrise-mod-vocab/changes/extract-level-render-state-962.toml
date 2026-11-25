@@ -1,0 +1,20 @@
+ids = [
+    "hook:extract_level_render_state",
+    "method:Hooks::extract_level_render_state",
+    "type:ExtractLevelRenderStateEvent",
+    "type:RenderDataKey",
+    "handle:RenderDataKey::new",
+    "handle:RenderDataKey::id",
+    "trait:LevelRenderStateWrite",
+    "handle:LevelRenderStateWrite::set_render_data",
+    "handle:LevelRenderStateWrite::get_render_data",
+    "handle:WorldRenderView::render_data",
+    "trait:RenderDataRegistrar",
+    "handle:Registrar::register_render_data_key",
+]
+why = """Add Hooks::extract_level_render_state (NeoForge 26.3 ExtractLevelRenderStateEvent, #962) with an in-process typed per-view render data store.
+
+- `RenderDataKey<T: Send + Sync + 'static>` names a per-view render data slot and registers at startup via `Registrar::register_render_data_key` through the shared `(domain, namespaced id) -> Rust type` identity table, refusing cross-type collisions naming both mods and both types.
+- `Hooks::extract_level_render_state` fires once per world view before `submit_custom_geometry`, `prepare_render_buffers`, and `render_level_stage`. Listeners store values with `event.state.set_render_data(&KEY, value)` and read earlier listeners' writes with `event.state.get_render_data(&KEY)`.
+- `WorldRenderView::render_data(&KEY)` borrows extracted values during world render callbacks with `Any`/`TypeId` checking (`None` on mismatch). The per-view store is cleared before each view's extraction and dropped when the view finishes."""
+migrate = "Additive only."

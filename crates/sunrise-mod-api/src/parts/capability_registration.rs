@@ -3,11 +3,25 @@ use super::*;
 use std::{any::TypeId, collections::hash_map::Entry};
 use sunrise_mod_runtime::registry_keys::Names;
 
+fn capability_identity_domain(by: ProvidedBy) -> TypeIdentityDomain {
+    match by {
+        ProvidedBy::Block | ProvidedBy::BlockEntity => TypeIdentityDomain::BlockCapability,
+        ProvidedBy::Item => TypeIdentityDomain::ItemCapability,
+        ProvidedBy::Entity => TypeIdentityDomain::EntityCapability,
+    }
+}
+
 impl PartRegistrar {
-    pub(crate) fn capability_parts() -> Parts {
+    pub(crate) fn capability_parts(type_identities: &mut TypeIdentityTable) -> Parts {
         let mut parts = Parts::default();
         for (by, name, binding) in mod_vocab::__private::parts_installation::builtin_capabilities()
         {
+            type_identities.seed_builtin(
+                capability_identity_domain(by),
+                name,
+                binding.0,
+                binding.1,
+            );
             let metadata = match by {
                 ProvidedBy::Block | ProvidedBy::BlockEntity => {
                     parts.block_capability_order.push(name);
@@ -55,12 +69,37 @@ impl PartRegistrar {
         name: &'static str,
         binding: (TypeId, &'static str),
     ) -> Option<&mut CapabilityMetadata> {
-        if crate::Identifier::parse_namespaced(name).is_none() {
-            self.refused.push(format!(
-                "mod {} used capability {name:?}, which is not a namespaced name",
-                self.mod_id
-            ));
-            return None;
+        let (binding_type, handler) = binding;
+        match self.type_identities.register(
+            capability_identity_domain(by),
+            name,
+            binding_type,
+            handler,
+            self.mod_id,
+        ) {
+            Ok(_) => {}
+            Err(TypeIdentityError::InvalidName) => {
+                self.refused.push(format!(
+                    "mod {} used capability {name:?}, which is not a namespaced name",
+                    self.mod_id
+                ));
+                return None;
+            }
+            Err(TypeIdentityError::Conflict {
+                existing_type_name: existing_handler,
+                existing_owner,
+            }) => {
+                let conflict = if existing_handler == handler {
+                    "incompatible handler or context types"
+                } else {
+                    "two handler types"
+                };
+                self.refused.push(format!(
+                    "capability {name} is answered with {conflict}, {existing_handler} by {existing_owner} and {handler} by {}",
+                    self.mod_id
+                ));
+                return None;
+            }
         }
         let (metadata, block_order) = match by {
             ProvidedBy::Block | ProvidedBy::BlockEntity => (
@@ -81,24 +120,7 @@ impl PartRegistrar {
                     proxyable: None,
                 }))
             }
-            Entry::Occupied(entry) => {
-                let known = entry.into_mut();
-                let (binding_type, handler) = binding;
-                let (existing_type, existing_handler) = known.binding;
-                if existing_type == binding_type {
-                    return Some(known);
-                }
-                let conflict = if existing_handler == handler {
-                    "incompatible handler or context types"
-                } else {
-                    "two handler types"
-                };
-                self.refused.push(format!(
-                    "capability {name} is answered with {conflict}, {existing_handler} by {} and {handler} by {}",
-                    known.owner, self.mod_id
-                ));
-                None
-            }
+            Entry::Occupied(entry) => Some(entry.into_mut()),
         }
     }
 

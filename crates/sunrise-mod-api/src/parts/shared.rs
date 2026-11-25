@@ -110,6 +110,7 @@ pub struct PartRegistrar {
     /// Parts registered so far, by every mod: the next part's `order`.
     pub(crate) registered: usize,
     pub(crate) parts: Parts,
+    pub(crate) type_identities: TypeIdentityTable,
     pub(crate) tags: TagParts,
     pub(crate) block_entity_types: Vec<(&'static str, BlockEntityTypeDecl)>,
     pub(crate) block_entity_ticker_selectors:
@@ -151,6 +152,8 @@ pub struct PartRegistrar {
 impl PartRegistrar {
     pub(crate) fn new(mod_id: &'static str) -> Self {
         let _ = crate::__private::initialize();
+        let mut type_identities = TypeIdentityTable::default();
+        let parts = Self::capability_parts(&mut type_identities);
         Self {
             menu_screen_factories: HashMap::new(),
             menu_recipe_books: HashMap::new(),
@@ -173,7 +176,8 @@ impl PartRegistrar {
             mod_id,
             mod_index: 0,
             registered: 0,
-            parts: Self::capability_parts(),
+            parts,
+            type_identities,
             tags: TagParts::default(),
             block_entity_types: Vec::new(),
             block_entity_ticker_selectors: Vec::new(),

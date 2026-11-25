@@ -329,6 +329,7 @@ pub struct WorldRenderView<'a> {
     pub improved_transparency: bool,
     /// Visible chunk sections in the current view (NeoForge 26.3 `IRenderableSection` list).
     pub sections: &'a [RenderableSection],
+    render_data: Option<&'a crate::LevelRenderState>,
 }
 impl<'a> WorldRenderView<'a> {
     /// Borrow the frame camera and visible sections for one world view.
@@ -345,7 +346,27 @@ impl<'a> WorldRenderView<'a> {
             game_time,
             improved_transparency,
             sections,
+            render_data: None,
         }
+    }
+
+    /// Borrow a typed value extracted for this view during
+    /// [`Hooks::extract_level_render_state`](crate::Hooks::extract_level_render_state).
+    ///
+    /// Returns `None` if no value was stored under `key` for this view, or if the stored value's
+    /// runtime [`TypeId`](std::any::TypeId) does not match `T`.
+    pub fn render_data<T: Send + Sync + 'static>(
+        &self,
+        key: &crate::RenderDataKey<T>,
+    ) -> Option<&'a T> {
+        self.render_data?.get(key)
+    }
+
+    // hidden: attaches the engine's per-view render data store to this view.
+    #[doc(hidden)]
+    pub fn __with_render_data(mut self, render_data: &'a crate::LevelRenderState) -> Self {
+        self.render_data = Some(render_data);
+        self
     }
 
     /// Camera position in world-space blocks.

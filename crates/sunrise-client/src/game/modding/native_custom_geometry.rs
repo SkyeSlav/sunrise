@@ -19,6 +19,7 @@ pub(super) struct GameWorldStageDriver<'a, 'g> {
     frame_camera: &'a mod_api::Camera,
     alpha: f64,
     draw: &'a mut WorldGeometry,
+    render_state: mod_api::LevelRenderState,
 }
 
 impl<'a, 'g> GameWorldStageDriver<'a, 'g> {
@@ -33,6 +34,7 @@ impl<'a, 'g> GameWorldStageDriver<'a, 'g> {
             frame_camera,
             alpha,
             draw,
+            render_state: mod_api::LevelRenderState::new(),
         }
     }
 
@@ -42,13 +44,16 @@ impl<'a, 'g> GameWorldStageDriver<'a, 'g> {
         game_time: i64,
         sections: &'v [mod_api::RenderableSection],
         oit_on: bool,
+        render_state: &'v mod_api::LevelRenderState,
     ) -> mod_api::WorldRenderView<'v> {
         mod_api::WorldRenderView::new(camera, alpha as f32, game_time, oit_on, sections)
+            .__with_render_data(render_state)
     }
 }
 
 impl Drop for GameWorldStageDriver<'_, '_> {
     fn drop(&mut self) {
+        self.render_state.clear();
         self.game.discard_submitted_groups(self.draw);
     }
 }
@@ -59,12 +64,25 @@ impl sunrise_client::gfx::world_primitives::FrameHooks for GameWorldStageDriver<
     }
 
     fn on_custom_geometry(&mut self, sections: &[mod_api::RenderableSection], oit_on: bool) {
+        self.render_state.clear();
+        {
+            let extract_view = mod_api::WorldRenderView::new(
+                self.frame_camera,
+                self.alpha as f32,
+                self.game.world.game_time,
+                oit_on,
+                sections,
+            );
+            self.game
+                .native_extract_level_render_state(&extract_view, &mut self.render_state);
+        }
         let view = Self::view(
             self.frame_camera,
             self.alpha,
             self.game.world.game_time,
             sections,
             oit_on,
+            &self.render_state,
         );
         self.draw.begin_custom_geometry();
         self.game.native_submit_custom_geometry(&view, self.draw);
@@ -78,6 +96,7 @@ impl sunrise_client::gfx::world_primitives::FrameHooks for GameWorldStageDriver<
             self.game.world.game_time,
             sections,
             oit_on,
+            &self.render_state,
         );
         let mut surface = self.draw.stage_surface(RenderLevelStage::AfterSky);
         self.game
@@ -96,6 +115,7 @@ impl sunrise_client::gfx::world_primitives::FrameHooks for GameWorldStageDriver<
             self.game.world.game_time,
             sections,
             oit_on,
+            &self.render_state,
         );
         self.game.native_prepare_render_buffers(&view, self.draw);
         self.draw.finalize();
@@ -132,6 +152,7 @@ impl sunrise_client::gfx::world_primitives::FrameHooks for GameWorldStageDriver<
             self.game.world.game_time,
             sections,
             oit_on,
+            &self.render_state,
         );
         let mut surface = self.draw.stage_surface(stage);
         self.game
@@ -150,6 +171,7 @@ impl sunrise_client::gfx::world_primitives::FrameHooks for GameWorldStageDriver<
             self.game.world.game_time,
             sections,
             oit_on,
+            &self.render_state,
         );
         let mut surface = self.draw.stage_surface(RenderLevelStage::AfterLevel);
         self.game
@@ -224,6 +246,7 @@ impl Game<'_> {
     /// Whether any mod subscribes to world rendering hooks or active debug renderers.
     pub(super) fn has_world_render_hooks(&self) -> bool {
         !self.debug_renderers.is_empty()
+            || mod_api::__private::listened(mod_api::HookId::ExtractLevelRenderState)
             || mod_api::__private::listened(mod_api::HookId::SubmitCustomGeometry)
             || mod_api::__private::listened(mod_api::HookId::PrepareRenderBuffers)
             || mod_api::__private::listened(mod_api::HookId::RenderLevelStage)

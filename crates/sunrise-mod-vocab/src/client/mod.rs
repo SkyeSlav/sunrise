@@ -65,6 +65,7 @@ pub mod player_chat;
 pub(crate) mod player_skin;
 pub(crate) mod posed_parts;
 pub(crate) mod recipe_page;
+pub(crate) mod render_data;
 pub(crate) mod render_pipeline;
 pub(crate) mod scene;
 pub(crate) mod screen_slot_refusal;

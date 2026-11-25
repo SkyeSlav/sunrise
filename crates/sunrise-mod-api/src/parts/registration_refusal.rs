@@ -14,6 +14,7 @@ impl DiagnosticsRegistrar for PartRegistrar {
 impl PartRegistrar {
     pub(crate) fn registration_checkpoint(&self) -> impl FnOnce(&mut Self) + use<> {
         let parts = self.parts.clone();
+        let type_identities = self.type_identities.clone();
         let attachment_types = self.attachment_types.clone();
         let tags = self.tags.clone();
         let keys = self.registry_keys.borrow().clone();
@@ -33,6 +34,7 @@ impl PartRegistrar {
                     let owner = registrar.mod_id;
                     $(let $field = registrar.$field.split_off($field);)*
                     let rejected_parts = std::mem::replace(&mut registrar.parts, parts);
+                    registrar.type_identities = type_identities;
                     let rejected_tags = std::mem::replace(&mut registrar.tags, tags);
                     let rejected_transforms = std::mem::replace(
                         &mut registrar.block_entity_transforms,

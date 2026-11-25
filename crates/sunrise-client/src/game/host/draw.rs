@@ -682,6 +682,31 @@ impl RenderLevelStageContext for GameRenderLevelStageContext<'_, '_> {
     }
 }
 
+/// Per-view render state writer lent to [`Hooks::extract_level_render_state`].
+pub(crate) struct GameLevelRenderStateWrite<'a> {
+    state: &'a mut mod_api::LevelRenderState,
+}
+
+impl<'a> GameLevelRenderStateWrite<'a> {
+    pub(crate) fn new(_: &Game<'_>, state: &'a mut mod_api::LevelRenderState) -> Self {
+        Self { state }
+    }
+}
+
+impl LevelRenderStateWrite for GameLevelRenderStateWrite<'_> {
+    fn set_render_data_raw(
+        &mut self,
+        id: &'static str,
+        value: Box<dyn std::any::Any + Send + Sync>,
+    ) {
+        self.state.set_raw(id, value);
+    }
+
+    fn get_render_data_raw(&self, id: &'static str) -> Option<&(dyn std::any::Any + Send + Sync)> {
+        self.state.get_raw(id)
+    }
+}
+
 #[cfg(test)]
 pub(in crate::game) fn canvas_test_font() -> crate::font::Font {
     use crate::{
