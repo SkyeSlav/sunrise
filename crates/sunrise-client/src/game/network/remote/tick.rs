@@ -3,6 +3,9 @@ use super::*;
 impl Game<'_> {
     /// One client tick while connected (Minecraft.tick with a ClientLevel).
     pub(in crate::game) fn tick_remote(&mut self) -> Result<()> {
+        // The particle hook follows the enabled mods before anything this tick can add a
+        // particle: the level's packets and ambience, frozen ticks and the first tick included.
+        self.sync_render_hooks();
         self.tick_remote_level()?;
         // The rockets boosting this player tick after it, also while it waits
         // for chunks.

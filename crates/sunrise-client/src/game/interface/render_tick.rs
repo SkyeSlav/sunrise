@@ -1120,7 +1120,6 @@ impl Game<'_> {
     /// `ParticleEngine.tick` (and the pickups and sounds it raises): in `Minecraft.tick` after
     /// `Level.tickBlockEntities`, so a particle a block entity just added ages with the rest.
     pub(in crate::game) fn tick_particle_engine(&mut self) {
-        self.sync_render_hooks();
         let mut laps = sunrise_client::spans::laps();
         let world = &self.world;
         let facts = self.res.facts();
