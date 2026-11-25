@@ -79,6 +79,17 @@ open a nested scope, including exchange, restore changes at every level of neste
 If a handler answers more than requested, the move is undone and the game warns once, naming the
 mod.
 
+## Which block slot a place is
+
+A side's indices are not a block's slots: a furnace's sides reach slot 1 as their index 0, its
+bottom reaches slots 2 then 1, and a double chest's two halves each reach all 54 slots. A
+`StorageSlot { level, pos, slot }` names slot `slot` of the container owned by the block entity at
+`pos`, whichever side or half reached it, so two equal values are one stack. Ask for it with
+`ItemPlace::backing(host)`, or `handler.backing(host, index)` on an `ITEMS` handler. A mod's own
+handler that fronts a container overrides `ResourceHandler::backing`; the default is `None`, and
+so is a composter's, which has no backing container. `MenuSlotBacking::BlockEntity` carries the
+same `(level, pos, slot)`.
+
 ## Exchanging one item
 
 Rewrite one item with `place.exchange(host, tx, &changed, 1)`. For example, exchanging one empty

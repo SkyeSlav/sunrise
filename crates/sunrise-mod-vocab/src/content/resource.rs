@@ -3,7 +3,7 @@
 //! only inside a transaction.
 use crate::{
     Backend, BackendRef, Capability, Host, HostTransaction, ItemStack, ItemStackView, ServerHost,
-    Tag, TransactionContext, TransactionError, backend_of,
+    StorageSlot, Tag, TransactionContext, TransactionError, backend_of,
 };
 use std::{fmt, ops::Range};
 use sunrise_core::nbt::JavaString;
@@ -617,6 +617,17 @@ pub trait ResourceHandler<R> {
     /// a handler with separate acceptance rules overrides this and enforces them in `insert_at`.
     fn is_valid(&self, host: &mut dyn ServerHost, index: usize, resource: &R) -> bool {
         self.capacity(host, index, Some(resource)) > 0
+    }
+    /// The block container slot index `index` is backed by, if this handler addresses one: two
+    /// indices of one handler, or of handlers reached from different positions or sides, that
+    /// report an equal [`StorageSlot`] hold the same stack (a double chest's halves, a
+    /// multiblock's blocks and a furnace's sides each report the slot they share). The game's own
+    /// block `ITEMS` handler reports it for each slot its side reaches; a mod's handler that
+    /// fronts a container reports the container's own position and slot. Default `None`: a
+    /// handler not backed by a block container slot, or one that does not say, is never given
+    /// an identity made up from the position it was asked at.
+    fn backing(&self, _host: &mut dyn ServerHost, _index: usize) -> Option<StorageSlot> {
+        None
     }
     /// Puts up to `amount` of `resource` into index `index`: how much went in.
     /// A mismatched `tx` returns `Err(TransactionError::InvalidContext)` without consulting the

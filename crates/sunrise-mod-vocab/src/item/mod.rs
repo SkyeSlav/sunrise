@@ -44,6 +44,7 @@ pub(crate) mod recipe_rule;
 #[doc(hidden)]
 pub mod stations;
 pub(crate) mod storage;
+pub(crate) mod storage_slot;
 pub(crate) mod tooltip_appender;
 pub(crate) mod tooltip_element;
 pub(crate) mod transaction;
