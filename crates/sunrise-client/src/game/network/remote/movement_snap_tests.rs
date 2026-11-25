@@ -391,7 +391,27 @@ fn entity_interpolate_to_steps_observed_boat_and_refuses_simulated_bodies() {
         let mut player = PlayerMotion::new(game.motion, Vec3::new(1.0, 64.0, 1.0)).unwrap();
         player.entity_id = 7;
         game.player = Some(player);
-        game.spawn_entity(50, "minecraft:oak_boat", [10.0, 64.0, 5.0], [0.0; 3]);
+        let boat_kind = game
+            .remote
+            .as_ref()
+            .unwrap()
+            .builtin
+            .get("minecraft:entity_type")
+            .unwrap()
+            .id("minecraft:oak_boat")
+            .unwrap();
+        game.handle_packet(C::AddEntity(play::AddEntity {
+            id: 50,
+            uuid: 50,
+            kind: boat_kind,
+            position: [10.0, 64.0, 5.0],
+            velocity: [0.0; 3],
+            pitch: 0,
+            yaw: 0,
+            head_yaw: 0,
+            data: 0,
+        }))
+        .unwrap();
 
         let player_ref = game.entity(7).unwrap();
         let boat_ref = game.entity(50).unwrap();
