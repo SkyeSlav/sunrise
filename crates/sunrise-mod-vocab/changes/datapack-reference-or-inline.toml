@@ -1,0 +1,3 @@
+ids = ["type:DatapackFieldKind"]
+why = "#5368 part 3: datapack registry schemas can declare ReferenceOrInline { registry, inline } (vanilla's RegistryFileCodec / RegistryCodecs.holder): a JSON string decodes as a Reference into DatapackValue::Text and resolves against the candidate set, while a JSON object decodes inline as inline (any object-decoding kind: Record, Dispatch, Map, IntProvider, BlockStateProvider, BlockPredicate or HolderSet). Synced snapshots carry both forms and re-bind any vanilla values inside inline payloads on clients."
+migrate = "Nothing to migrate: DatapackFieldKind is non_exhaustive and only grows, so matches over it already carry a wildcard arm."

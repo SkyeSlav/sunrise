@@ -144,6 +144,18 @@ pub enum DatapackFieldKind {
         /// The registry whose entries the holder set names (`minecraft:block`).
         registry: String,
     },
+    /// A reference to an entry of `registry`, or an inline value decoded as `inline`
+    /// (vanilla's `RegistryFileCodec`, `RegistryCodecs.holder(registry, elementCodec)`).
+    /// A JSON string reads as a [`Reference`](Self::Reference) into [`DatapackValue::Text`] and
+    /// resolves against the candidate set; a JSON object decodes inline as `inline`.
+    /// `inline` must be an object-decoding kind (`Record`, `Dispatch`, `Map`, `IntProvider`,
+    /// `BlockStateProvider`, `BlockPredicate` or `HolderSet`).
+    ReferenceOrInline {
+        /// The registry a string reference names an entry of (`example:spell`).
+        registry: String,
+        /// What an inline JSON object decodes as.
+        inline: Box<DatapackFieldKind>,
+    },
 }
 
 /// Why reading or evaluating a decoded vanilla datapack value handle failed.
@@ -483,8 +495,9 @@ pub enum DatapackValue {
     Int(i64),
     /// A [`DatapackFieldKind::Float`].
     Float(f64),
-    /// A [`DatapackFieldKind::Text`], [`DatapackFieldKind::Identifier`] or
-    /// [`DatapackFieldKind::Reference`].
+    /// A [`DatapackFieldKind::Text`], [`DatapackFieldKind::Identifier`],
+    /// [`DatapackFieldKind::Reference`], or the string reference form of
+    /// [`DatapackFieldKind::ReferenceOrInline`].
     Text(String),
     /// A [`DatapackFieldKind::List`], in file order.
     List(Vec<DatapackValue>),
@@ -691,7 +704,8 @@ impl DatapackValue {
         }
     }
 
-    /// The text of a [`DatapackFieldKind::Text`], an id or a reference.
+    /// The text of a [`DatapackFieldKind::Text`], an id, a reference, or the reference form of a
+    /// [`DatapackFieldKind::ReferenceOrInline`].
     pub fn as_text(&self) -> Option<&str> {
         match self {
             Self::Text(v) => Some(v),
@@ -767,9 +781,10 @@ pub enum DatapackRegistrationError {
     InvalidFieldName,
     /// A field's kind is unusable: bounds that are not finite or `min > max`,
     /// a scalar text field's `max_len` of 0, a list's `min_len` over its `max_len`, an
-    /// optional kind nested in another, a reference to a malformed registry key, a dispatch
-    /// with an empty key, no variants, or a variant id that is malformed or repeated, or a
-    /// holder set for a registry other than `minecraft:block`, at any depth.
+    /// optional kind nested in another, a reference or `ReferenceOrInline` to a malformed
+    /// registry key, a `ReferenceOrInline` whose `inline` kind does not decode from a JSON
+    /// object, a dispatch with an empty key, no variants, or a variant id that is malformed or
+    /// repeated, or a holder set for a registry other than `minecraft:block`, at any depth.
     InvalidFieldKind,
     /// A default is not a value of its field's kind, or is out of its bounds.
     InvalidDefault,
@@ -967,6 +982,20 @@ impl DatapackFieldKind {
             Self::IntProvider { min, max } => min <= max,
             Self::BlockStateProvider | Self::BlockPredicate => true,
             Self::HolderSet { registry } => registry == "minecraft:block",
+            Self::ReferenceOrInline { registry, inline } => {
+                inline.check_nested()?;
+                valid_namespaced(registry)
+                    && matches!(
+                        inline.as_ref(),
+                        Self::Map { .. }
+                            | Self::Record { .. }
+                            | Self::Dispatch { .. }
+                            | Self::IntProvider { .. }
+                            | Self::BlockStateProvider
+                            | Self::BlockPredicate
+                            | Self::HolderSet { .. }
+                    )
+            }
         };
         if ok {
             Ok(())
@@ -1044,6 +1073,8 @@ impl DatapackFieldKind {
                     ..
                 } if value_registry == registry && serde_json::from_str::<Value>(json).is_ok()
             ),
+            (Self::ReferenceOrInline { .. }, DatapackValue::Text(v)) => canonical_id(v),
+            (Self::ReferenceOrInline { inline, .. }, value) => inline.accepts(value),
             _ => false,
         }
     }
@@ -1062,6 +1093,7 @@ impl DatapackFieldKind {
             Self::BlockStateProvider => "block state or block state provider",
             Self::BlockPredicate => "block predicate object",
             Self::HolderSet { .. } => "block id, tag, or list",
+            Self::ReferenceOrInline { .. } => "identifier string or object",
         }
     }
 }
@@ -1114,6 +1146,12 @@ pub(super) fn references<'v>(
             for (field, (_, v)) in variant.fields.iter().zip(fields) {
                 references(&field.kind, v, &joined(path, &field.name), out);
             }
+        }
+        (DatapackFieldKind::ReferenceOrInline { registry, .. }, DatapackValue::Text(target)) => {
+            out.push((path.to_owned(), registry, target));
+        }
+        (DatapackFieldKind::ReferenceOrInline { inline, .. }, value) => {
+            references(inline, value, path, out);
         }
         _ => {}
     }
@@ -1188,6 +1226,7 @@ fn normalize_kind(kind: &mut DatapackFieldKind) -> Result<(), DatapackRegistrati
         DatapackFieldKind::Dispatch { variants, .. } => variants
             .iter_mut()
             .try_for_each(|variant| normalize_defaults(&mut variant.fields)),
+        DatapackFieldKind::ReferenceOrInline { inline, .. } => normalize_kind(inline),
         _ => Ok(()),
     }
 }
@@ -1264,6 +1303,10 @@ fn normalize_value(
             }
             Ok(())
         }
+        (DatapackFieldKind::ReferenceOrInline { .. }, DatapackValue::Text(id)) => normalize_id(id),
+        (DatapackFieldKind::ReferenceOrInline { inline, .. }, value) => {
+            normalize_value(inline, value)
+        }
         _ => Ok(()),
     }
 }
@@ -1294,6 +1337,7 @@ fn kind_has_vanilla(kind: &DatapackFieldKind) -> bool {
         DatapackFieldKind::Dispatch { variants, .. } => variants
             .iter()
             .any(|variant| schema_has_vanilla_kind(&variant.fields)),
+        DatapackFieldKind::ReferenceOrInline { inline, .. } => kind_has_vanilla(inline),
         _ => false,
     }
 }
@@ -1380,6 +1424,10 @@ pub(super) fn bind_vanilla_values(
                 .try_for_each(|(field, (_, v))| {
                     bind_vanilla_values(&field.kind, v, &joined(path, &field.name), decoder)
                 })
+        }
+        (DatapackFieldKind::ReferenceOrInline { .. }, DatapackValue::Text(_)) => Ok(()),
+        (DatapackFieldKind::ReferenceOrInline { inline, .. }, value) => {
+            bind_vanilla_values(inline, value, path, decoder)
         }
         _ => Ok(()),
     }
@@ -1910,6 +1958,17 @@ fn decode_value(
                     value,
                 },
             )))
+        }
+        DatapackFieldKind::ReferenceOrInline { inline, .. } => {
+            if let Some(v) = json.as_str() {
+                Identifier::parse(v)
+                    .map(|id| DatapackValue::Text(id.to_string()))
+                    .map_err(|_| DatapackDecodeError::InvalidIdentifier { field: name() })
+            } else if json.as_object().is_some() {
+                decode_value(inline, json, path, decoder)
+            } else {
+                Err(wrong())
+            }
         }
     }
 }
@@ -3358,6 +3417,577 @@ pub(crate) mod tests {
         assert_eq!(
             HolderSetValue::from_raw(1, 0).contains(&host, block),
             Err(DatapackValueError::Unavailable)
+        );
+    }
+
+    #[test]
+    fn reference_or_inline_decodes_references_and_inline_objects() {
+        let inline_record = || DatapackFieldKind::Record {
+            fields: vec![
+                DatapackField::required("power", DatapackFieldKind::Int { min: 1, max: 10 }),
+                DatapackField::with_default(
+                    "next",
+                    DatapackFieldKind::Reference {
+                        registry: "example:spell".into(),
+                    },
+                    DatapackValue::Text("example:fire".into()),
+                ),
+            ],
+        };
+        let inline_dispatch = || DatapackFieldKind::Dispatch {
+            key: "type".into(),
+            variants: vec![DatapackVariant::new(
+                "example:grow",
+                vec![DatapackField::required(
+                    "steps",
+                    DatapackFieldKind::Int { min: 1, max: 8 },
+                )],
+            )],
+        };
+        let schema = DatapackRegistryDeclaration {
+            mod_id: "example".into(),
+            key: "example:rule".into(),
+            fields: vec![
+                DatapackField::required(
+                    "spell",
+                    DatapackFieldKind::ReferenceOrInline {
+                        registry: "example:spell".into(),
+                        inline: Box::new(inline_record()),
+                    },
+                ),
+                DatapackField::required(
+                    "behavior",
+                    DatapackFieldKind::ReferenceOrInline {
+                        registry: "example:behavior".into(),
+                        inline: Box::new(inline_dispatch()),
+                    },
+                ),
+                DatapackField::optional(
+                    "predicate",
+                    DatapackFieldKind::ReferenceOrInline {
+                        registry: "example:predicate".into(),
+                        inline: Box::new(DatapackFieldKind::BlockPredicate),
+                    },
+                ),
+                DatapackField::with_default(
+                    "chain",
+                    DatapackFieldKind::List {
+                        of: Box::new(DatapackFieldKind::ReferenceOrInline {
+                            registry: "example:spell".into(),
+                            inline: Box::new(inline_record()),
+                        }),
+                        min_len: 0,
+                        max_len: None,
+                    },
+                    DatapackValue::List(Vec::new()),
+                ),
+            ],
+            sync: DatapackRegistrySync::Required,
+        };
+        assert_eq!(check_schema(&schema.fields), Ok(()));
+
+        // String references normalise like `Reference`; inline objects decode as their inline kind.
+        let mut decoder = StubDecoder::new(5);
+        let entry = decode_datapack_entry_with_decoder(
+            &schema,
+            r#"{
+                "spell": "fire",
+                "behavior": {"type": "example:grow", "steps": 3},
+                "predicate": {"type": "minecraft:solid"},
+                "chain": ["example:ice", {"power": 4, "next": "spark"}]
+            }"#,
+            &mut decoder,
+        )
+        .unwrap();
+        assert_eq!(
+            entry.get("spell").and_then(DatapackValue::as_text),
+            Some("minecraft:fire")
+        );
+        let behavior = entry.get("behavior").unwrap();
+        assert_eq!(behavior.variant_id(), Some("example:grow"));
+        assert_eq!(behavior.get("steps"), Some(&DatapackValue::Int(3)));
+        assert_eq!(
+            entry
+                .get("predicate")
+                .and_then(DatapackValue::as_block_predicate)
+                .map(BlockPredicateValue::generation),
+            Some(5)
+        );
+        let chain = entry.get("chain").and_then(DatapackValue::as_list).unwrap();
+        assert_eq!(chain[0].as_text(), Some("example:ice"));
+        assert_eq!(chain[1].get("power"), Some(&DatapackValue::Int(4)));
+        assert_eq!(
+            chain[1].get("next").and_then(DatapackValue::as_text),
+            Some("minecraft:spark")
+        );
+
+        // Every decoded value is accepted by its kind; non-canonical reference strings are not.
+        for (field, (_, value)) in schema.fields.iter().zip(&entry.values) {
+            assert!(field.kind.accepts(value), "{}", field.name);
+        }
+        assert!(
+            !schema.fields[0]
+                .kind
+                .accepts(&DatapackValue::Text("bare".into()))
+        );
+        assert!(!schema.fields[0].kind.accepts(&DatapackValue::Int(1)));
+
+        // `references` collects both direct string references and references inside inline objects.
+        let mut refs = Vec::new();
+        for (field, (_, value)) in schema.fields.iter().zip(&entry.values) {
+            references(&field.kind, value, &field.name, &mut refs);
+        }
+        assert_eq!(
+            refs,
+            [
+                ("spell".to_owned(), "example:spell", "minecraft:fire"),
+                ("chain[0]".to_owned(), "example:spell", "example:ice"),
+                (
+                    "chain[1].next".to_owned(),
+                    "example:spell",
+                    "minecraft:spark"
+                ),
+            ]
+        );
+
+        // Inline record and string reference in the opposite fields also work.
+        let flipped = decode_datapack_entry_with_decoder(
+            &schema,
+            r#"{
+                "spell": {"power": 9},
+                "behavior": "example:shared_grow",
+                "predicate": "example:air_above"
+            }"#,
+            &mut decoder,
+        )
+        .unwrap();
+        assert_eq!(
+            flipped.get("spell").and_then(|v| v.get("power")),
+            Some(&DatapackValue::Int(9))
+        );
+        assert_eq!(
+            flipped
+                .get("spell")
+                .and_then(|v| v.get("next"))
+                .and_then(DatapackValue::as_text),
+            Some("example:fire")
+        );
+        assert_eq!(
+            flipped.get("behavior").and_then(DatapackValue::as_text),
+            Some("example:shared_grow")
+        );
+        assert_eq!(
+            flipped.get("predicate").and_then(DatapackValue::as_text),
+            Some("example:air_above")
+        );
+
+        // Invalid identifiers, non-string/non-object types, and inline errors keep full paths.
+        let fails = |json: &str| {
+            decode_datapack_entry_with_decoder(&schema, json, &mut StubDecoder::new(1)).unwrap_err()
+        };
+        assert_eq!(
+            fails(r#"{"spell": "Not An Id", "behavior": "example:a"}"#),
+            DatapackDecodeError::InvalidIdentifier {
+                field: "spell".into()
+            }
+        );
+        for wrong in ["42", "true", "null", "[]"] {
+            assert_eq!(
+                fails(&format!(r#"{{"spell": {wrong}, "behavior": "example:a"}}"#)),
+                DatapackDecodeError::WrongType {
+                    field: "spell".into(),
+                    expected: "identifier string or object"
+                }
+            );
+        }
+        assert_eq!(
+            fails(r#"{"spell": {"power": 99}, "behavior": "example:a"}"#),
+            DatapackDecodeError::OutOfRange {
+                field: "spell.power".into()
+            }
+        );
+        assert_eq!(
+            fails(r#"{"spell": "example:a", "behavior": {"type": "example:nope"}}"#),
+            DatapackDecodeError::UnknownVariant {
+                field: "behavior.type".into(),
+                id: "example:nope".into()
+            }
+        );
+        assert_eq!(
+            fails(
+                r#"{"spell": "example:a", "behavior": "example:b", "chain": [{"power": 1, "extra": 2}]}"#
+            ),
+            DatapackDecodeError::UnknownField {
+                field: "chain[0].extra".into()
+            }
+        );
+    }
+
+    #[test]
+    fn reference_or_inline_schemas_and_defaults_validate_at_registration() {
+        use DatapackRegistrationError as E;
+        let record = || DatapackFieldKind::Record {
+            fields: vec![DatapackField::with_default(
+                "item",
+                DatapackFieldKind::Identifier,
+                DatapackValue::Text("stone".into()),
+            )],
+        };
+        let one = |registry: &str, inline: DatapackFieldKind| {
+            vec![DatapackField::required(
+                "x",
+                DatapackFieldKind::ReferenceOrInline {
+                    registry: registry.into(),
+                    inline: Box::new(inline),
+                },
+            )]
+        };
+        // Object-decoding kinds are accepted as `inline`.
+        for ok in [
+            record(),
+            DatapackFieldKind::Dispatch {
+                key: "type".into(),
+                variants: vec![DatapackVariant::new("example:a", Vec::new())],
+            },
+            DatapackFieldKind::Map {
+                key: DatapackKeyKind::Identifier,
+                value: Box::new(DatapackFieldKind::Bool),
+            },
+            DatapackFieldKind::IntProvider { min: 0, max: 10 },
+            DatapackFieldKind::BlockStateProvider,
+            DatapackFieldKind::BlockPredicate,
+            DatapackFieldKind::HolderSet {
+                registry: "minecraft:block".into(),
+            },
+        ] {
+            assert_eq!(check_schema(&one("example:target", ok)), Ok(()));
+        }
+        // Non-object kinds, Optional, and nested ReferenceOrInline are refused as `inline`.
+        for bad in [
+            DatapackFieldKind::Bool,
+            DatapackFieldKind::Int { min: 0, max: 1 },
+            DatapackFieldKind::Float { min: 0.0, max: 1.0 },
+            DatapackFieldKind::Text { max_len: 8 },
+            DatapackFieldKind::Identifier,
+            DatapackFieldKind::Reference {
+                registry: "example:other".into(),
+            },
+            DatapackFieldKind::List {
+                of: Box::new(DatapackFieldKind::Bool),
+                min_len: 0,
+                max_len: None,
+            },
+            DatapackFieldKind::Optional {
+                of: Box::new(record()),
+            },
+            DatapackFieldKind::ReferenceOrInline {
+                registry: "example:other".into(),
+                inline: Box::new(record()),
+            },
+        ] {
+            assert_eq!(
+                check_schema(&one("example:target", bad)),
+                Err(E::InvalidFieldKind)
+            );
+        }
+        // Malformed target registry and invalid nested record fields are refused.
+        assert_eq!(
+            check_schema(&one("Not A Registry", record())),
+            Err(E::InvalidFieldKind)
+        );
+        assert_eq!(
+            check_schema(&one(
+                "example:target",
+                DatapackFieldKind::Record {
+                    fields: vec![
+                        DatapackField::required("dup", DatapackFieldKind::Bool),
+                        DatapackField::required("dup", DatapackFieldKind::Bool),
+                    ],
+                },
+            )),
+            Err(E::InvalidFieldName)
+        );
+
+        // Both string-reference defaults and inline defaults normalise and validate.
+        let mut ref_default = vec![DatapackField::with_default(
+            "x",
+            DatapackFieldKind::ReferenceOrInline {
+                registry: "example:target".into(),
+                inline: Box::new(record()),
+            },
+            DatapackValue::Text("fire".into()),
+        )];
+        normalize_defaults(&mut ref_default).unwrap();
+        assert_eq!(check_schema(&ref_default), Ok(()));
+        assert_eq!(
+            ref_default[0].default,
+            Some(DatapackValue::Text("minecraft:fire".into()))
+        );
+        // Nested default inside `inline` was also normalised.
+        let DatapackFieldKind::ReferenceOrInline { inline, .. } = &ref_default[0].kind else {
+            unreachable!()
+        };
+        let DatapackFieldKind::Record { fields: inner } = inline.as_ref() else {
+            unreachable!()
+        };
+        assert_eq!(
+            inner[0].default,
+            Some(DatapackValue::Text("minecraft:stone".into()))
+        );
+
+        let mut inline_default = vec![DatapackField::with_default(
+            "x",
+            DatapackFieldKind::ReferenceOrInline {
+                registry: "example:target".into(),
+                inline: Box::new(DatapackFieldKind::BlockPredicate),
+            },
+            DatapackValue::block_predicate(r#"{ "type" : "minecraft:solid" }"#),
+        )];
+        normalize_defaults(&mut inline_default).unwrap();
+        assert_eq!(check_schema(&inline_default), Ok(()));
+        assert_eq!(
+            inline_default[0].default,
+            Some(DatapackValue::block_predicate(
+                r#"{"type":"minecraft:solid"}"#
+            ))
+        );
+
+        let mut bad_ref_default = vec![DatapackField::with_default(
+            "x",
+            DatapackFieldKind::ReferenceOrInline {
+                registry: "example:target".into(),
+                inline: Box::new(record()),
+            },
+            DatapackValue::Text("Not An Id".into()),
+        )];
+        assert_eq!(
+            normalize_defaults(&mut bad_ref_default),
+            Err(E::InvalidDefault)
+        );
+        let wrong_default = vec![DatapackField::with_default(
+            "x",
+            DatapackFieldKind::ReferenceOrInline {
+                registry: "example:target".into(),
+                inline: Box::new(record()),
+            },
+            DatapackValue::Int(3),
+        )];
+        assert_eq!(check_schema(&wrong_default), Err(E::InvalidDefault));
+    }
+
+    #[test]
+    fn reference_or_inline_resolves_references_and_roundtrips_synced_snapshots() {
+        use super::super::datapack_registry_set::{
+            DatapackCandidate, DatapackLoadReason, DatapackRegistrySet,
+            declarations_use_vanilla_values,
+        };
+        use super::super::datapack_snapshot::{DatapackSnapshot, DatapackSnapshotError};
+
+        let predicates = DatapackRegistryDeclaration {
+            mod_id: "example".into(),
+            key: "example:predicate".into(),
+            fields: vec![DatapackField::required(
+                "predicate",
+                DatapackFieldKind::BlockPredicate,
+            )],
+            sync: DatapackRegistrySync::Required,
+        };
+        let rules = DatapackRegistryDeclaration {
+            mod_id: "example".into(),
+            key: "example:rule".into(),
+            fields: vec![
+                DatapackField::with_default(
+                    "predicate",
+                    DatapackFieldKind::ReferenceOrInline {
+                        registry: "example:predicate".into(),
+                        inline: Box::new(DatapackFieldKind::BlockPredicate),
+                    },
+                    DatapackValue::block_predicate(r#"{"type":"minecraft:true"}"#),
+                ),
+                DatapackField::optional(
+                    "fallback",
+                    DatapackFieldKind::ReferenceOrInline {
+                        registry: "example:rule".into(),
+                        inline: Box::new(DatapackFieldKind::Record {
+                            fields: vec![DatapackField::required(
+                                "predicate",
+                                DatapackFieldKind::Reference {
+                                    registry: "example:predicate".into(),
+                                },
+                            )],
+                        }),
+                    },
+                ),
+            ],
+            sync: DatapackRegistrySync::Required,
+        };
+        // `declarations_use_vanilla_values` sees a vanilla kind inside `ReferenceOrInline`.
+        assert!(declarations_use_vanilla_values(std::slice::from_ref(
+            &rules
+        )));
+
+        let declarations = [predicates, rules];
+        let files = vec![
+            (
+                "data/example/example/rule/by_ref.json".to_owned(),
+                vec![(
+                    "pack".to_owned(),
+                    br#"{"predicate":"example:air","fallback":{"predicate":"example:air"}}"#
+                        .to_vec(),
+                )],
+            ),
+            (
+                "data/example/example/rule/by_inline.json".to_owned(),
+                vec![(
+                    "pack".to_owned(),
+                    br#"{"predicate":{"type":"minecraft:solid"},"fallback":"example:by_ref"}"#
+                        .to_vec(),
+                )],
+            ),
+            (
+                "data/example/example/rule/defaulted.json".to_owned(),
+                vec![("pack".to_owned(), br#"{}"#.to_vec())],
+            ),
+            (
+                "data/example/example/predicate/air.json".to_owned(),
+                vec![(
+                    "pack".to_owned(),
+                    br#"{"predicate":{"type":"minecraft:matching_block_tag","tag":"minecraft:air"}}"#
+                        .to_vec(),
+                )],
+            ),
+        ];
+        let candidate =
+            DatapackCandidate::build_with_decoder(&declarations, &files, &mut StubDecoder::new(13))
+                .unwrap();
+        let server = DatapackRegistrySet::from_candidate(candidate);
+        assert_eq!(
+            server
+                .get("example:rule", "example:by_ref")
+                .unwrap()
+                .get("predicate")
+                .and_then(DatapackValue::as_text),
+            Some("example:air")
+        );
+        assert_eq!(
+            server
+                .get("example:rule", "example:by_inline")
+                .unwrap()
+                .get("predicate")
+                .and_then(DatapackValue::as_block_predicate)
+                .map(BlockPredicateValue::generation),
+            Some(13)
+        );
+        // Omitted field with an inline vanilla default is bound at load.
+        assert_eq!(
+            server
+                .get("example:rule", "example:defaulted")
+                .unwrap()
+                .get("predicate")
+                .and_then(DatapackValue::as_block_predicate)
+                .map(BlockPredicateValue::generation),
+            Some(13)
+        );
+
+        // Missing target in a string reference refuses the candidate.
+        let missing_ref = vec![(
+            "data/example/example/rule/broken.json".to_owned(),
+            vec![(
+                "pack".to_owned(),
+                br#"{"predicate":"example:missing"}"#.to_vec(),
+            )],
+        )];
+        let err = DatapackCandidate::build_with_decoder(
+            &declarations,
+            &missing_ref,
+            &mut StubDecoder::new(1),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.reason,
+            DatapackLoadReason::UnresolvedReference {
+                field: "predicate".into(),
+                registry: "example:predicate".into(),
+                target: "example:missing".into(),
+            }
+        );
+
+        // Missing target inside an inline object also refuses the candidate.
+        let missing_nested = vec![(
+            "data/example/example/rule/broken.json".to_owned(),
+            vec![(
+                "pack".to_owned(),
+                br#"{"predicate":{"type":"minecraft:solid"},"fallback":{"predicate":"example:missing"}}"#
+                    .to_vec(),
+            )],
+        )];
+        let err = DatapackCandidate::build_with_decoder(
+            &declarations,
+            &missing_nested,
+            &mut StubDecoder::new(1),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.reason,
+            DatapackLoadReason::UnresolvedReference {
+                field: "fallback.predicate".into(),
+                registry: "example:predicate".into(),
+                target: "example:missing".into(),
+            }
+        );
+
+        // Synced snapshot preserves references, unbinds inline vanilla handles on wire, and
+        // rebinds them on the client.
+        let snapshot = server.snapshot_for(&declarations, &declarations).unwrap();
+        let decoded = DatapackSnapshot::decode(&snapshot.encode().unwrap()).unwrap();
+        let wire_set = DatapackRegistrySet::received(decoded.candidate(&declarations).unwrap());
+        assert_eq!(
+            wire_set
+                .get("example:rule", "example:by_ref")
+                .unwrap()
+                .get("predicate")
+                .and_then(DatapackValue::as_text),
+            Some("example:air")
+        );
+        assert_eq!(
+            wire_set
+                .get("example:rule", "example:by_inline")
+                .unwrap()
+                .get("predicate")
+                .and_then(DatapackValue::as_block_predicate)
+                .map(BlockPredicateValue::generation),
+            Some(0)
+        );
+        let bound = wire_set
+            .rebind_vanilla_values(&declarations, &mut StubDecoder::new(29))
+            .unwrap();
+        assert_eq!(
+            bound
+                .get("example:rule", "example:by_inline")
+                .unwrap()
+                .get("predicate")
+                .and_then(DatapackValue::as_block_predicate)
+                .map(BlockPredicateValue::generation),
+            Some(29)
+        );
+        assert_eq!(
+            bound
+                .get("example:rule", "example:defaulted")
+                .unwrap()
+                .get("predicate")
+                .and_then(DatapackValue::as_block_predicate)
+                .map(BlockPredicateValue::generation),
+            Some(29)
+        );
+        // Invalid inline vanilla value on client re-bind fails atomically.
+        assert_eq!(
+            decoded
+                .candidate_with_decoder(&declarations, &mut StubDecoder::rejecting("solid"))
+                .unwrap_err(),
+            DatapackSnapshotError::InvalidEntry {
+                registry: "example:rule".into(),
+                entry: "example:by_inline".into(),
+            }
         );
     }
 }

@@ -247,6 +247,7 @@ impl FeaturesRegistrar for PartRegistrar {
                     | crate::DatapackFieldKind::BlockStateProvider
                     | crate::DatapackFieldKind::BlockPredicate
                     | crate::DatapackFieldKind::HolderSet { .. }
+                    | crate::DatapackFieldKind::ReferenceOrInline { .. }
             )
         }) {
             // A feature config is a flat record of scalars: nested kinds (and the references

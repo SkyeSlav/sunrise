@@ -50,6 +50,13 @@ fn datapack_schemas_and_values_stop_at_the_generic_depth() {
                     max_len: None,
                 }
             });
+            // A boxed reference-or-inline kind uses two envelopes per wrapper and one at the leaf.
+            recursive_at_limit(DatapackFieldKind::BlockPredicate, 15, 1, |inline| {
+                DatapackFieldKind::ReferenceOrInline {
+                    registry: "example:predicate".into(),
+                    inline: Box::new(inline),
+                }
+            });
             // A record field and its kind use two envelopes per wrapper and at the leaf.
             recursive_at_limit(
                 DatapackField::required("a", DatapackFieldKind::Bool),

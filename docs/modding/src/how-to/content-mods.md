@@ -1134,7 +1134,13 @@ entry's record schema. Its scalar kinds are `Bool`, `Int { min, max }`, `Float {
   - `HolderSet { registry }` (`RegistryCodecs.homogeneousList`, `minecraft:block` only; any other registry is
     refused at registration): `as_holder_set()` gives a `HolderSetValue`, queried with `value.contains(host, block)`.
   Handles carry the load's generation number: after `/reload` (or a client snapshot swap), evaluating an older
-  handle returns `Err(DatapackValueError::Stale)` instead of panicking.
+  handle returns `Err(DatapackValueError::Stale)` instead of panicking;
+- `ReferenceOrInline { registry, inline }` is either a JSON string naming an entry of `registry` (decoded and
+  resolved as `Reference` into `DatapackValue::Text`, read with `as_text`) or a JSON object decoded inline as
+  `inline` (`RegistryFileCodec`, `RegistryCodecs.holder`). `inline` must be an object-decoding kind (`Record`,
+  `Dispatch`, `Map`, `IntProvider`, `BlockStateProvider`, `BlockPredicate` or `HolderSet`). References inside an
+  inline value resolve against the candidate set, and any vanilla value inside an inline value re-binds on synced
+  clients.
 
 Each field, at any depth, is required (`DatapackField::required`), given a default (`with_default`) or optional with
 no default (`DatapackField::optional`, `optionalFieldOf`), which reads as `None` when left out. An optional kind
