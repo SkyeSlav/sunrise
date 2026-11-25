@@ -386,12 +386,11 @@ mod tests {
         ]);
         let stone = part_tests::block_key("stone");
         let machine = part_tests::block_key("test:machine");
-        let tag =
-            |name| {
-                mod_api::__private::tag_key(&mod_api::Identifier::parse(name).unwrap())
-                    .unwrap()
-                    .typed::<mod_api::BlockKey>()
-            };
+        let tag = |name| {
+            mod_api::__private::tag_key(&mod_api::Identifier::parse(name).unwrap())
+                .unwrap()
+                .typed::<mod_api::BlockKey>()
+        };
         let machines = tag("test:machines");
         let base_stone = tag("base_stone_overworld");
         let qualified_base_stone = tag("minecraft:base_stone_overworld");
