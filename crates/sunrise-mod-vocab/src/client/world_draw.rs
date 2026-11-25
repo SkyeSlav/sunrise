@@ -1,7 +1,7 @@
 //! Untextured, unlit geometry submitted for one world view.
 
 /// Whether world geometry is hidden by nearer world surfaces.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 // no wire: local depth policy for world geometry.
 pub enum WorldDepth {

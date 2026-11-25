@@ -516,6 +516,23 @@ impl WorldDrawContext for GameWorldDrawContext<'_, '_> {
         self.game
             .native_world_draw_model_instances(&mut *self.surface, model, instances)
     }
+    fn with_pipeline_modifier(
+        &mut self,
+        modifier: PipelineModifierRef,
+        draw: &mut dyn FnMut(&mut dyn WorldDrawContext),
+    ) {
+        use mod_api::__private::game::Fields;
+        let pushed = self.surface.push_pipeline_modifier(modifier.fields().slot);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            draw(self);
+        }));
+        if pushed {
+            self.surface.pop_pipeline_modifier();
+        }
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
+        }
+    }
     fn set_pack_uniform(&mut self, name: &str, value: PackUniformValue) -> bool {
         let Some((static_name, ty)) = sunrise_client::mod_pipelines::lookup_pack_uniform(name)
         else {
@@ -580,6 +597,37 @@ impl PrepareRenderBuffersContext for GamePrepareRenderBuffersContext<'_, '_> {
         }
         self.surface.prepare_draw(stage, |surface| {
             self.game.native_world_draw_quads(surface, quads)
+        })
+    }
+
+    fn pipeline_quads(
+        &mut self,
+        stage: RenderLevelStage,
+        pipeline: RenderPipelineRef,
+        quads: &[PipelineQuad],
+    ) -> Result<PreparedWorldDraw, PipelineDrawError> {
+        if !stage.has_render_pass() {
+            return Err(PipelineDrawError::Pipeline(RenderPipelineError::Invalid));
+        }
+        let slot = self
+            .game
+            .pack
+            .render
+            .mod_pipelines
+            .slot(pipeline)
+            .map_err(PipelineDrawError::Pipeline)?;
+        if stage.oit_stage().is_some() && !self.game.pack.render.mod_pipelines.is_oit_eligible(slot)
+        {
+            self.game
+                .pack
+                .render
+                .mod_pipelines
+                .warn_oit_ineligible(slot);
+            return Err(PipelineDrawError::Pipeline(RenderPipelineError::Invalid));
+        }
+        self.surface.prepare_draw(stage, |surface| {
+            surface.pipeline_quads(slot, quads);
+            Ok(())
         })
     }
 }

@@ -8,8 +8,8 @@
 //! load; an optional one is logged and left out. A frame reads none of this by name.
 use mod_api::{
     Identifier, PackGlslInput, PackPassSlot, PackUniformType, PackUniformValue, PipelineBlend,
-    PipelineTexture, PipelineTextureError, RenderPipeline, RenderPipelineError, RenderPipelineRef,
-    WorldDepth,
+    PipelineModifier, PipelineModifierRef, PipelineState, PipelineTexture, PipelineTextureError,
+    RenderPipeline, RenderPipelineError, RenderPipelineRef, WorldDepth,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -17,6 +17,7 @@ use std::sync::{Arc, OnceLock};
 use sunrise_mod_pipeline::{Options as PipelineOptions, ProgramSources};
 
 static REGISTERED: OnceLock<Vec<RenderPipeline>> = OnceLock::new();
+static REGISTERED_MODIFIERS: OnceLock<Vec<PipelineModifier>> = OnceLock::new();
 static PACK_UNIFORMS: OnceLock<HashMap<&'static str, PackUniformType>> = OnceLock::new();
 
 /// The built-in tables exported by `RenderPipelines.requiredPipelines` and `optionalPipelines`.
@@ -375,6 +376,176 @@ pub fn registered() -> &'static [RenderPipeline] {
     REGISTERED.get().map_or(&[], Vec::as_slice)
 }
 
+#[derive(Debug)]
+pub enum ModifierRegistrationError {
+    DuplicateModId {
+        earlier: String,
+        owner: String,
+        id: Identifier,
+    },
+    AlreadyPublished,
+}
+
+impl std::fmt::Display for ModifierRegistrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("register_pipeline_modifiers: ")?;
+        match self {
+            Self::DuplicateModId { earlier, owner, id } => write!(
+                f,
+                "mod {owner}: pipeline modifier {id} collides with earlier registration from mod {earlier}"
+            ),
+            Self::AlreadyPublished => {
+                f.write_str("pipeline modifier registrations were already published")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ModifierRegistrationError {}
+
+/// Validate a modifier registration list without touching process-global state.
+pub fn validate_modifiers(modifiers: &[PipelineModifier]) -> Result<(), ModifierRegistrationError> {
+    let mut seen = BTreeMap::new();
+    for modifier in modifiers {
+        if let Some(earlier) = seen.insert(&modifier.id, modifier.owner()) {
+            return Err(ModifierRegistrationError::DuplicateModId {
+                earlier: earlier.to_owned(),
+                owner: modifier.owner().to_owned(),
+                id: modifier.id.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Validate and publish the mods' pipeline modifier registrations once at startup.
+pub fn register_modifiers(
+    modifiers: Vec<PipelineModifier>,
+) -> Result<(), ModifierRegistrationError> {
+    if modifiers.is_empty() {
+        return Ok(());
+    }
+    validate_modifiers(&modifiers)?;
+    REGISTERED_MODIFIERS
+        .set(modifiers)
+        .map_err(|_| ModifierRegistrationError::AlreadyPublished)
+}
+
+/// The registered pipeline modifiers; none until registration publishes them.
+pub fn registered_modifiers() -> &'static [PipelineModifier] {
+    REGISTERED_MODIFIERS.get().map_or(&[], Vec::as_slice)
+}
+
+/// Resolve a registered pipeline modifier by id (static across resource reloads).
+pub fn resolve_modifier(id: &Identifier) -> Result<PipelineModifierRef, RenderPipelineError> {
+    resolve_modifier_in(registered_modifiers(), id)
+}
+
+pub(crate) fn resolve_modifier_in(
+    modifiers: &[PipelineModifier],
+    id: &Identifier,
+) -> Result<PipelineModifierRef, RenderPipelineError> {
+    let slot = modifiers
+        .iter()
+        .position(|m| &m.id == id)
+        .ok_or(RenderPipelineError::Unknown)?;
+    Ok(mod_api::__private::built::pipeline_modifier_ref(
+        slot as u32,
+    ))
+}
+
+/// Interned pipeline modifier stacks: stack id `0` is always the empty stack (no modifiers).
+/// Each non-zero stack id names a distinct sequence of registered modifier slots in push order
+/// (outermost first, innermost last). Applying a stack runs innermost first so the outermost
+/// modifier wins on any field both set, matching NeoForge's `PipelineModifierStack.apply`.
+#[derive(Clone, Debug)]
+pub struct ModifierStacks {
+    stacks: Vec<Vec<u32>>,
+    index: HashMap<Vec<u32>, u32>,
+}
+
+impl Default for ModifierStacks {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ModifierStacks {
+    /// The empty stack id (no active modifiers).
+    pub const EMPTY: u32 = 0;
+
+    pub fn new() -> Self {
+        Self {
+            stacks: vec![Vec::new()],
+            index: HashMap::new(),
+        }
+    }
+
+    /// Clear interned non-empty stacks while retaining allocations for the next view.
+    pub fn clear(&mut self) {
+        self.stacks.truncate(1);
+        self.index.clear();
+    }
+
+    /// Intern `stack` (modifier slots in push order: outermost first, innermost last).
+    pub fn intern(&mut self, stack: &[u32]) -> u32 {
+        if stack.is_empty() {
+            return Self::EMPTY;
+        }
+        if let Some(&id) = self.index.get(stack) {
+            return id;
+        }
+        let id = self.stacks.len() as u32;
+        let owned = stack.to_vec();
+        self.index.insert(owned.clone(), id);
+        self.stacks.push(owned);
+        id
+    }
+
+    /// Modifier slots in push order for `id` (empty for `0` or out-of-range).
+    pub fn get(&self, id: u32) -> &[u32] {
+        self.stacks.get(id as usize).map_or(&[], Vec::as_slice)
+    }
+
+    /// Apply stack `id` to `base` using `modifiers`: innermost applies first, then older ones,
+    /// so for any field two modifiers set the outermost wins (`PipelineModifierStack.apply`).
+    pub fn apply(
+        &self,
+        id: u32,
+        mut state: PipelineState,
+        modifiers: &[PipelineModifier],
+    ) -> PipelineState {
+        for &slot in self.get(id).iter().rev() {
+            if let Some(m) = modifiers.get(slot as usize) {
+                state = m.apply(state);
+            }
+        }
+        state
+    }
+
+    /// Format NeoForge's `<pipeline>/transform/<ns>/<path>` label for a modified variant.
+    pub fn label(&self, id: u32, base_id: &str, modifiers: &[PipelineModifier]) -> String {
+        let mut out = base_id.to_owned();
+        for &slot in self.get(id).iter().rev() {
+            if let Some(m) = modifiers.get(slot as usize) {
+                out.push_str("/transform/");
+                out.push_str(m.id.namespace());
+                out.push('/');
+                out.push_str(m.id.path());
+            }
+        }
+        out
+    }
+
+    pub fn len(&self) -> usize {
+        self.stacks.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.stacks.len() <= 1
+    }
+}
+
 /// A registered pipeline one resource load built: validated GLSL naga modules (plus expanded
 /// source and defines for lazy linear-light fragment translation) and its fixed state.
 #[derive(Clone, Debug)]
@@ -391,8 +562,12 @@ pub struct Built {
     pub fragment_expanded: Arc<str>,
     /// Pipeline defines (`NAME` or `NAME value`) applied during translation.
     pub defines: Arc<[String]>,
-    pub blend: PipelineBlend,
-    pub depth: WorldDepth,
+    pub state: PipelineState,
+    /// Whether the pipeline opted in to OIT (`RenderPipeline::order_independent()`).
+    pub order_independent: bool,
+    /// Three translated OIT variants (`DepthBounds`, `Transmittance`, `Accumulate`) when
+    /// `order_independent && state.blend != PipelineBlend::Opaque`.
+    pub oit: Option<Arc<[sunrise_glsl::Translated; 3]>>,
     /// Whether the load may go on without it ([`RenderPipeline::optional()`]).
     pub optional: bool,
     /// What its shader samples, if anything.
@@ -416,6 +591,7 @@ pub struct Pipelines {
     /// The render assets' generation this set was loaded for; 0 for none.
     generation: u64,
     invalid: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
+    oit_ineligible_logged: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
 }
 
 impl Pipelines {
@@ -496,7 +672,7 @@ impl Pipelines {
                             check_backends: false,
                             interface: sunrise_mod_pipeline::DEVICELESS_INTERFACE_LIMITS,
                         };
-                        crate::crash::contain(|| {
+                        let built_program = crate::crash::contain(|| {
                             sunrise_mod_pipeline::translate(&sources, &options, &include)
                         })
                         .map_err(|panic| format!("{fragment_file}: checking it panicked: {panic}"))?
@@ -506,27 +682,53 @@ impl Pipelines {
                                 .map(ToString::to_string)
                                 .collect::<Vec<_>>()
                                 .join("; ")
-                        })
+                        })?;
+                        let oit = if pipeline.order_independent
+                            && pipeline.state.blend != PipelineBlend::Opaque
+                        {
+                            let additive = pipeline.state.blend == PipelineBlend::Additive;
+                            let variants = crate::crash::contain(|| {
+                                sunrise_mod_pipeline::translate_oit(
+                                    &sources, &options, additive, &include,
+                                )
+                            })
+                            .map_err(|panic| {
+                                format!("{fragment_file}: checking OIT variants panicked: {panic}")
+                            })?
+                            .map_err(|problems| {
+                                problems
+                                    .iter()
+                                    .map(ToString::to_string)
+                                    .collect::<Vec<_>>()
+                                    .join("; ")
+                            })?;
+                            let [d, t, a] = variants;
+                            Some(Arc::new([d.translated, t.translated, a.translated]))
+                        } else {
+                            None
+                        };
+                        Ok((built_program, oit))
                     })
-                    .and_then(|built_program| {
+                    .and_then(|(built_program, oit)| {
                         let texture = match &pipeline.texture {
                             None => None,
                             Some(texture) => Some(load_texture(texture).map_err(|cause| {
                                 format!("its texture: {}", texture_refusal(cause))
                             })?),
                         };
-                        Ok((built_program, texture))
+                        Ok((built_program, oit, texture))
                     });
                 match loaded {
-                    Ok((built_program, texture)) => Some(Built {
+                    Ok((built_program, oit, texture)) => Some(Built {
                         owner: pipeline.owner().to_owned(),
                         id: pipeline.id.clone(),
                         program: Arc::new(built_program.translated),
                         vertex_expanded: Arc::from(built_program.vertex_expanded),
                         fragment_expanded: Arc::from(built_program.fragment_expanded),
                         defines: Arc::from(defines_owned),
-                        blend: pipeline.blend,
-                        depth: pipeline.depth,
+                        state: pipeline.state,
+                        order_independent: pipeline.order_independent,
+                        oit,
                         optional: pipeline.optional,
                         texture,
                     }),
@@ -554,7 +756,45 @@ impl Pipelines {
             built,
             generation,
             invalid: Default::default(),
+            oit_ineligible_logged: Default::default(),
         })
+    }
+
+    /// Whether `slot` may draw at `RenderLevelStage::OitTranslucent`: opted in via
+    /// `.order_independent()` with a non-`Opaque` blend mode and compiled OIT variants.
+    pub fn is_oit_eligible(&self, slot: u32) -> bool {
+        self.built
+            .get(slot as usize)
+            .and_then(|b| b.as_ref())
+            .is_some_and(|b| {
+                b.order_independent && b.state.blend != PipelineBlend::Opaque && b.oit.is_some()
+            })
+    }
+
+    /// Log once per `(mod, pipeline)` when an ineligible pipeline is submitted to
+    /// `RenderLevelStage::OitTranslucent`.
+    pub fn warn_oit_ineligible(&self, slot: u32) {
+        let slot = slot as usize;
+        let mut logged = self
+            .oit_ineligible_logged
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if logged.contains(&slot) {
+            return;
+        }
+        logged.push(slot);
+        if let Some(Some(built)) = self.built.get(slot) {
+            let reason = if built.state.blend == PipelineBlend::Opaque {
+                "Opaque pipelines cannot draw at OitTranslucent"
+            } else {
+                "pipeline was not registered with .order_independent()"
+            };
+            log::warn!(
+                "Sunrise: mod {} pipeline {} refused at OitTranslucent: {reason}",
+                built.owner,
+                built.id
+            );
+        }
     }
 
     /// Marks `slot` as one the GPU refused; false when it already was, so it is reported once.
@@ -733,6 +973,7 @@ fn shader_group_for_slot(slot: PackPassSlot) -> sunrise_shaders::Group {
 fn pack_blend_for(blend: PipelineBlend) -> Option<sunrise_shaders::Blend> {
     use sunrise_shaders::Factor;
     match blend {
+        PipelineBlend::Opaque => None,
         PipelineBlend::Translucent => Some(sunrise_shaders::TRANSLUCENT_BLEND),
         PipelineBlend::Additive => Some([Factor::SrcAlpha, Factor::One, Factor::Zero, Factor::One]),
         _ => Some(sunrise_shaders::TRANSLUCENT_BLEND),
@@ -849,7 +1090,7 @@ pub(crate) fn pack_program_requests_of(
                 PackPassSlot::AfterOpaqueGbuffers | PackPassSlot::Shadow => None,
                 PackPassSlot::AfterSky
                 | PackPassSlot::AfterTranslucentGbuffers
-                | PackPassSlot::AfterWeather => pack_blend_for(pipeline.blend),
+                | PackPassSlot::AfterWeather => pack_blend_for(pipeline.state.blend),
                 _ => None,
             },
         });
@@ -910,7 +1151,7 @@ pub(crate) fn pack_runtime_specs_of(
                     idx
                 }
             });
-        let depth_test = !matches!(pipeline.depth, WorldDepth::ThroughWalls);
+        let depth_test = !matches!(pipeline.state.depth, WorldDepth::ThroughWalls);
         let depth_write = depth_test
             && (depth_target.is_some()
                 || matches!(
@@ -1038,7 +1279,7 @@ void main() {
         assert_eq!(set.slot(glow), Ok(0));
         let built = set.built()[0].as_ref().unwrap();
         assert_eq!(
-            (built.blend, built.depth),
+            (built.state.blend, built.state.depth),
             (PipelineBlend::Additive, WorldDepth::ThroughWalls)
         );
         assert_eq!(
@@ -1713,5 +1954,94 @@ void main() {
             Some(PackUniformType::Float)
         );
         assert_eq!(lookup_pack_uniform_type_in(&list, "unknown"), None);
+    }
+
+    #[test]
+    fn modifier_stacks_intern_and_apply_outermost_wins_with_neoforge_labels() {
+        use mod_api::{Hooks, ModEntry, RegisterPipelineModifiersEvent, RegistrationContext};
+
+        struct ModRegistrar(Box<dyn Fn(&mut RegisterPipelineModifiersEvent<'_>) + Send + Sync>);
+        #[mod_api::__subscriptions]
+        impl Hooks for ModRegistrar {
+            fn register_pipeline_modifiers(
+                &self,
+                _: &RegistrationContext,
+                event: &mut RegisterPipelineModifiersEvent<'_>,
+            ) {
+                (self.0)(event);
+            }
+        }
+
+        let collect = |mods: Vec<ModEntry>| -> Vec<PipelineModifier> {
+            let mut staged = Vec::new();
+            mod_platform::testing::with_mods(mods.into(), || {
+                mod_api::dispatch_register_pipeline_modifiers(
+                    &RegistrationContext::new(),
+                    &mut staged,
+                );
+            });
+            staged
+        };
+
+        let modifiers = collect(vec![
+            ModEntry::new(
+                "mod_a",
+                Box::new(ModRegistrar(Box::new(|ev| {
+                    ev.register(
+                        PipelineModifier::new(id("mod_a:outer"))
+                            .depth(WorldDepth::ThroughWalls)
+                            .cull(true),
+                    );
+                }))),
+            ),
+            ModEntry::new(
+                "mod_b",
+                Box::new(ModRegistrar(Box::new(|ev| {
+                    ev.register(
+                        PipelineModifier::new(id("mod_b:inner"))
+                            .depth(WorldDepth::Tested)
+                            .depth_write(true),
+                    );
+                }))),
+            ),
+        ]);
+        assert!(validate_modifiers(&modifiers).is_ok());
+
+        let mut stacks = ModifierStacks::new();
+        assert_eq!(stacks.intern(&[]), ModifierStacks::EMPTY);
+        let s1 = stacks.intern(&[0, 1]);
+        assert_eq!(stacks.intern(&[0, 1]), s1);
+        let base = PipelineState::new(PipelineBlend::Translucent, WorldDepth::Tested);
+        // Push order: [outer=0, inner=1]. Inner applies first (depth=Tested, depth_write=true),
+        // then outer applies (depth=ThroughWalls, cull=true) — outermost wins on `depth`.
+        let applied = stacks.apply(s1, base, &modifiers);
+        assert_eq!(applied.depth, WorldDepth::ThroughWalls);
+        assert!(applied.depth_write);
+        assert!(applied.cull);
+        assert_eq!(
+            stacks.label(s1, "example:glow", &modifiers),
+            "example:glow/transform/mod_b/inner/transform/mod_a/outer"
+        );
+
+        // Duplicate modifier ID fails validation naming both mods.
+        let dup = collect(vec![
+            ModEntry::new(
+                "first_mod",
+                Box::new(ModRegistrar(Box::new(|ev| {
+                    ev.register(PipelineModifier::new(id("shared:dup")));
+                }))),
+            ),
+            ModEntry::new(
+                "second_mod",
+                Box::new(ModRegistrar(Box::new(|ev| {
+                    ev.register(PipelineModifier::new(id("shared:dup")));
+                }))),
+            ),
+        ]);
+        let err = validate_modifiers(&dup).unwrap_err().to_string();
+        assert!(
+            err.contains("first_mod") && err.contains("second_mod"),
+            "{err}"
+        );
     }
 }

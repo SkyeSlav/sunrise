@@ -310,9 +310,11 @@ fn feature_stage_order(
             feature_draws: [
                 DrawRanges {
                     primitives: [0..0, 0..0, 0..0, 0..1],
+                    ..Default::default()
                 },
                 DrawRanges {
                     primitives: [0..0, 0..0, 0..1, 0..0],
+                    ..Default::default()
                 },
             ],
             ..Default::default()

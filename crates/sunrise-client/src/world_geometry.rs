@@ -29,6 +29,8 @@ pub struct ModelCopy {
     /// `ModelInstance::color` and `hidden_faces`, as given.
     pub color: u32,
     pub hidden_faces: u8,
+    /// Whether an active pipeline modifier set `WorldDepth::ThroughWalls` on this copy.
+    pub through_walls: bool,
 }
 
 /// The model a batch draws. Resolved once, then applied to every copy.
@@ -117,6 +119,13 @@ pub struct WorldGeometry {
     /// a stage.
     pipeline_quads: Vec<PipelineVertex>,
     pipeline_runs: Vec<PipelineRun>,
+    /// OIT mod-pipeline quads and runs (`RenderLevelStage::OitTranslucent`).
+    oit_pipeline_quads: Vec<PipelineVertex>,
+    oit_pipeline_runs: Vec<PipelineRun>,
+    /// Currently pushed pipeline modifier slots (outermost first, innermost last).
+    modifier_stack: Vec<u32>,
+    /// Interned modifier stacks referenced by `PipelineRun::modifier_stack`.
+    modifier_stacks: crate::mod_pipelines::ModifierStacks,
     /// Per-frame shader-pack uniform values submitted via `WorldDrawContext::set_pack_uniform`.
     pack_uniforms: Vec<(&'static str, mod_api::PackUniformValue)>,
     /// Geometry submitted in `submit_custom_geometry` and debug renderers before pass stages run.
@@ -166,6 +175,10 @@ impl Default for WorldGeometry {
             quads: std::array::from_fn(|_| Vec::with_capacity(CAPACITY as usize * 4)),
             pipeline_quads: Vec::with_capacity(CAPACITY as usize * 4),
             pipeline_runs: Vec::with_capacity(CAPACITY as usize),
+            oit_pipeline_quads: Vec::new(),
+            oit_pipeline_runs: Vec::new(),
+            modifier_stack: Vec::new(),
+            modifier_stacks: crate::mod_pipelines::ModifierStacks::new(),
             pack_uniforms: Vec::new(),
             custom: StageBuffers::default(),
             oit_quads: Vec::new(),
@@ -201,6 +214,10 @@ impl WorldGeometry {
         self.quads.iter_mut().for_each(Vec::clear);
         self.pipeline_quads.clear();
         self.pipeline_runs.clear();
+        self.oit_pipeline_quads.clear();
+        self.oit_pipeline_runs.clear();
+        self.modifier_stack.clear();
+        self.modifier_stacks.clear();
         self.pack_uniforms.clear();
         self.custom.clear();
         self.oit_quads.clear();
@@ -278,6 +295,41 @@ impl WorldGeometry {
             _ => {}
         }
     }
+    /// Push a registered pipeline modifier slot onto the active stack. Returns `false` if `slot`
+    /// is out of range of the registered modifiers (without pushing).
+    pub fn push_pipeline_modifier(&mut self, slot: u32) -> bool {
+        if (slot as usize) >= crate::mod_pipelines::registered_modifiers().len() {
+            return false;
+        }
+        self.modifier_stack.push(slot);
+        true
+    }
+
+    /// Pop the most recently pushed pipeline modifier slot.
+    pub fn pop_pipeline_modifier(&mut self) {
+        self.modifier_stack.pop();
+    }
+
+    /// Intern the active modifier stack (`0` when empty).
+    fn active_modifier_stack(&mut self) -> u32 {
+        self.modifier_stacks.intern(&self.modifier_stack)
+    }
+
+    /// Effective `WorldDepth` after applying the active modifier stack (outermost wins).
+    fn effective_depth(&self, base: WorldDepth) -> WorldDepth {
+        if self.modifier_stack.is_empty() {
+            return base;
+        }
+        let defs = crate::mod_pipelines::registered_modifiers();
+        let mut depth = base;
+        for &slot in self.modifier_stack.iter().rev() {
+            if let Some(d) = defs.get(slot as usize).and_then(|m| m.depth) {
+                depth = d;
+            }
+        }
+        depth
+    }
+
     /// Append geometry to a shared CPU stream and return a handle to just the appended ranges.
     /// Only the renderer's prepare hook can call this; stage callbacks can only queue handles.
     pub fn prepare_draw<E>(
@@ -285,28 +337,63 @@ impl WorldGeometry {
         stage: RenderLevelStage,
         append: impl FnOnce(&mut Self) -> Result<(), E>,
     ) -> Result<PreparedWorldDraw, E> {
-        let oit = stage.oit_stage().is_some();
-        self.active = if oit {
+        let prev_active = self.active;
+        let prev_stage = self.stage;
+        let prev_oit_stage = self.oit_stage;
+        let oit = stage.oit_stage();
+        self.active = if oit.is_some() {
             ActiveTarget::Oit
         } else {
             ActiveTarget::Primary
         };
-        let start = if oit {
+        if let Some(oit_stage) = oit {
+            self.oit_stage = match oit_stage {
+                OitStage::DepthBounds => 0,
+                OitStage::Transmittance => 1,
+                OitStage::Accumulate => 2,
+            };
+        } else {
+            self.stage = match stage {
+                RenderLevelStage::AfterOpaqueBlocks => STAGE_AFTER_OPAQUE_BLOCKS,
+                RenderLevelStage::AfterOpaqueFeatures => STAGE_AFTER_OPAQUE_FEATURES,
+                RenderLevelStage::AfterTranslucentFeatures => STAGE_AFTER_TRANSLUCENT_FEATURES,
+                RenderLevelStage::AfterTranslucentBlocks => STAGE_AFTER_TRANSLUCENT_BLOCKS,
+                RenderLevelStage::AfterTranslucentParticles => STAGE_AFTER_TRANSLUCENT_PARTICLES,
+                RenderLevelStage::AfterWeather => STAGE_AFTER_WEATHER,
+                _ => STAGE_CUSTOM_GEOMETRY,
+            };
+        }
+        let start = if oit.is_some() {
             self.oit_counts()
         } else {
             self.counts()
         };
-        append(self)?;
-        let end = if oit {
+        let pipe_start = if oit.is_some() {
+            self.oit_pipeline_runs.len() as u32
+        } else {
+            self.pipeline_runs.len() as u32
+        };
+        let res = append(self);
+        self.active = prev_active;
+        self.stage = prev_stage;
+        self.oit_stage = prev_oit_stage;
+        res?;
+        let end = if oit.is_some() {
             self.oit_counts()
         } else {
             self.counts()
+        };
+        let pipe_end = if oit.is_some() {
+            self.oit_pipeline_runs.len() as u32
+        } else {
+            self.pipeline_runs.len() as u32
         };
         let slot = self.prepared.len();
         self.prepared.push((
             stage,
             DrawRanges {
                 primitives: std::array::from_fn(|i| start[i]..end[i]),
+                pipeline_runs: pipe_start..pipe_end,
             },
         ));
         // Issue one identity per view that actually prepares a batch. This also prevents
@@ -396,6 +483,7 @@ impl WorldGeometry {
         cull: Option<&impl crate::gfx::Cull>,
         mut stage: impl FnMut(usize, &ModelCopy) -> bool,
     ) {
+        let through_walls = self.effective_depth(WorldDepth::Tested) == WorldDepth::ThroughWalls;
         for (index, instance) in instances.iter().enumerate() {
             if instance.origin.iter().any(|v| !v.is_finite())
                 || instance.transform.iter().any(|v| !v.is_finite())
@@ -423,6 +511,7 @@ impl WorldGeometry {
                 overlay: pack_overlay(instance.overlay),
                 color: instance.color,
                 hidden_faces: instance.hidden_faces,
+                through_walls,
             };
             if !stage(index, &copy) {
                 self.copies.push(copy);
@@ -474,6 +563,18 @@ impl WorldGeometry {
                 return Err(DrawError::InvalidWidth);
             }
         }
+        let depth_override = if self.modifier_stack.is_empty() {
+            None
+        } else {
+            let defs = crate::mod_pipelines::registered_modifiers();
+            let mut over = None;
+            for &slot in self.modifier_stack.iter().rev() {
+                if let Some(d) = defs.get(slot as usize).and_then(|m| m.depth) {
+                    over = Some(d);
+                }
+            }
+            over
+        };
         let (out_tested, out_through) = match self.active {
             ActiveTarget::Primary => {
                 let [tested, through] = &mut self.lines;
@@ -489,7 +590,7 @@ impl WorldGeometry {
                 color: l.color,
                 width: l.width,
             };
-            let out = if l.depth == WorldDepth::ThroughWalls {
+            let out = if depth_override.unwrap_or(l.depth) == WorldDepth::ThroughWalls {
                 &mut *out_through
             } else {
                 &mut *out_tested
@@ -501,6 +602,18 @@ impl WorldGeometry {
     /// Append an entire quad batch or leave the output unchanged on non-finite coordinates.
     pub fn quads(&mut self, quads: &[WorldQuad]) -> Result<(), DrawError> {
         self.validate_positions(quads.iter().flat_map(|q| q.corners))?;
+        let depth_override = if self.modifier_stack.is_empty() {
+            None
+        } else {
+            let defs = crate::mod_pipelines::registered_modifiers();
+            let mut over = None;
+            for &slot in self.modifier_stack.iter().rev() {
+                if let Some(d) = defs.get(slot as usize).and_then(|m| m.depth) {
+                    over = Some(d);
+                }
+            }
+            over
+        };
         let (out_tested, out_through) = match self.active {
             ActiveTarget::Primary => {
                 let [tested, through] = &mut self.quads;
@@ -511,7 +624,7 @@ impl WorldGeometry {
         };
         for q in quads {
             let color = crate::world_primitives::vertex_color(q.color, 255);
-            let out = if q.depth == WorldDepth::ThroughWalls {
+            let out = if depth_override.unwrap_or(q.depth) == WorldDepth::ThroughWalls {
                 &mut *out_through
             } else {
                 &mut *out_tested
@@ -578,6 +691,7 @@ impl WorldGeometry {
     /// skipped individually without rejecting valid quads in the same slice. Accepted quads
     /// that follow the last ones with the same pipeline and stage join their run.
     pub fn pipeline_quads(&mut self, slot: u32, quads: &[PipelineQuad]) {
+        let modifier_stack = self.active_modifier_stack();
         let (vertices, runs, stage) = match self.active {
             ActiveTarget::Primary => (
                 &mut self.pipeline_quads,
@@ -589,7 +703,11 @@ impl WorldGeometry {
                 &mut self.custom.pipeline_runs,
                 STAGE_CUSTOM_GEOMETRY as u32,
             ),
-            ActiveTarget::Oit => return,
+            ActiveTarget::Oit => (
+                &mut self.oit_pipeline_quads,
+                &mut self.oit_pipeline_runs,
+                self.oit_stage as u32,
+            ),
         };
         let mut pushed = 0u32;
         for q in quads {
@@ -614,11 +732,18 @@ impl WorldGeometry {
             return;
         }
         match runs.last_mut() {
-            Some(run) if run.slot == slot && run.stage == stage => run.quads += pushed,
+            Some(run)
+                if run.slot == slot
+                    && run.stage == stage
+                    && run.modifier_stack == modifier_stack =>
+            {
+                run.quads += pushed;
+            }
             _ => runs.push(PipelineRun {
                 slot,
                 stage,
                 quads: pushed,
+                modifier_stack,
             }),
         }
     }
@@ -650,6 +775,10 @@ impl WorldGeometry {
                 set: None,
                 vertices: &self.pipeline_quads,
                 runs: &self.pipeline_runs,
+                modifiers: Some(&self.modifier_stacks),
+                modifier_defs: None,
+                oit_vertices: &self.oit_pipeline_quads,
+                oit_runs: &self.oit_pipeline_runs,
                 time: self.time,
             },
             pack_uniforms: &self.pack_uniforms,
@@ -955,16 +1084,19 @@ mod tests {
                     slot: 2,
                     stage: STAGE_AFTER_OPAQUE_BLOCKS as u32,
                     quads: 1,
+                    modifier_stack: 0,
                 },
                 PipelineRun {
                     slot: 3,
                     stage: STAGE_AFTER_WEATHER as u32,
                     quads: 1,
+                    modifier_stack: 0,
                 },
                 PipelineRun {
                     slot: 7,
                     stage: STAGE_CUSTOM_GEOMETRY as u32,
                     quads: 1,
+                    modifier_stack: 0,
                 },
             ]
         );
@@ -1004,7 +1136,7 @@ mod tests {
         draw.quads(&[quad(3.0, WorldDepth::Tested), quad(4.0, WorldDepth::Tested)])
             .unwrap();
         draw.lines(&[line(14.0, WorldDepth::ThroughWalls)]).unwrap();
-        // Pipeline quads are unavailable in OIT sub-passes and leave standard pipeline runs alone.
+        // Pipeline quads in OIT sub-passes populate `oit_runs` and leave standard runs alone.
         draw.pipeline_quads(9, &[pquad(99.0)]);
 
         draw.begin_pass_stage(AfterLevel);
@@ -1025,8 +1157,19 @@ mod tests {
                 slot: 1,
                 stage: STAGE_AFTER_OPAQUE_BLOCKS as u32,
                 quads: 1,
+                modifier_stack: 0,
             }]
         );
+        assert_eq!(
+            batch.pipelines.oit_runs,
+            [PipelineRun {
+                slot: 9,
+                stage: 2,
+                quads: 1,
+                modifier_stack: 0,
+            }]
+        );
+        assert_eq!(batch.pipelines.oit_vertices.len(), 4);
 
         // OIT batch has exact per-OIT-stage ends and primitive order.
         assert!(!batch.oit.is_empty());
@@ -1147,7 +1290,12 @@ mod tests {
         draw.pipeline_quads(4, &[]);
 
         let pipelines = draw.batch().pipelines;
-        let run = |slot, stage, quads| PipelineRun { slot, stage, quads };
+        let run = |slot, stage, quads| PipelineRun {
+            slot,
+            stage,
+            quads,
+            modifier_stack: 0,
+        };
         assert_eq!(
             pipelines.runs,
             [run(4, 0, 3), run(1, 0, 1), run(4, 0, 1), run(4, 5, 1)]

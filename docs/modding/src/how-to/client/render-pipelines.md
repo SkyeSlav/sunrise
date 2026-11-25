@@ -286,3 +286,102 @@ shader (`PackOverrideState::UnboundPack`), or no pack is active (`PackOverrideSt
 `ctx.pack_override_state(pipeline)`. To check generally whether a shader pack is currently loaded
 and rendering the world (always `false` on the title screen, matching `IrisApi.isShaderPackInUse()`),
 call `host.shader_pack_active()`.
+
+## Fixed-function state (`PipelineState`)
+
+Every `RenderPipeline` carries a `PipelineState` with vanilla's core rasterization, depth, blend,
+and colour-write settings. `RenderPipeline::new` sets `blend` and `depth` and defaults the rest to
+`depth_write: false`, `cull: false` (two-sided), `color_write: ColorWrite::ALL`, and
+`polygon: PolygonMode::Fill`. Override any field with builder methods:
+
+```rust,ignore
+event.register(
+    RenderPipeline::new(id, shader, PipelineBlend::Opaque, WorldDepth::Tested)
+        .depth_write(true)
+        .cull(true)
+        .color_write(ColorWrite::COLOR)
+        .polygon(PolygonMode::Fill),
+);
+```
+
+- `PipelineBlend::Opaque` writes solid colour directly without alpha blending (letting a mod draw
+  solid geometry with `depth_write(true)`).
+- `PolygonMode::Line` requires the device's wireframe feature (`POLYGON_MODE_LINE`); if the GPU
+  lacks it, the pipeline (or modifier variant) is refused.
+
+## Pipeline modifiers (`register_pipeline_modifiers`)
+
+Register reusable data-only state overrides in `Hooks::register_pipeline_modifiers` (NeoForge's
+`RegisterPipelineModifiersEvent`):
+
+```rust,ignore
+fn register_pipeline_modifiers(
+    &self,
+    _context: &RegistrationContext,
+    event: &mut RegisterPipelineModifiersEvent<'_>,
+) {
+    event.register(
+        PipelineModifier::new(Identifier::parse("example:xray").unwrap())
+            .depth(WorldDepth::ThroughWalls)
+            .depth_write(false),
+    );
+}
+```
+
+Resolve the modifier once in `client_setup` (or `client_resources_reloaded`) with
+`host.render_assets().pipeline_modifier(&id)` and wrap world draws in
+`WorldDrawContext::with_pipeline_modifier(modifier, &mut |draw| { ... })`. Scopes nest: the most
+recently pushed modifier applies first, then older ones, so the outermost modifier wins on any
+field both set (`PipelineModifierStack.apply`). Modifiers apply to `lines`, `quads`,
+`pipeline_quads`, and `draw_model_instances` (not `name_tag` labels). Modified GPU pipeline
+variants are compiled lazily and cached per `(pipeline, modifier stack)` until the next reload;
+a variant the GPU refuses is logged once with both IDs and skipped while the rest of the frame
+draws.
+
+## Order-independent transparency (`OitTranslucent`)
+
+To draw a translucent or additive pipeline in vanilla 26.3's improved-transparency passes, opt in
+with `.order_independent()` and include `<minecraft:oit.glsl>` in the fragment shader:
+
+```rust,ignore
+event.register(
+    RenderPipeline::new(id, shader, PipelineBlend::Translucent, WorldDepth::Tested)
+        .vertex_shader(Identifier::parse("minecraft:core/position_tex_color").unwrap())
+        .order_independent(),
+);
+```
+
+```glsl
+#version 330
+#include <minecraft:dynamictransforms.glsl>
+#include <minecraft:oit.glsl>
+
+in vec2 texCoord0;
+in vec4 vertexColor;
+#ifndef OIT_ALPHA_ONLY
+out vec4 fragColor;
+#endif
+
+void main() {
+    vec4 color = vertexColor * ColorModulator;
+#ifdef OIT_ALPHA_ONLY
+    executeAlphaOnlyPhase(gl_FragCoord.z, color.a);
+#else
+#ifdef OIT_ACCUMULATE
+    color = sampleColorForAccumulation(color);
+#endif
+    fragColor = color;
+#endif
+}
+```
+
+At resource load the engine translates three OIT variants (`OIT_ALPHA_ONLY` + `OIT_DEPTH_BOUNDS`,
+`OIT_ALPHA_ONLY` + `OIT_TRANSMITTANCE`, and `OIT_ACCUMULATE`; plus `OIT_ADDITIVE` for
+`PipelineBlend::Additive`) and binds `DepthBoundsSampler`, `Coeff0`, and `Coeff1`. Prepare quads
+for `RenderLevelStage::OitTranslucent(stage)` via `PrepareRenderBuffersContext::pipeline_quads`
+and draw the returned `PreparedWorldDraw` in `render_level_stage`. Submitting an `Opaque` pipeline
+or one without `.order_independent()` to `OitTranslucent` returns
+`PipelineDrawError::Pipeline(RenderPipelineError::Invalid)` and logs once per mod and pipeline.
+`cargo sunrise-mod check` validates all three OIT variants using prepared resources or Sunrise's
+interface-only `oit.glsl` stub.
+

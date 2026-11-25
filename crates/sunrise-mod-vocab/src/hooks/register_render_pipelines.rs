@@ -3,14 +3,18 @@
 pub trait Hooks {
     /// Register render pipelines once at client startup (NeoForge's
     /// `RegisterRenderPipelinesEvent`; 1.21.1 mods used `RegisterShadersEvent`): call
-    /// `event.register(pipeline)` with each [`RenderPipeline`]. The game builds them with its own
-    /// at startup and again on every resource reload. Any valid [`Identifier`] is accepted, and
-    /// duplicate mod IDs fail startup, regardless of required or optional policy. Collisions
-    /// with vanilla are checked in the corresponding required or optional table. An unavailable
-    /// vanilla pipeline table fails startup registration. A required pipeline whose
-    /// shader is missing or doesn't build fails the load: the game does not start, and a reload
-    /// fails and keeps the previous resources. An [optional](RenderPipeline::optional()) one is
-    /// logged and resolves to [`RenderPipelineError::Invalid`].
+    /// `event.register(pipeline)` with each [`RenderPipeline`]. Each pipeline carries a
+    /// [`PipelineState`] (blend including [`PipelineBlend::Opaque`], depth, depth write, culling,
+    /// colour write mask, polygon mode), optional `.order_independent()` opt-in for
+    /// [`RenderLevelStage::OitTranslucent`], optional separate vertex shader and defines. The game
+    /// builds them with its own at startup and again on every resource reload. Any valid
+    /// [`Identifier`] is accepted, and duplicate mod IDs fail startup, regardless of required or
+    /// optional policy. Collisions with vanilla are checked in the corresponding required or
+    /// optional table. An unavailable vanilla pipeline table fails startup registration. A
+    /// required pipeline whose shader (or OIT variant when `.order_independent()`) is missing or
+    /// doesn't build fails the load: the game does not start, and a reload fails and keeps the
+    /// previous resources. An [optional](RenderPipeline::optional()) one is logged and resolves
+    /// to [`RenderPipelineError::Invalid`].
     #[notes = r#"## Render pipelines
 
 `Hooks::register_render_pipelines` is the client registration-phase counterpart of NeoForge's
@@ -104,7 +108,7 @@ order."#]
         registration_append = "attributed",
         context = "registration",
         neoforge = "RegisterRenderPipelinesEvent",
-        version = 5
+        version = 6
     )]
     fn register_render_pipelines(pipelines: &mut Vec<mod_api::RenderPipeline>);
 }

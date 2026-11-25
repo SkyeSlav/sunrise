@@ -3530,7 +3530,8 @@ impl Renderer {
                     };
                     // "Features, World Border, Weather": what follows the opaque
                     // world in the classic pass, one stage at a time.
-                    let wp = self.world_primitives.take().expect("world primitives");
+                    let mut wp = self.world_primitives.take().expect("world primitives");
+                    wp.prepare_oit_mod_pipelines(&self.device, oit.cloud_samples());
                     let mut features = |pass: &mut wgpu::RenderPass<'_>, stage: oit::Stage| {
                         let f = oit.features();
                         let s = stage as usize;

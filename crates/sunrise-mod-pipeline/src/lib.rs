@@ -64,6 +64,61 @@ pub const BLOCKS_WITH_SPRITE: [(&str, u32); 5] = [
 /// Samplers bound for a textured mod pipeline in set 0 (`Sampler0` at binding 4, sampler at 5).
 pub const TEXTURED_SAMPLERS: [(&str, u32); 1] = [("Sampler0", 4)];
 
+/// Samplers the OIT stages bind (`DepthBoundsSampler`, `Coeff0`, `Coeff1`), in the order
+/// `Oit::cloud_samples` supplies their texture views.
+pub const OIT_STAGE_SAMPLERS: [&str; 3] = ["DepthBoundsSampler", "Coeff0", "Coeff1"];
+
+/// Preprocessor defines and extra samplers for one OIT sub-pass (`DepthBounds`, `Transmittance`,
+/// `Accumulate`), matching vanilla 26.3's `RenderPipelines.OIT_*_SNIPPET`.
+#[derive(Clone, Copy, Debug)]
+pub struct OitStageSpec {
+    /// Human-readable stage name for diagnostics.
+    pub name: &'static str,
+    /// Preprocessor defines appended after the pipeline's own defines.
+    pub defines: &'static [&'static str],
+    /// Extra sampler names allowed via `sunrise_glsl`'s `provided` callback for this stage.
+    pub samplers: &'static [&'static str],
+}
+
+/// The three OIT stages in execution order (`DepthBounds`, `Transmittance`, `Accumulate`).
+pub const OIT_STAGES: [OitStageSpec; 3] = [
+    OitStageSpec {
+        name: "depth_bounds",
+        defines: &[
+            "OIT",
+            "OIT_WAVELET_RANK 2",
+            "OIT_COEFF_COUNT 8",
+            "OIT_COEFF_ATTACHMENT_COUNT 2",
+            "OIT_ALPHA_ONLY",
+            "OIT_DEPTH_BOUNDS",
+        ],
+        samplers: &[],
+    },
+    OitStageSpec {
+        name: "transmittance",
+        defines: &[
+            "OIT",
+            "OIT_WAVELET_RANK 2",
+            "OIT_COEFF_COUNT 8",
+            "OIT_COEFF_ATTACHMENT_COUNT 2",
+            "OIT_ALPHA_ONLY",
+            "OIT_TRANSMITTANCE",
+        ],
+        samplers: &["DepthBoundsSampler"],
+    },
+    OitStageSpec {
+        name: "accumulate",
+        defines: &[
+            "OIT",
+            "OIT_WAVELET_RANK 2",
+            "OIT_COEFF_COUNT 8",
+            "OIT_COEFF_ATTACHMENT_COUNT 2",
+            "OIT_ACCUMULATE",
+        ],
+        samplers: &OIT_STAGE_SAMPLERS,
+    },
+];
+
 /// Conservative stage interface limits used when checking shaders without a GPU device.
 pub const DEVICELESS_INTERFACE_LIMITS: InterfaceLimits = InterfaceLimits {
     inter_stage_variables: 32,
@@ -198,16 +253,54 @@ pub fn translate(
     options: &Options<'_>,
     include: &(dyn Fn(&str) -> Result<Option<String>, String> + Sync),
 ) -> Result<BuiltProgram, Vec<Problem>> {
-    guard::guarded(|| translate_inner(sources, options, include))
+    let defines = effective_defines(options.defines);
+    guard::guarded(|| translate_inner(sources, options, &defines, &[], include))
         .unwrap_or_else(|reason| Err(vec![problem(sources.fragment_file, reason)]))
+}
+
+/// Translate and validate all three OIT variants (`DepthBounds`, `Transmittance`, `Accumulate`)
+/// of an `.order_independent()` mod render pipeline program on a guarded 64 MiB stack thread.
+/// When `additive` is true (`PipelineBlend::Additive`), `OIT_ADDITIVE` is also defined so the
+/// shader adds light with no coverage.
+pub fn translate_oit(
+    sources: &ProgramSources<'_>,
+    options: &Options<'_>,
+    additive: bool,
+    include: &(dyn Fn(&str) -> Result<Option<String>, String> + Sync),
+) -> Result<[BuiltProgram; 3], Vec<Problem>> {
+    let oit_options = Options {
+        linear_light: false,
+        ..*options
+    };
+    let mut out = Vec::with_capacity(3);
+    for spec in &OIT_STAGES {
+        let mut defines = effective_defines(options.defines);
+        defines.extend_from_slice(spec.defines);
+        if additive {
+            defines.push("OIT_ADDITIVE");
+        }
+        let built = guard::guarded(|| {
+            translate_inner(sources, &oit_options, &defines, spec.samplers, include)
+        })
+        .unwrap_or_else(|reason| Err(vec![problem(sources.fragment_file, reason)]))
+        .map_err(|mut problems| {
+            for p in &mut problems {
+                p.message = format!("OIT {}: {}", spec.name, p.message);
+            }
+            problems
+        })?;
+        out.push(built);
+    }
+    Ok(out.try_into().expect("three OIT stages"))
 }
 
 fn translate_inner(
     sources: &ProgramSources<'_>,
     options: &Options<'_>,
+    defines: &[&str],
+    extra_samplers: &[&str],
     include: &dyn Fn(&str) -> Result<Option<String>, String>,
 ) -> Result<BuiltProgram, Vec<Problem>> {
-    let defines = effective_defines(options.defines);
     let read = |id: &str| -> Result<Option<String>, String> {
         if id == SPRITE_INCLUDE {
             if options.textured {
@@ -226,13 +319,9 @@ fn translate_inner(
         once: &["moj_import"],
     };
 
-    let vertex_expanded = sunrise_glsl::expand_includes(
-        sources.vertex,
-        sources.vertex_dir,
-        &includes,
-        Some(&defines),
-    )
-    .map_err(|e| vec![problem(sources.vertex_file, e.to_string())])?;
+    let vertex_expanded =
+        sunrise_glsl::expand_includes(sources.vertex, sources.vertex_dir, &includes, Some(defines))
+            .map_err(|e| vec![problem(sources.vertex_file, e.to_string())])?;
     if let Some((at, msg)) = guard::refusal(&vertex_expanded) {
         return Err(vec![located(
             sources.vertex_file,
@@ -246,7 +335,7 @@ fn translate_inner(
         sources.fragment,
         sources.fragment_dir,
         &includes,
-        Some(&defines),
+        Some(defines),
     )
     .map_err(|e| vec![problem(sources.fragment_file, e.to_string())])?;
     if let Some((at, msg)) = guard::refusal(&fragment_expanded) {
@@ -287,12 +376,13 @@ fn translate_inner(
             &[]
         },
         loose: &[],
-        defines: &defines,
+        defines,
         includes: &includes,
     };
     let glue = pipeline_glue(options.interface, options.linear_light);
 
-    let translated = sunrise_glsl::translate(&stages, &inputs, &glue, &|_| false).map_err(|e| {
+    let provided = |name: &str| extra_samplers.contains(&name);
+    let translated = sunrise_glsl::translate(&stages, &inputs, &glue, &provided).map_err(|e| {
         let (file, msg) = split_stage_error(sources, &e, options.textured);
         vec![problem(file, msg)]
     })?;
@@ -652,5 +742,103 @@ void main() { fragColor = texture(Sampler0, texCoord0); }
                 "{u}"
             );
         }
+    }
+
+    #[test]
+    fn order_independent_program_translates_all_three_oit_variants_and_refuses_alpha_only_color_output()
+     {
+        let oit_fsh = "\
+#version 330
+#include <minecraft:globals.glsl>
+#include <minecraft:dynamictransforms.glsl>
+#include <minecraft:oit.glsl>
+in vec2 texCoord0;
+in vec4 vertexColor;
+#ifndef OIT_ALPHA_ONLY
+out vec4 fragColor;
+#endif
+void main() {
+    vec4 color = vertexColor * ColorModulator;
+#ifdef OIT_ALPHA_ONLY
+    executeAlphaOnlyPhase(gl_FragCoord.z, color.a);
+#else
+#ifdef OIT_ACCUMULATE
+    color = sampleColorForAccumulation(color);
+#endif
+    fragColor = color;
+#endif
+}
+";
+        let opts = Options {
+            check_backends: true,
+            ..Default::default()
+        };
+        let translucent = translate_oit(&sources(VSH, oit_fsh), &opts, false, &stub_include)
+            .expect("translucent OIT variants must translate");
+        assert_eq!(translucent[0].translated.fragment_writes(), [0]);
+        assert_eq!(translucent[1].translated.fragment_writes(), [0, 1]);
+        assert_eq!(translucent[2].translated.fragment_writes(), [0]);
+        assert!(translucent[0].translated.other.is_empty());
+        assert_eq!(translucent[1].translated.other, ["DepthBoundsSampler"]);
+        assert_eq!(
+            translucent[2].translated.other,
+            ["DepthBoundsSampler", "Coeff0", "Coeff1"]
+        );
+
+        let additive = translate_oit(&sources(VSH, oit_fsh), &opts, true, &stub_include)
+            .expect("additive OIT variants must translate");
+        assert_eq!(additive[2].translated.fragment_writes(), [0]);
+
+        // Textured OIT program also translates cleanly.
+        let tex_oit_fsh = "\
+#version 330
+#include <minecraft:dynamictransforms.glsl>
+#include <minecraft:oit.glsl>
+#include <sunrise:pipeline_sprite.glsl>
+in vec2 texCoord0;
+in vec4 vertexColor;
+#ifndef OIT_ALPHA_ONLY
+out vec4 fragColor;
+#endif
+void main() {
+    vec4 color = sampleSprite(texCoord0) * vertexColor * ColorModulator;
+#ifdef OIT_ALPHA_ONLY
+    executeAlphaOnlyPhase(gl_FragCoord.z, color.a);
+#else
+#ifdef OIT_ACCUMULATE
+    color = sampleColorForAccumulation(color);
+#endif
+    fragColor = color;
+#endif
+}
+";
+        let tex_opts = Options {
+            textured: true,
+            check_backends: true,
+            ..Default::default()
+        };
+        translate_oit(&sources(VSH, tex_oit_fsh), &tex_opts, false, &stub_include)
+            .expect("textured OIT variants must translate");
+
+        // Writing `fragColor` under `OIT_ALPHA_ONLY` must be refused at the depth_bounds variant.
+        let broken_fsh = "\
+#version 330
+#include <minecraft:oit.glsl>
+in vec4 vertexColor;
+out vec4 fragColor;
+void main() {
+#ifdef OIT_ALPHA_ONLY
+    executeAlphaOnlyPhase(gl_FragCoord.z, vertexColor.a);
+#else
+    fragColor = sampleColorForAccumulation(vertexColor);
+#endif
+}
+";
+        let err = translate_oit(&sources(VSH, broken_fsh), &opts, false, &stub_include)
+            .expect_err("fragColor under OIT_ALPHA_ONLY must be refused");
+        assert!(
+            err[0].message.contains("OIT depth_bounds"),
+            "expected depth_bounds refusal, got: {err:?}"
+        );
     }
 }

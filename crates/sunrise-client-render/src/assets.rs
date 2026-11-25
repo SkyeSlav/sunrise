@@ -172,6 +172,14 @@ impl RenderAssets {
         self.mod_pipelines.resolve(id)
     }
 
+    /// The handle of the registered pipeline modifier `id` (static across resource reloads).
+    pub fn pipeline_modifier(
+        &self,
+        id: &mod_api::Identifier,
+    ) -> std::result::Result<mod_api::PipelineModifierRef, mod_api::RenderPipelineError> {
+        crate::mod_pipelines::resolve_modifier(id)
+    }
+
     /// Validate a handle for an API that only accepts registered standalone models.
     pub fn validate_standalone_model(
         &self,
