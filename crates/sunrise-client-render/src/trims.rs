@@ -165,9 +165,10 @@ impl TrimOverride {
     }
 }
 
-/// One synced registry in the server's order: each entry's name and the asset or palette id
-/// the server sent, none for an entry of a known pack, whose data is the client's own files.
-type SyncedEntries = Vec<(String, Option<String>)>;
+/// One synced registry keyed by entry name, as `MappedRegistry`'s id map is: the asset or
+/// palette id the server sent, none for an entry of a known pack, whose data is the client's own
+/// files.
+type SyncedEntries = HashMap<String, Option<String>>;
 
 /// The `trim_pattern` (asset id) and `trim_material` (palette id) registries.
 #[derive(Clone, Debug, Default)]
@@ -188,7 +189,7 @@ fn lookup<'a>(
 ) -> Option<&'a str> {
     match synced {
         None => local.get(id),
-        Some(entries) => match &entries.iter().find(|(name, _)| name == id)?.1 {
+        Some(entries) => match entries.get(id)? {
             Some(sent) => Some(sent),
             None => local.get(id),
         },
@@ -248,7 +249,7 @@ fn decode_synced_entry(
 }
 
 impl TrimRegistry {
-    /// Take the registries a server sent, in its sync order, as the ones that resolve.
+    /// Take the registries a server sent as the ones that resolve.
     /// A malformed entry refuses the whole load (`RegistryDataLoader.load`), leaving the
     /// previous registries unchanged.
     pub fn set_synced(&mut self, registries: &Dynamic) -> Result<(), String> {
