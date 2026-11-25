@@ -1098,6 +1098,7 @@ impl Renderer {
         let normals = self.pack_reads_normals();
         let normals_changed = normals != self.arena.has_normals();
         if storage == self.arena_storage && !normals_changed {
+            self.follow_pack_sources();
             return;
         }
         log::info!(
