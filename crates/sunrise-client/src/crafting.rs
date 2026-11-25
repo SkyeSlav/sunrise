@@ -1697,6 +1697,9 @@ struct PropertySetAddition {
 #[cfg(test)]
 #[path = "crafting/property_sets_tests.rs"]
 mod property_sets_tests;
+#[cfg(test)]
+#[path = "crafting/unknown_item_tests.rs"]
+mod unknown_item_tests;
 impl PropertyAdditions {
     /// Asks the `recipe_property_sets` hook once. An unknown set key and an
     /// item that is air are logged and skipped.
@@ -1805,8 +1808,11 @@ impl ResolvedSources {
         Ok(resolved)
     }
     /// Fails every recipe that names an item `items` lacks, as `Item.CODEC` does
-    /// for a recipe's ingredients and results: the owning load, which holds the
-    /// complete item registry, calls it once after `load_collecting`.
+    /// for a recipe's ingredients and results. The decode also runs against
+    /// partial item tables (unit tests, network copies), so the owning load,
+    /// which holds the complete item registry (`lan::sync::collect`, the one
+    /// funnel of world open, reload and sync), calls this once after
+    /// `load_collecting`; the other `load_collecting` callers are tests and probes.
     pub fn refuse_unknown_items(&mut self, items: &Items) {
         for recipe in &self.recipes {
             if let Some(reason) = unknown_item(&recipe.file, items) {
