@@ -4796,7 +4796,6 @@ dependencies = [
  "sunrise-protocol",
  "sunrise-render-core",
  "sunrise-render-shaderpack",
- "sunrise-shader-api",
  "sunrise-shaders",
  "sunrise-system",
  "sunrise-theme",
