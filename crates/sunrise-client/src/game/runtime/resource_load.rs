@@ -181,6 +181,7 @@ pub(super) fn load_core(
     resources: &sunrise_assets::resource_source::ResourceRoot,
     additional_data: &[Arc<sunrise_client::datapack::DataPack>],
     conditions: &sunrise_world::conditions::LoadConditions,
+    model_conditions: &sunrise_world::conditions::LoadConditions,
     emissive_sprites: &[mod_api::Answered<mod_api::EmissiveSpriteRegistration>],
     load_role: mods::LoadRole,
     captured: sunrise_world::native_load_context::SettingsCapture,
@@ -201,7 +202,10 @@ pub(super) fn load_core(
         let models = (parallel && !headless).then(|| {
             scope.spawn(|| {
                 let _step = startup::step("core.models_parse");
-                sunrise_client::model_library::ParsedModels::load(resources.source())
+                sunrise_client::model_library::ParsedModels::load_with_conditions(
+                    resources.source(),
+                    model_conditions,
+                )
             })
         });
         let entity_models = (!headless).then(|| {
@@ -236,10 +240,15 @@ pub(super) fn load_core(
                 let render = startup::time("core.block_models_sprites", || {
                     if headless {
                         assets.reload_for_server(resources)
-                    } else if let Some(parsed) = parsed_models {
-                        assets.reload_with_models_and_emissive(resources, parsed, emissive_sprites)
                     } else {
-                        assets.reload_with_emissive(resources, emissive_sprites)
+                        let parsed = parsed_models.unwrap_or_else(|| {
+                            let _step = startup::step("core.models_parse");
+                            sunrise_client::model_library::ParsedModels::load_with_conditions(
+                                resources.source(),
+                                model_conditions,
+                            )
+                        });
+                        assets.reload_with_models_and_emissive(resources, parsed, emissive_sprites)
                     }
                 })
                 .map_err(|e| e.to_string())?;
@@ -781,6 +790,7 @@ pub(super) fn load_resources_for_mods_with_limit(
     };
     let inventory = sunrise_mod_package::enabled::EnabledMods::read(&root)?;
     let conditions = super::load_conditions::conditions_for_mods(mod_sources, &inventory)?;
+    let model_conditions = conditions.with_mod_inventory(inventory.client_ids());
     // The generation's settings, captured once before its reload listeners register: they and
     // the item data read this capture, never the files again.
     let captured = mods::capture_load_settings(&root, role, load_role.owning)?;
@@ -800,6 +810,7 @@ pub(super) fn load_resources_for_mods_with_limit(
                             &resolved,
                             &additional_data,
                             &conditions,
+                            &model_conditions,
                             &emissive_sprites,
                             load_role,
                             captured.clone(),

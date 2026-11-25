@@ -445,7 +445,11 @@ impl RenderAssets {
             Some(parsed) => parsed,
             None if draws => {
                 let _step = crate::spans::startup::step("core.models_parse");
-                crate::model_library::ParsedModels::load(root.source())
+                let inventory = sunrise_mod_package::enabled::EnabledMods::read(root.prepared())
+                    .unwrap_or_default();
+                let conditions =
+                    sunrise_world::conditions::LoadConditions::new(inventory.client_ids());
+                crate::model_library::ParsedModels::load_with_conditions(root.source(), &conditions)
             }
             None => crate::model_library::ParsedModels::default(),
         };
