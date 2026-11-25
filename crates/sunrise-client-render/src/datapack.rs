@@ -1013,6 +1013,7 @@ fn content_id(file: &str) -> Option<String> {
         | "chicken_variant"
         | "chicken_sound_variant"
         | "frog_variant"
+        | "zombie_nautilus_variant"
         | "data_maps"
         | "enchantment"
         | "enchantment_provider"
@@ -1189,6 +1190,7 @@ impl DataStore {
             "wolf_variant",
             "world_clock",
             "worldgen/biome",
+            "zombie_nautilus_variant",
         ]
         .into_iter()
         .chain(crate::providers::NUMBER_PROVIDER_KINDS)

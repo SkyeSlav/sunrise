@@ -4576,9 +4576,6 @@ impl Game<'_> {
                 // later in Animal.spawnChildFromBreeding or Fox.FoxBreedGoal.breed.
                 // No Mob.finalizeSpawn either: no follow range bonus, right-handed.
                 spawning::bred_offspring(child);
-                // getBreedOffspring creates the baby without finalizeSpawn: it keeps
-                // the default (`classic`) sound variant.
-                child.extra.sound_variant = None;
                 // Fox.getBreedOffspring runs no finalizeSpawn: nothing in the
                 // baby fox's mouth.
                 if p.species() == Species::Fox {
