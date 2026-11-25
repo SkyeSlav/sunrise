@@ -380,14 +380,9 @@ pub struct NativeFrame {
     mirror: Option<wgpu::TextureView>,
 }
 
-/// A depth texture of `size` the world's depth is copied into.
-fn depth_copy(device: &wgpu::Device, size: [u32; 2]) -> wgpu::Texture {
-    copy_target(
-        device,
-        "Native shader pack opaque depth",
-        size,
-        wgpu::TextureFormat::Depth32Float,
-    )
+/// A depth texture of `size` and `format` the world's depth is copied into.
+fn depth_copy(device: &wgpu::Device, size: [u32; 2], format: wgpu::TextureFormat) -> wgpu::Texture {
+    copy_target(device, "Native shader pack opaque depth", size, format)
 }
 
 /// A colour texture of `size` and `format` the world's colour is copied into.
@@ -513,7 +508,7 @@ impl NativeFrame {
         });
         let surface = surface_target(device, [1, 1]);
         let surface_view = surface.create_view(&Default::default());
-        let opaque_depth = depth_copy(device, [1, 1]);
+        let opaque_depth = depth_copy(device, [1, 1], wgpu::TextureFormat::Depth32Float);
         let opaque_color = color_copy(device, [1, 1], wgpu::TextureFormat::Rgba8Unorm);
         let blank = copy_target(
             device,
@@ -622,7 +617,7 @@ impl NativeFrame {
         block_light: &super::block_light::BlockLight,
         pbr: &[wgpu::TextureView; 2],
     ) -> wgpu::BindGroup {
-        let opaque_depth = opaque_depth.create_view(&Default::default());
+        let opaque_depth = super::texture_depth_read_view(opaque_depth);
         let opaque_color = opaque_color.create_view(&Default::default());
         let mut entries = vec![
             wgpu::BindGroupEntry {
@@ -709,7 +704,8 @@ impl NativeFrame {
         };
         let color_fits = [self.opaque_color.width(), self.opaque_color.height()] == color_size
             && self.opaque_color.format() == format;
-        let depth_fits = [self.opaque_depth.width(), self.opaque_depth.height()] == size;
+        let depth_fits = [self.opaque_depth.width(), self.opaque_depth.height()] == size
+            && self.opaque_depth.format() == depth.format();
         if depth_fits && color_fits {
             return;
         }
@@ -717,7 +713,7 @@ impl NativeFrame {
             self.opaque_color = color_copy(device, color_size, format);
         }
         if !depth_fits {
-            self.opaque_depth = depth_copy(device, size);
+            self.opaque_depth = depth_copy(device, size, depth.format());
         }
         self.regroup(device);
     }

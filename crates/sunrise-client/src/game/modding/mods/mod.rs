@@ -858,6 +858,7 @@ pub(super) fn register_client_presentations(
     role: ExecutionRole,
     vanilla_root: &Path,
 ) -> sunrise_client::Result<()> {
+    configure_main_render_target(role);
     register_preset_editors(role);
     register_dimension_transition_screens(role);
     register_entity_spectator_shaders(role);
@@ -865,6 +866,16 @@ pub(super) fn register_client_presentations(
     register_pipeline_modifiers(role)?;
     register_entity_renderers(role);
     Ok(())
+}
+
+/// Ask client mods once at startup whether the main world render target needs a stencil buffer.
+fn configure_main_render_target(role: ExecutionRole) {
+    if !role.is_client() {
+        return;
+    }
+    let mut enable_stencil = false;
+    Game::native_configure_main_render_target(&RegistrationContext::new(), &mut enable_stencil);
+    sunrise_client_render::mod_pipelines::configure_main_render_target(enable_stencil);
 }
 
 /// Resolve client dimension-transition registrations once, before the first level opens.
@@ -2445,6 +2456,9 @@ impl Game<'_> {
             .mods
             .reconcile_code_switches(&self.settings.mods.disabled);
         self.instance_groups
+            .borrow_mut()
+            .retire_disabled(&effective);
+        self.stencil_manager
             .borrow_mut()
             .retire_disabled(&effective);
         self.mods.apply_code_switches(&effective);

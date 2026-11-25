@@ -1851,12 +1851,16 @@ impl PostEffects {
             self.gl_depth_target = Some((texture, view));
         }
         let (_, target) = self.gl_depth_target.as_ref().expect("made above");
+        let depth_read = depth.texture().create_view(&wgpu::TextureViewDescriptor {
+            aspect: wgpu::TextureAspect::DepthOnly,
+            ..Default::default()
+        });
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Post effect GL depth"),
             layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::TextureView(depth),
+                resource: wgpu::BindingResource::TextureView(&depth_read),
             }],
         });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

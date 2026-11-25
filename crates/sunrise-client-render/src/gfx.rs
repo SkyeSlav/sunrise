@@ -38,6 +38,56 @@ fn light_marks(format: wgpu::TextureFormat, hdr: bool) -> bool {
     hdr && format != LINEAR_FRAME
 }
 
+/// Choose the main world depth buffer format for `device`:
+/// - `Depth32Float` when no mod opted into stencil via `Hooks::configure_main_render_target`
+///   (zero overhead, bit-identical to vanilla);
+/// - `Depth32FloatStencil8` when stencil is enabled and the adapter/device supports
+///   `wgpu::Features::DEPTH32FLOAT_STENCIL8`, preserving 32-bit float reversed-Z depth precision;
+/// - `Depth24PlusStencil8` otherwise (24-bit depth precision with 8-bit stencil).
+pub fn main_depth_format(device: &wgpu::Device, stencil_enabled: bool) -> wgpu::TextureFormat {
+    if !stencil_enabled {
+        wgpu::TextureFormat::Depth32Float
+    } else if device
+        .features()
+        .contains(wgpu::Features::DEPTH32FLOAT_STENCIL8)
+    {
+        wgpu::TextureFormat::Depth32FloatStencil8
+    } else {
+        wgpu::TextureFormat::Depth24PlusStencil8
+    }
+}
+
+/// Active main world depth buffer format for `device`, reflecting startup
+/// `Hooks::configure_main_render_target`.
+pub(crate) fn current_main_depth_format(device: &wgpu::Device) -> wgpu::TextureFormat {
+    main_depth_format(device, crate::mod_pipelines::main_target_stencil_enabled())
+}
+
+/// Depth-only view for sampling a depth or combined depth-stencil texture in shaders.
+pub(crate) fn depth_read_view(depth: &wgpu::TextureView) -> wgpu::TextureView {
+    texture_depth_read_view(depth.texture())
+}
+
+/// Depth-only view directly from a depth or combined depth-stencil texture.
+pub(crate) fn texture_depth_read_view(texture: &wgpu::Texture) -> wgpu::TextureView {
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        aspect: wgpu::TextureAspect::DepthOnly,
+        ..Default::default()
+    })
+}
+
+/// Stencil ops for a render pass targeting a depth attachment of `format`: `None` for
+/// depth-only formats, `Some(ops)` when `format` carries a stencil aspect.
+pub(crate) fn stencil_ops_for(
+    format: wgpu::TextureFormat,
+    load: wgpu::LoadOp<u32>,
+    store: wgpu::StoreOp,
+) -> Option<wgpu::Operations<u32>> {
+    format
+        .has_stencil_aspect()
+        .then_some(wgpu::Operations { load, store })
+}
+
 fn terrain_shader() -> String {
     include_str!("hdr_light.wgsl").to_owned() + include_str!("terrain.wgsl")
 }

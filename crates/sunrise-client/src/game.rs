@@ -3403,6 +3403,7 @@ struct Game<'a> {
     /// The title and menu bundle (GUI atlas, font and panorama).
     gui: UiResources,
     instance_groups: std::cell::RefCell<native_instance_groups::InstanceGroupStorage>,
+    stencil_manager: std::cell::RefCell<sunrise_client_render::mod_pipelines::StencilManager>,
     standalone_geometry: native_block_entity_draw::StandaloneGeometry,
     /// `FogRenderer`'s evolving state.
     fog: sunrise_client::fog::FogState,
@@ -14107,6 +14108,7 @@ impl<'a> Game<'a> {
             pack,
             gui,
             instance_groups: Default::default(),
+            stencil_manager: Default::default(),
             standalone_geometry,
             fog: Default::default(),
             screen_fx: Default::default(),

@@ -37,7 +37,11 @@ impl Renderer {
                         load: wgpu::LoadOp::Clear(0.0),
                         store: wgpu::StoreOp::Discard,
                     }),
-                    stencil_ops: None,
+                    stencil_ops: stencil_ops_for(
+                        world_depth.texture().format(),
+                        wgpu::LoadOp::Clear(0),
+                        wgpu::StoreOp::Discard,
+                    ),
                 }),
                 timestamp_writes: native.timing.as_mut().and_then(|t| t.writes(&sky.label)),
                 ..Default::default()

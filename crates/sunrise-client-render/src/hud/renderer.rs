@@ -203,7 +203,7 @@ impl HudRenderer {
                 },
                 primitive: Default::default(),
                 depth_stencil: depth.map(|write| wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
+                    format: crate::gfx::current_main_depth_format(device),
                     depth_write_enabled: Some(write),
                     depth_compare: Some(wgpu::CompareFunction::LessEqual),
                     stencil: Default::default(),
@@ -574,7 +574,11 @@ impl HudRenderer {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Discard,
                     }),
-                    stencil_ops: None,
+                    stencil_ops: crate::gfx::stencil_ops_for(
+                        depth.texture().format(),
+                        wgpu::LoadOp::Clear(0),
+                        wgpu::StoreOp::Discard,
+                    ),
                 }),
                 ..Default::default()
             });

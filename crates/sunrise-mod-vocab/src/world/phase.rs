@@ -297,6 +297,17 @@ pub trait ClientReloadHost:
     fn block_sprites_version(&self) -> u64 {
         0
     }
+    /// Whether the main world render target has an 8-bit stencil attachment (enabled via
+    /// `Hooks::configure_main_render_target`).
+    fn main_target_stencil_enabled(&self) -> bool {
+        false
+    }
+    /// Reserve a cooperative stencil bit (`0..8`, NeoForge's `StencilManager.reserveBit`).
+    fn reserve_stencil_bit(&self) -> Option<u8> {
+        None
+    }
+    /// Release a previously reserved stencil bit (`0..8`, NeoForge's `StencilManager.releaseBit`).
+    fn release_stencil_bit(&self, _bit: u8) {}
 }
 
 /// Phase-scoped context for `Hooks::add_client_reload_listeners`.

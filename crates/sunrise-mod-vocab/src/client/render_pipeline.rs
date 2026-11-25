@@ -257,6 +257,20 @@ impl RenderPipeline {
         self
     }
 
+    /// Attach a [`StencilTest`] to this pipeline's [`DepthState`] (NeoForge's
+    /// `RenderPipeline.Builder.withStencilTest`). Requires the target render pass to have a
+    /// stencil attachment (for the main world target, opt in during
+    /// `Hooks::configure_main_render_target` via `ConfigureMainRenderTargetEvent::enable_stencil`);
+    /// otherwise submitting draws returns [`PipelineDrawError::NoStencilAttachment`].
+    pub fn stencil(mut self, stencil: StencilTest) -> Self {
+        let ds = self
+            .state
+            .depth_stencil
+            .get_or_insert_with(|| DepthState::new(DepthCompare::GreaterEqual, false));
+        ds.stencil = Some(stencil);
+        self
+    }
+
     /// Set whether back faces are culled (`withCull`). Default: `false` (two-sided).
     pub fn cull(mut self, cull: bool) -> Self {
         self.state.cull = cull;
@@ -1020,8 +1034,145 @@ const fn canonical_f32_bits(value: f32) -> u32 {
     if value == 0.0 { 0 } else { value.to_bits() }
 }
 
-/// Depth test, depth write, and depth bias state
-/// (`com.mojang.renderpearl.api.pipeline.DepthStencilState`).
+/// Operation applied to the stencil buffer after computing the stencil and depth test results
+/// (NeoForge's `net.neoforged.neoforge.client.stencil.StencilOperation`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline stencil operation.
+pub enum StencilOp {
+    /// Leave the current stencil value unchanged (`StencilOperation.KEEP`).
+    #[default]
+    Keep,
+    /// Set the stencil value to `0` (`StencilOperation.ZERO`).
+    Zero,
+    /// Replace the stencil value with [`StencilTest::reference`] (`StencilOperation.REPLACE`).
+    Replace,
+    /// Increment the stencil value, clamping at `255` (`StencilOperation.INCR`).
+    IncrementClamp,
+    /// Decrement the stencil value, clamping at `0` (`StencilOperation.DECR`).
+    DecrementClamp,
+    /// Bitwise invert the stencil value (`StencilOperation.INVERT`).
+    Invert,
+    /// Increment the stencil value, wrapping from `255` to `0` (`StencilOperation.INCR_WRAP`).
+    IncrementWrap,
+    /// Decrement the stencil value, wrapping from `0` to `255` (`StencilOperation.DECR_WRAP`).
+    DecrementWrap,
+}
+
+/// Stencil test and write state for one triangle winding face (NeoForge's
+/// `net.neoforged.neoforge.client.stencil.StencilPerFaceTest`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline per-face stencil test.
+pub struct StencilFaceState {
+    /// Operation applied when the fragment fails the stencil test (`StencilPerFaceTest.fail`).
+    pub fail_op: StencilOp,
+    /// Operation applied when the fragment passes the stencil test but fails the depth test
+    /// (`StencilPerFaceTest.depthFail`).
+    pub depth_fail_op: StencilOp,
+    /// Operation applied when the fragment passes both the stencil and depth tests
+    /// (`StencilPerFaceTest.pass`).
+    pub pass_op: StencilOp,
+    /// Comparison operator against the stencil buffer (`StencilPerFaceTest.compare`).
+    pub compare: DepthCompare,
+}
+
+impl StencilFaceState {
+    /// Pass always and leave the stencil buffer unchanged.
+    pub const IGNORE: Self = Self {
+        fail_op: StencilOp::Keep,
+        depth_fail_op: StencilOp::Keep,
+        pass_op: StencilOp::Keep,
+        compare: DepthCompare::Always,
+    };
+
+    /// Construct a per-face stencil test.
+    pub const fn new(
+        fail_op: StencilOp,
+        depth_fail_op: StencilOp,
+        pass_op: StencilOp,
+        compare: DepthCompare,
+    ) -> Self {
+        Self {
+            fail_op,
+            depth_fail_op,
+            pass_op,
+            compare,
+        }
+    }
+}
+
+impl Default for StencilFaceState {
+    fn default() -> Self {
+        Self::IGNORE
+    }
+}
+
+/// Stencil test state for a [`RenderPipeline`] or [`PipelineModifier`] (NeoForge's
+/// `net.neoforged.neoforge.client.stencil.StencilTest`).
+///
+/// The main world render target has a stencil buffer only when a mod calls
+/// `ConfigureMainRenderTargetEvent::enable_stencil` during `Hooks::configure_main_render_target`.
+/// Check [`crate::ClientHost::main_target_stencil_enabled`] at draw time and reserve cooperative
+/// stencil bits (`0..8`) via [`crate::ClientHost::reserve_stencil_bit`] /
+/// [`crate::ClientHost::release_stencil_bit`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline stencil test state.
+pub struct StencilTest {
+    /// Stencil test settings for front-facing triangles (`StencilTest.front`).
+    pub front: StencilFaceState,
+    /// Stencil test settings for back-facing triangles (`StencilTest.back`).
+    pub back: StencilFaceState,
+    /// Bitmask applied to both the reference value and the stored stencil value before comparison
+    /// (`StencilTest.readMask`).
+    pub read_mask: u8,
+    /// Bitmask applied to values written back to the stencil buffer (`StencilTest.writeMask`).
+    pub write_mask: u8,
+    /// Reference value used for stencil comparisons and [`StencilOp::Replace`] writes
+    /// (`StencilTest.referenceValue`).
+    pub reference: u8,
+}
+
+impl StencilTest {
+    /// Default read mask (`0xFF`, all 8 stencil bits, `StencilTest.DEFAULT_READ_MASK`).
+    pub const DEFAULT_READ_MASK: u8 = 0xFF;
+    /// Default write mask (`0xFF`, all 8 stencil bits, `StencilTest.DEFAULT_WRITE_MASK`).
+    pub const DEFAULT_WRITE_MASK: u8 = 0xFF;
+    /// Default reference value (`0`, `StencilTest.DEFAULT_REFERENCE_VALUE`).
+    pub const DEFAULT_REFERENCE: u8 = 0;
+
+    /// Construct a stencil test with explicit front and back face states.
+    pub const fn new(
+        front: StencilFaceState,
+        back: StencilFaceState,
+        read_mask: u8,
+        write_mask: u8,
+        reference: u8,
+    ) -> Self {
+        Self {
+            front,
+            back,
+            read_mask,
+            write_mask,
+            reference,
+        }
+    }
+
+    /// Construct a stencil test using `face` for both front and back faces (matching
+    /// `new StencilTest(StencilPerFaceTest, int, int, int)`).
+    pub const fn both_faces(
+        face: StencilFaceState,
+        read_mask: u8,
+        write_mask: u8,
+        reference: u8,
+    ) -> Self {
+        Self::new(face, face, read_mask, write_mask, reference)
+    }
+}
+
+/// Depth test, depth write, depth bias, and optional stencil test state
+/// (`com.mojang.renderpearl.api.pipeline.DepthStencilState` + NeoForge `StencilTest`).
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 // no wire: local client render-pipeline depth-stencil state.
@@ -1037,24 +1188,29 @@ pub struct DepthState {
     /// `DepthStencilState.depthBiasScaleFactor`). Must be finite (refused at registration
     /// otherwise). Default: `0.0`.
     pub depth_bias_slope_scale: f32,
+    /// Optional stencil test state (NeoForge's `StencilTest`). Default: `None`.
+    pub stencil: Option<StencilTest>,
 }
 
 impl DepthState {
-    /// Vanilla's `DepthStencilState.DEFAULT`: `GreaterEqual`, depth write enabled, zero bias.
+    /// Vanilla's `DepthStencilState.DEFAULT`: `GreaterEqual`, depth write enabled, zero bias,
+    /// no stencil test.
     pub const DEFAULT: Self = Self {
         compare: DepthCompare::GreaterEqual,
         write: true,
         depth_bias_constant: 0,
         depth_bias_slope_scale: 0.0,
+        stencil: None,
     };
 
-    /// Construct a depth state with zero depth bias.
+    /// Construct a depth state with zero depth bias and no stencil test.
     pub const fn new(compare: DepthCompare, write: bool) -> Self {
         Self {
             compare,
             write,
             depth_bias_constant: 0,
             depth_bias_slope_scale: 0.0,
+            stencil: None,
         }
     }
 
@@ -1062,6 +1218,12 @@ impl DepthState {
     pub const fn depth_bias(mut self, constant: i32, slope_scale: f32) -> Self {
         self.depth_bias_constant = constant;
         self.depth_bias_slope_scale = slope_scale;
+        self
+    }
+
+    /// Attach a [`StencilTest`] to this depth state.
+    pub const fn stencil(mut self, stencil: StencilTest) -> Self {
+        self.stencil = Some(stencil);
         self
     }
 }
@@ -1073,6 +1235,7 @@ impl PartialEq for DepthState {
             && self.depth_bias_constant == other.depth_bias_constant
             && canonical_f32_bits(self.depth_bias_slope_scale)
                 == canonical_f32_bits(other.depth_bias_slope_scale)
+            && self.stencil == other.stencil
     }
 }
 
@@ -1084,6 +1247,7 @@ impl std::hash::Hash for DepthState {
         self.write.hash(state);
         self.depth_bias_constant.hash(state);
         canonical_f32_bits(self.depth_bias_slope_scale).hash(state);
+        self.stencil.hash(state);
     }
 }
 
@@ -1533,6 +1697,8 @@ pub struct PipelineModifier {
     /// Override `(depth_bias_constant, depth_bias_slope_scale)` on depth-attached pipelines.
     /// Non-finite slope scale is refused at registration.
     pub depth_bias: Option<(i32, f32)>,
+    /// Override [`DepthState::stencil`] on depth-attached pipelines.
+    pub stencil: Option<StencilTest>,
     /// Override [`PipelineState::cull`].
     pub cull: Option<bool>,
     /// Override [`PipelineState::color_write`].
@@ -1558,6 +1724,7 @@ impl PartialEq for PipelineModifier {
             && self.depth_compare == other.depth_compare
             && self.depth_write == other.depth_write
             && bias_eq
+            && self.stencil == other.stencil
             && self.cull == other.cull
             && self.color_write == other.color_write
             && self.polygon == other.polygon
@@ -1577,6 +1744,7 @@ impl PipelineModifier {
             depth_compare: None,
             depth_write: None,
             depth_bias: None,
+            stencil: None,
             cull: None,
             color_write: None,
             polygon: None,
@@ -1618,6 +1786,12 @@ impl PipelineModifier {
     /// Non-finite `slope_scale` is refused at registration.
     pub fn depth_bias(mut self, constant: i32, slope_scale: f32) -> Self {
         self.depth_bias = Some((constant, slope_scale));
+        self
+    }
+
+    /// Override [`DepthState::stencil`] on depth-attached pipelines.
+    pub fn stencil(mut self, stencil: StencilTest) -> Self {
+        self.stencil = Some(stencil);
         self
     }
 
@@ -1674,6 +1848,9 @@ impl PipelineModifier {
                 ds.depth_bias_constant = constant;
                 ds.depth_bias_slope_scale = slope_scale;
             }
+            if let Some(stencil) = self.stencil {
+                ds.stencil = Some(stencil);
+            }
             state.depth_stencil = Some(ds);
         }
         if let Some(cull) = self.cull {
@@ -1697,6 +1874,7 @@ impl PipelineModifier {
             && self.depth_compare.is_none()
             && self.depth_write.is_none()
             && self.depth_bias.is_none()
+            && self.stencil.is_none()
             && self.cull.is_none()
             && self.color_write.is_none()
             && self.polygon.is_none()
@@ -1792,6 +1970,25 @@ pub enum PipelineDrawError {
     /// The pipeline's effective [`PrimitiveTopology`] does not match the draw call (for example,
     /// submitting a non-[`PrimitiveTopology::Quads`] pipeline to `pipeline_quads`).
     TopologyMismatch,
+    /// The pipeline (or an active modifier) enables a [`StencilTest`], but the target render pass
+    /// has no stencil attachment (no mod called `ConfigureMainRenderTargetEvent::enable_stencil`
+    /// at startup, or the pass targets a depth-only buffer).
+    NoStencilAttachment,
+}
+
+impl crate::ConfigureMainRenderTargetEvent {
+    /// Request an 8-bit stencil buffer on the main world render target (NeoForge's
+    /// `ConfigureMainRenderTargetEvent.enableStencil`). Once enabled by any listener, later
+    /// listeners cannot disable it.
+    pub fn enable_stencil(&mut self) {
+        self.enable_stencil = true;
+    }
+
+    /// Whether any listener has requested a stencil buffer on the main world render target
+    /// (NeoForge's `ConfigureMainRenderTargetEvent.isStencilEnabled`).
+    pub const fn is_stencil_enabled(&self) -> bool {
+        self.enable_stencil
+    }
 }
 
 impl crate::RegisterRenderPipelinesEvent<'_> {
@@ -2154,6 +2351,7 @@ mod tests {
                     write: true,
                     depth_bias_constant: 10,
                     depth_bias_slope_scale: 1.5,
+                    stencil: None,
                 }),
                 cull: true,
                 color_write: ColorWrite::COLOR,
@@ -2183,6 +2381,7 @@ mod tests {
                 write: false,
                 depth_bias_constant: 4,
                 depth_bias_slope_scale: 0.5,
+                stencil: None,
             })
         );
         assert_eq!(modified.polygon, PolygonMode::Fill);
@@ -2302,5 +2501,51 @@ mod tests {
         assert_eq!(PrimitiveTopology::DebugLines.index_count(4), 4);
         assert_eq!(PrimitiveTopology::DebugLineStrip.index_count(4), 4);
         assert_eq!(PrimitiveTopology::Points.index_count(3), 3);
+    }
+
+    #[test]
+    fn stencil_test_builders_modifier_and_configure_event() {
+        let write_mask_face = StencilFaceState::new(
+            StencilOp::Keep,
+            StencilOp::Keep,
+            StencilOp::Replace,
+            DepthCompare::Always,
+        );
+        let test = StencilTest::both_faces(write_mask_face, 0x01, 0x01, 1);
+        assert_eq!(test.front, write_mask_face);
+        assert_eq!(test.back, write_mask_face);
+        assert_eq!(test.read_mask, 0x01);
+        assert_eq!(test.write_mask, 0x01);
+        assert_eq!(test.reference, 1);
+
+        let p = pipeline("example:stencil_mask").stencil(test);
+        assert_eq!(p.state.depth_stencil.unwrap().stencil, Some(test));
+
+        let test_eq = StencilTest::both_faces(
+            StencilFaceState::new(
+                StencilOp::Keep,
+                StencilOp::Keep,
+                StencilOp::Keep,
+                DepthCompare::Equal,
+            ),
+            0x01,
+            0x00,
+            1,
+        );
+        let modifier = PipelineModifier::new(Identifier::parse("example:stencil_eq").unwrap())
+            .stencil(test_eq);
+        assert!(!modifier.is_noop());
+        let applied = modifier.apply(p.state);
+        assert_eq!(applied.depth_stencil.unwrap().stencil, Some(test_eq));
+
+        let depthless = pipeline("example:depthless").depth_stencil(None);
+        assert_eq!(modifier.apply(depthless.state).depth_stencil, None);
+
+        let mut event = crate::ConfigureMainRenderTargetEvent {
+            enable_stencil: false,
+        };
+        assert!(!event.is_stencil_enabled());
+        event.enable_stencil();
+        assert!(event.is_stencil_enabled());
     }
 }

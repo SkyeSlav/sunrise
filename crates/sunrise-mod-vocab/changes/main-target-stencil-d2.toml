@@ -1,0 +1,15 @@
+ids = [
+    "hook:configure_main_render_target",
+    "type:StencilOp",
+    "type:StencilFaceState",
+    "type:StencilTest",
+    "type:DepthState",
+    "type:PipelineModifier",
+    "type:PipelineDrawError",
+    "type:RenderPipeline",
+    "method:prelude::ClientRenderClientHost::main_target_stencil_enabled",
+    "method:prelude::ClientRenderClientHost::reserve_stencil_bit",
+    "method:prelude::ClientRenderClientHost::release_stencil_bit",
+]
+why = "Add NeoForge 26.3 main render target startup stencil opt-in (Hooks::configure_main_render_target / ConfigureMainRenderTargetEvent, ClientHost::main_target_stencil_enabled), cooperative 8-bit stencil bit allocation (ClientHost::reserve_stencil_bit / release_stencil_bit, anchored on StencilManager), and StencilOp / StencilFaceState / StencilTest on DepthState, RenderPipeline, and PipelineModifier with PipelineDrawError::NoStencilAttachment."
+migrate = "Additive: opt into a main-target stencil buffer during Hooks::configure_main_render_target via event.enable_stencil(), query ClientHost::main_target_stencil_enabled(), reserve bits with ClientHost::reserve_stencil_bit() / release_stencil_bit(bit), and attach a StencilTest to a RenderPipeline or PipelineModifier via .stencil(StencilTest::...)."

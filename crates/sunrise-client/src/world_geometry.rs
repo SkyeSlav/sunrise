@@ -353,6 +353,26 @@ impl WorldGeometry {
         topology
     }
 
+    /// Effective [`mod_api::StencilTest`] after applying the active modifier stack (outermost
+    /// wins). Depthless pipelines (`base: None`) never gain a stencil test from modifiers.
+    pub fn effective_stencil(
+        &self,
+        base: Option<mod_api::DepthState>,
+    ) -> Option<mod_api::StencilTest> {
+        let base = base?;
+        if self.modifier_stack.is_empty() {
+            return base.stencil;
+        }
+        let defs = crate::mod_pipelines::registered_modifiers();
+        let mut stencil = base.stencil;
+        for &slot in self.modifier_stack.iter().rev() {
+            if let Some(s) = defs.get(slot as usize).and_then(|m| m.stencil) {
+                stencil = Some(s);
+            }
+        }
+        stencil
+    }
+
     /// Append geometry to a shared CPU stream and return a handle to just the appended ranges.
     /// Only the renderer's prepare hook can call this; stage callbacks can only queue handles.
     pub fn prepare_draw<E>(

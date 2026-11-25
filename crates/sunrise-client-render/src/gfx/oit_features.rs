@@ -58,6 +58,7 @@ impl Features {
         weather: &wgpu::BindGroupLayout,
         border: &wgpu::BindGroupLayout,
         format: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
     ) -> Self {
         let entity_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sunrise improved transparency features"),
@@ -139,7 +140,7 @@ impl Features {
                         ..Default::default()
                     },
                     depth_stencil: Some(wgpu::DepthStencilState {
-                        format: wgpu::TextureFormat::Depth32Float,
+                        format: depth_format,
                         depth_write_enabled: Some(false),
                         depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                         stencil: Default::default(),

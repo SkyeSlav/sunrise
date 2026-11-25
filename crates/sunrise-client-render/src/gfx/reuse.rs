@@ -115,6 +115,10 @@ pub struct On<'a> {
     generation: u32,
 }
 impl On<'_> {
+    pub fn device(&self) -> &wgpu::Device {
+        self.device
+    }
+
     pub fn create_shader_module(
         &self,
         descriptor: wgpu::ShaderModuleDescriptor<'_>,

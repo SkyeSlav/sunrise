@@ -17,7 +17,7 @@ use crate::mod_pipelines::{Built, BuiltTexture, ModifierStacks, Pipelines};
 use glam::Mat4;
 use mod_api::{
     BlendFactor, BlendOp, ColorTargetState, ColorWrite, DepthCompare, Identifier, PipelineBlend,
-    PipelineState, PolygonMode, PrimitiveTopology,
+    PipelineState, PolygonMode, PrimitiveTopology, StencilFaceState, StencilOp, StencilTest,
 };
 use sunrise_mod_pipeline::{
     ENTRY, OIT_STAGE_SAMPLERS, Options as PipelineOptions, SPRITE_RECT_BINDING,
@@ -149,8 +149,44 @@ pub(crate) fn fallback_vanilla_blocks(
 #[derive(Clone, Copy)]
 struct TargetState<'a> {
     color_formats: &'a [wgpu::TextureFormat],
+    depth_format: wgpu::TextureFormat,
     standard_z: bool,
     write_mask: wgpu::ColorWrites,
+}
+
+fn wgpu_stencil_op(op: StencilOp) -> wgpu::StencilOperation {
+    match op {
+        StencilOp::Keep => wgpu::StencilOperation::Keep,
+        StencilOp::Zero => wgpu::StencilOperation::Zero,
+        StencilOp::Replace => wgpu::StencilOperation::Replace,
+        StencilOp::IncrementClamp => wgpu::StencilOperation::IncrementClamp,
+        StencilOp::DecrementClamp => wgpu::StencilOperation::DecrementClamp,
+        StencilOp::Invert => wgpu::StencilOperation::Invert,
+        StencilOp::IncrementWrap => wgpu::StencilOperation::IncrementWrap,
+        StencilOp::DecrementWrap => wgpu::StencilOperation::DecrementWrap,
+        _ => wgpu::StencilOperation::Keep,
+    }
+}
+
+fn wgpu_stencil_face(face: StencilFaceState) -> wgpu::StencilFaceState {
+    wgpu::StencilFaceState {
+        compare: wgpu_compare(face.compare),
+        fail_op: wgpu_stencil_op(face.fail_op),
+        depth_fail_op: wgpu_stencil_op(face.depth_fail_op),
+        pass_op: wgpu_stencil_op(face.pass_op),
+    }
+}
+
+fn wgpu_stencil_state(stencil: Option<StencilTest>) -> wgpu::StencilState {
+    match stencil {
+        Some(st) => wgpu::StencilState {
+            front: wgpu_stencil_face(st.front),
+            back: wgpu_stencil_face(st.back),
+            read_mask: u32::from(st.read_mask),
+            write_mask: u32::from(st.write_mask),
+        },
+        None => wgpu::StencilState::default(),
+    }
 }
 
 fn wgpu_compare(compare: DepthCompare) -> wgpu::CompareFunction {
@@ -292,8 +328,8 @@ impl FanIndices {
 enum CachedVariant {
     /// Modifier changed no effective state for this target; reuse the base pipeline.
     Base,
-    /// Compiled variant pipeline.
-    Compiled(wgpu::RenderPipeline),
+    /// Compiled variant pipeline and its optional stencil reference value.
+    Compiled(wgpu::RenderPipeline, Option<u8>),
     /// GPU refused this variant (already logged once with both ids); skip its runs.
     Refused,
 }
@@ -328,7 +364,9 @@ struct CompiledOit {
 /// compile modifier and shader-pack target variants.
 struct Compiled {
     id: Identifier,
-    pipeline: wgpu::RenderPipeline,
+    /// `None` when the base pipeline declares a [`StencilTest`] while the main world depth target
+    /// has no stencil aspect (draws are refused at submission with `NoStencilAttachment`).
+    pipeline: Option<wgpu::RenderPipeline>,
     pipeline_layout: wgpu::PipelineLayout,
     group: wgpu::BindGroup,
     pack_group: wgpu::BindGroup,
@@ -353,6 +391,7 @@ struct Compiled {
 pub struct ModPipelines {
     color_format: wgpu::TextureFormat,
     linear_light: bool,
+    depth_format: wgpu::TextureFormat,
     /// Shared nearest/default sampler for `Sampler0`.
     sampler: wgpu::Sampler,
     /// Non-filtering nearest sampler for OIT float textures (`DepthBoundsSampler`, `Coeff0`, `Coeff1`).
@@ -382,10 +421,24 @@ pub struct ModPipelines {
 
 impl ModPipelines {
     /// Storage for pipelines drawing into `(color_format, linear_light)` over a reversed
-    /// Depth32Float depth.
+    /// `Depth32Float` depth buffer.
     pub fn new(
         device: &wgpu::Device,
         (color_format, linear_light): (wgpu::TextureFormat, bool),
+    ) -> Self {
+        Self::new_with_depth(
+            device,
+            (color_format, linear_light),
+            wgpu::TextureFormat::Depth32Float,
+        )
+    }
+
+    /// Storage for pipelines drawing into `(color_format, linear_light)` over a reversed depth
+    /// buffer of `depth_format` (`Depth32Float`, `Depth32FloatStencil8`, or `Depth24PlusStencil8`).
+    pub fn new_with_depth(
+        device: &wgpu::Device,
+        (color_format, linear_light): (wgpu::TextureFormat, bool),
+        depth_format: wgpu::TextureFormat,
     ) -> Self {
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Mod pipeline texture"),
@@ -408,6 +461,7 @@ impl ModPipelines {
         Self {
             color_format,
             linear_light,
+            depth_format,
             sampler,
             non_filtering_sampler,
             vanilla,
@@ -475,32 +529,38 @@ impl ModPipelines {
                 })
                 .collect()
         };
-        let depth_stencil = state.depth_stencil.map(|ds| {
-            let compare = if target.standard_z {
-                ds.compare.flip_for_standard_z()
-            } else {
-                ds.compare
-            };
-            let (constant, slope_scale) = if target.standard_z {
-                (
-                    ds.depth_bias_constant.saturating_neg(),
-                    -ds.depth_bias_slope_scale,
-                )
-            } else {
-                (ds.depth_bias_constant, ds.depth_bias_slope_scale)
-            };
-            wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(ds.write),
-                depth_compare: Some(wgpu_compare(compare)),
-                stencil: Default::default(),
-                bias: wgpu::DepthBiasState {
-                    constant,
-                    slope_scale,
-                    clamp: 0.0,
-                },
+        let depth_stencil = match state.depth_stencil {
+            Some(ds) => {
+                if ds.stencil.is_some() && !target.depth_format.has_stencil_aspect() {
+                    return Err("stencil test requires a depth-stencil render target".into());
+                }
+                let compare = if target.standard_z {
+                    ds.compare.flip_for_standard_z()
+                } else {
+                    ds.compare
+                };
+                let (constant, slope_scale) = if target.standard_z {
+                    (
+                        ds.depth_bias_constant.saturating_neg(),
+                        -ds.depth_bias_slope_scale,
+                    )
+                } else {
+                    (ds.depth_bias_constant, ds.depth_bias_slope_scale)
+                };
+                Some(wgpu::DepthStencilState {
+                    format: target.depth_format,
+                    depth_write_enabled: Some(ds.write),
+                    depth_compare: Some(wgpu_compare(compare)),
+                    stencil: wgpu_stencil_state(ds.stencil),
+                    bias: wgpu::DepthBiasState {
+                        constant,
+                        slope_scale,
+                        clamp: 0.0,
+                    },
+                })
             }
-        });
+            None => None,
+        };
 
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
@@ -548,6 +608,7 @@ impl ModPipelines {
         vertex_shader: &wgpu::ShaderModule,
         fragment_shader: &wgpu::ShaderModule,
         state: PipelineState,
+        depth_format: wgpu::TextureFormat,
         stage: super::oit::Stage,
     ) -> Result<wgpu::RenderPipeline, String> {
         if state.polygon == PolygonMode::Line
@@ -590,7 +651,7 @@ impl ModPipelines {
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
+                format: depth_format,
                 // OIT passes attach depth read-only (`depth_ops: None`).
                 depth_write_enabled: Some(false),
                 depth_compare: Some(depth_compare),
@@ -619,6 +680,7 @@ impl ModPipelines {
         device: &wgpu::Device,
         id: &Identifier,
         state: PipelineState,
+        depth_format: wgpu::TextureFormat,
         variants: &[sunrise_glsl::Translated; 3],
         sprite_binding: Option<&(wgpu::TextureView, [f32; 4])>,
     ) -> Result<CompiledOit, String> {
@@ -732,6 +794,7 @@ impl ModPipelines {
                 &vertex_shader,
                 &fragment_shader,
                 state,
+                depth_format,
                 stage,
             )
             .map_err(|e| format!("OIT stage {stage_idx}: {e}"))?;
@@ -923,20 +986,30 @@ impl ModPipelines {
         if let Some(error) = internal.or(validation) {
             return Err(error.to_string());
         }
-        let pipeline = Self::build_render_pipeline(
-            device,
-            &pipeline_label,
-            &pipeline_layout,
-            &vertex_shader,
-            &fragment_shader,
-            built.state,
-            &built.color_targets,
-            TargetState {
-                color_formats: &[self.color_format],
-                standard_z: false,
-                write_mask: wgpu::ColorWrites::ALL,
-            },
-        )?;
+        let needs_missing_stencil = built
+            .state
+            .depth_stencil
+            .is_some_and(|ds| ds.stencil.is_some())
+            && !self.depth_format.has_stencil_aspect();
+        let pipeline = if needs_missing_stencil {
+            None
+        } else {
+            Some(Self::build_render_pipeline(
+                device,
+                &pipeline_label,
+                &pipeline_layout,
+                &vertex_shader,
+                &fragment_shader,
+                built.state,
+                &built.color_targets,
+                TargetState {
+                    color_formats: &[self.color_format],
+                    depth_format: self.depth_format,
+                    standard_z: false,
+                    write_mask: wgpu::ColorWrites::ALL,
+                },
+            )?)
+        };
         let oit = if let Some(variants) = &built.oit
             && super::oit::supported(device)
         {
@@ -944,6 +1017,7 @@ impl ModPipelines {
                 device,
                 &built.id,
                 built.state,
+                self.depth_format,
                 variants,
                 sprite_binding.as_ref(),
             )?)
@@ -987,6 +1061,7 @@ impl ModPipelines {
         let color_formats = [format];
         let target = TargetState {
             color_formats: &color_formats,
+            depth_format: wgpu::TextureFormat::Depth32Float,
             standard_z: true,
             write_mask: if rgb {
                 wgpu::ColorWrites::COLOR
@@ -1160,6 +1235,7 @@ impl ModPipelines {
     fn ensure_modifier_variant(
         device: &wgpu::Device,
         color_format: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
         compiled: &mut Compiled,
         stack_id: u32,
         stacks: &ModifierStacks,
@@ -1182,6 +1258,10 @@ impl ModPipelines {
         }
         let label = stacks.label(stack_id, &compiled.id.to_string(), defs);
         let color_formats = [color_format];
+        let stencil_ref = modified
+            .depth_stencil
+            .and_then(|ds| ds.stencil)
+            .map(|s| s.reference);
         match Self::build_render_pipeline(
             device,
             &label,
@@ -1192,11 +1272,14 @@ impl ModPipelines {
             &compiled.color_targets,
             TargetState {
                 color_formats: &color_formats,
+                depth_format,
                 standard_z: false,
                 write_mask: wgpu::ColorWrites::ALL,
             },
         ) {
-            Ok(pipeline) => compiled.variants[idx] = Some(CachedVariant::Compiled(pipeline)),
+            Ok(pipeline) => {
+                compiled.variants[idx] = Some(CachedVariant::Compiled(pipeline, stencil_ref))
+            }
             Err(error) => {
                 log::warn!("Sunrise: pipeline modifier variant {label} refused: {error}");
                 compiled.variants[idx] = Some(CachedVariant::Refused);
@@ -1209,6 +1292,7 @@ impl ModPipelines {
     /// read-only depth.
     fn ensure_oit_modifier_variant(
         device: &wgpu::Device,
+        depth_format: wgpu::TextureFormat,
         compiled: &mut Compiled,
         stage_idx: usize,
         stack_id: u32,
@@ -1258,9 +1342,10 @@ impl ModPipelines {
             &oit_stage.vertex_shader,
             &oit_stage.fragment_shader,
             modified,
+            depth_format,
             super::oit::Stage::ALL[stage_idx],
         ) {
-            Ok(pipeline) => oit_stage.variants[idx] = Some(CachedVariant::Compiled(pipeline)),
+            Ok(pipeline) => oit_stage.variants[idx] = Some(CachedVariant::Compiled(pipeline, None)),
             Err(error) => {
                 log::warn!("Sunrise: OIT pipeline modifier variant {label} refused: {error}");
                 oit_stage.variants[idx] = Some(CachedVariant::Refused);
@@ -1307,6 +1392,7 @@ impl ModPipelines {
                 Self::ensure_modifier_variant(
                     device,
                     self.color_format,
+                    self.depth_format,
                     compiled,
                     run.modifier_stack,
                     stacks,
@@ -1338,6 +1424,7 @@ impl ModPipelines {
             {
                 Self::ensure_oit_modifier_variant(
                     device,
+                    self.depth_format,
                     compiled,
                     run.stage as usize,
                     run.modifier_stack,
@@ -1566,7 +1653,7 @@ impl ModPipelines {
             } else {
                 match oit_stage.variants.get(run.modifier_stack as usize) {
                     Some(Some(CachedVariant::Base)) => &oit_stage.pipeline,
-                    Some(Some(CachedVariant::Compiled(p))) => p,
+                    Some(Some(CachedVariant::Compiled(p, _))) => p,
                     _ => continue,
                 }
             };
@@ -1606,18 +1693,31 @@ impl ModPipelines {
             if compiled.state.depth_stencil.is_none() {
                 continue;
             }
-            let pipeline = match pack_list {
+            let base_stencil_ref = compiled
+                .state
+                .depth_stencil
+                .and_then(|ds| ds.stencil)
+                .map(|s| s.reference);
+            let (pipeline, stencil_ref) = match pack_list {
                 Some(list) => match list.get(run.slot) {
-                    Some(Some(p)) => p,
+                    Some(Some(p)) => (p, None),
                     _ => continue,
                 },
                 None => {
                     if run.modifier_stack == ModifierStacks::EMPTY {
-                        &compiled.pipeline
+                        let Some(p) = compiled.pipeline.as_ref() else {
+                            continue;
+                        };
+                        (p, base_stencil_ref)
                     } else {
                         match compiled.variants.get(run.modifier_stack as usize) {
-                            Some(Some(CachedVariant::Base)) => &compiled.pipeline,
-                            Some(Some(CachedVariant::Compiled(p))) => p,
+                            Some(Some(CachedVariant::Base)) => {
+                                let Some(p) = compiled.pipeline.as_ref() else {
+                                    continue;
+                                };
+                                (p, base_stencil_ref)
+                            }
+                            Some(Some(CachedVariant::Compiled(p, sref))) => (p, *sref),
                             _ => continue,
                         }
                     }
@@ -1628,6 +1728,9 @@ impl ModPipelines {
                 pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
             }
             pass.set_pipeline(pipeline);
+            if let Some(reference) = stencil_ref {
+                pass.set_stencil_reference(u32::from(reference));
+            }
             pass.set_bind_group(
                 0,
                 if pack {
@@ -3015,14 +3118,14 @@ void main() {
             });
             // Draw Triangles
             let tri_c = mod_pipelines.pipelines[0].as_ref().unwrap();
-            pass.set_pipeline(&tri_c.pipeline);
+            pass.set_pipeline(tri_c.pipeline.as_ref().unwrap());
             pass.set_bind_group(0, &tri_c.group, &[]);
             pass.set_vertex_buffer(0, tri_buf.slice(..));
             pass.draw(0..3, 0..1);
 
             // Draw TriangleFan via engine-generated fan index buffer
             let fan_c = mod_pipelines.pipelines[1].as_ref().unwrap();
-            pass.set_pipeline(&fan_c.pipeline);
+            pass.set_pipeline(fan_c.pipeline.as_ref().unwrap());
             pass.set_bind_group(0, &fan_c.group, &[]);
             pass.set_vertex_buffer(0, fan_buf.slice(..));
             pass.set_index_buffer(fan_idx.slice(..), wgpu::IndexFormat::Uint32);
@@ -3030,7 +3133,7 @@ void main() {
 
             // Draw DebugLines
             let line_c = mod_pipelines.pipelines[2].as_ref().unwrap();
-            pass.set_pipeline(&line_c.pipeline);
+            pass.set_pipeline(line_c.pipeline.as_ref().unwrap());
             pass.set_bind_group(0, &line_c.group, &[]);
             pass.set_vertex_buffer(0, line_buf.slice(..));
             pass.draw(0..2, 0..1);
@@ -3079,5 +3182,304 @@ void main() {
             1.0,
             "depthless DebugLines draws horizontal blue line",
         );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn main_depth_format_keeps_depth32float_when_stencil_disabled_and_picks_stencil_format_when_enabled()
+     {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .ok()
+        else {
+            return;
+        };
+        let optional = adapter.features() & wgpu::Features::DEPTH32FLOAT_STENCIL8;
+        let Ok((device, _queue)) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                required_features: optional,
+                ..Default::default()
+            }))
+        else {
+            return;
+        };
+        assert_eq!(
+            crate::gfx::main_depth_format(&device, false),
+            wgpu::TextureFormat::Depth32Float
+        );
+        let expected_stencil = if optional.contains(wgpu::Features::DEPTH32FLOAT_STENCIL8) {
+            wgpu::TextureFormat::Depth32FloatStencil8
+        } else {
+            wgpu::TextureFormat::Depth24PlusStencil8
+        };
+        assert_eq!(
+            crate::gfx::main_depth_format(&device, true),
+            expected_stencil
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn stencil_mask_quad_writes_bit_and_second_quad_tests_equal_and_survives_resize() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .ok()
+        else {
+            return;
+        };
+        let optional = adapter.features() & wgpu::Features::DEPTH32FLOAT_STENCIL8;
+        let Ok((device, queue)) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                required_features: optional,
+                ..Default::default()
+            }))
+        else {
+            return;
+        };
+        let color_format = wgpu::TextureFormat::Rgba8Unorm;
+        let depth_format = crate::gfx::main_depth_format(&device, true);
+        assert!(depth_format.has_stencil_aspect());
+
+        let write_mask = StencilTest::both_faces(
+            StencilFaceState::new(
+                StencilOp::Keep,
+                StencilOp::Keep,
+                StencilOp::Replace,
+                DepthCompare::Always,
+            ),
+            0x01,
+            0x01,
+            1,
+        );
+        let test_mask = StencilTest::both_faces(
+            StencilFaceState::new(
+                StencilOp::Keep,
+                StencilOp::Keep,
+                StencilOp::Keep,
+                DepthCompare::Equal,
+            ),
+            0x01,
+            0x00,
+            1,
+        );
+
+        let id = |s| Identifier::parse(s).unwrap();
+        let mask_pipe = RenderPipeline::new(
+            id("example:stencil_write"),
+            id("example:core/stencil"),
+            PipelineBlend::Opaque,
+            mod_api::WorldDepth::ThroughWalls,
+        )
+        .color_write(ColorWrite::NONE)
+        .stencil(write_mask);
+        let fill_pipe = RenderPipeline::new(
+            id("example:stencil_read"),
+            id("example:core/stencil"),
+            PipelineBlend::Opaque,
+            mod_api::WorldDepth::ThroughWalls,
+        )
+        .stencil(test_mask);
+        let set = Pipelines::build(&[mask_pipe, fill_pipe], 1, |file| match file {
+            "assets/example/shaders/core/stencil.vsh" => Ok(Some(VSH.to_owned())),
+            "assets/example/shaders/core/stencil.fsh" => Ok(Some(PASS.to_owned())),
+            other => Ok(crate::mod_pipelines::stub_asset(other)),
+        })
+        .unwrap();
+
+        let mut mod_pipelines =
+            ModPipelines::new_with_depth(&device, (color_format, false), depth_format);
+        mod_pipelines.sync(&device, &set, None).unwrap();
+
+        // Depth-only ModPipelines refuses drawing stencil pipelines cleanly without panicking.
+        let mut no_stencil = ModPipelines::new(&device, (color_format, false));
+        no_stencil.sync(&device, &set, None).unwrap();
+        assert!(no_stencil.pipelines[0].as_ref().unwrap().pipeline.is_none());
+        assert!(no_stencil.pipelines[1].as_ref().unwrap().pipeline.is_none());
+
+        let quad = |x0: f32, y0: f32, x1: f32, y1: f32, color: [f32; 4]| -> [PipelineVertex; 4] {
+            [
+                PipelineVertex {
+                    pos: [x0, y1, 0.5],
+                    uv: [0.0, 0.0],
+                    color,
+                },
+                PipelineVertex {
+                    pos: [x0, y0, 0.5],
+                    uv: [0.0, 1.0],
+                    color,
+                },
+                PipelineVertex {
+                    pos: [x1, y0, 0.5],
+                    uv: [1.0, 1.0],
+                    color,
+                },
+                PipelineVertex {
+                    pos: [x1, y1, 0.5],
+                    uv: [1.0, 0.0],
+                    color,
+                },
+            ]
+        };
+        let mut verts = Vec::new();
+        // Mask covers left half [-1..0, -1..1].
+        verts.extend_from_slice(&quad(-1.0, -1.0, 0.0, 1.0, [1.0, 0.0, 0.0, 1.0]));
+        // Green fill covers full screen [-1..1, -1..1], tested against stencil == 1.
+        verts.extend_from_slice(&quad(-1.0, -1.0, 1.0, 1.0, [0.0, 1.0, 0.0, 1.0]));
+        let runs = [
+            PipelineRun {
+                slot: 0,
+                stage: 0,
+                quads: 1,
+                modifier_stack: ModifierStacks::EMPTY,
+            },
+            PipelineRun {
+                slot: 1,
+                stage: 0,
+                quads: 1,
+                modifier_stack: ModifierStacks::EMPTY,
+            },
+        ];
+
+        let indices = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 48,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(
+            &indices,
+            0,
+            bytemuck::cast_slice(&[0u32, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]),
+        );
+
+        // Run once at 32x32, then again at 64x64 (simulating window resize).
+        for size in [32u32, 64u32] {
+            let color = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Stencil test color"),
+                size: wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: color_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let depth = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Stencil test depth-stencil"),
+                size: wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: depth_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            // Verify TextureAspect::DepthOnly view creation succeeds on the stencil depth buffer.
+            let _depth_only = crate::gfx::texture_depth_read_view(&depth);
+            let color_view = color.create_view(&Default::default());
+            let depth_view = depth.create_view(&Default::default());
+
+            let batch = Batch {
+                set: Some(&set),
+                vertices: &verts,
+                runs: &runs,
+                oit_vertices: &[],
+                oit_runs: &[],
+                modifiers: None,
+                modifier_defs: None,
+                time: 0.0,
+            };
+            mod_pipelines.prepare(
+                &device,
+                &mut |buf, bytes| queue.write_buffer(buf, 0, bytes),
+                &batch,
+                Mat4::IDENTITY,
+                [size, size],
+                None,
+            );
+
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Stencil test pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &color_view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: crate::gfx::stencil_ops_for(
+                            depth_format,
+                            wgpu::LoadOp::Clear(0),
+                            wgpu::StoreOp::Store,
+                        ),
+                    }),
+                    ..Default::default()
+                });
+                mod_pipelines.draw_excluding(&mut pass, &indices, 0, 0, &[]);
+            }
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: u64::from(size * size * 4),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            encoder.copy_texture_to_buffer(
+                color.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(size * 4),
+                        rows_per_image: None,
+                    },
+                },
+                color.size(),
+            );
+            queue.submit([encoder.finish()]);
+            readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let bytes = readback.slice(..).get_mapped_range().unwrap().to_vec();
+            let at = |x: u32, y: u32| -> [f32; 4] {
+                let i = ((y * size + x) * 4) as usize;
+                std::array::from_fn(|c| f32::from(bytes[i + c]))
+            };
+            // Inside mask (left half): green.
+            assert_near(
+                at(size / 4, size / 2),
+                [0.0, 255.0, 0.0, 255.0],
+                1.0,
+                "pixel inside stencil mask draws green",
+            );
+            // Outside mask (right half): untouched black.
+            assert_near(
+                at(3 * size / 4, size / 2),
+                [0.0, 0.0, 0.0, 255.0],
+                1.0,
+                "pixel outside stencil mask stays black",
+            );
+        }
     }
 }

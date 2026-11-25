@@ -136,14 +136,19 @@ struct Depth {
 }
 
 impl Depth {
-    fn new(device: &wgpu::Device, label: &str, size: [u32; 2]) -> Self {
+    fn new(
+        device: &wgpu::Device,
+        label: &str,
+        size: [u32; 2],
+        format: wgpu::TextureFormat,
+    ) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: extent(size),
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
+            format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -185,6 +190,7 @@ struct Views {
 }
 
 pub struct Oit {
+    depth_format: wgpu::TextureFormat,
     uniform: wgpu::Buffer,
     /// Layouts of the groups at `GROUP`: the uniform; with the bounds; with the
     /// coefficients; and with the accumulation too.
@@ -216,6 +222,7 @@ impl Oit {
         clouds: [&wgpu::BindGroupLayout; 2],
         sprites: [f64; 2],
         format: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
     ) -> Self {
         let instance = wgpu::vertex_attr_array![5=>Float32x4];
         let buffers = [
@@ -306,7 +313,7 @@ impl Oit {
         let add = wgpu::BlendOperation::Add;
         let depth = |write| {
             Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
+                format: depth_format,
                 depth_write_enabled: Some(write),
                 depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                 stencil: Default::default(),
@@ -458,7 +465,7 @@ impl Oit {
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
+                format: depth_format,
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: Default::default(),
@@ -547,8 +554,10 @@ impl Oit {
             features[1],
             features[2],
             format,
+            depth_format,
         );
         Self {
+            depth_format,
             uniform,
             layouts,
             terrain: terrain_pipelines,
@@ -613,10 +622,20 @@ impl Oit {
         let [mask, clouds] = wants;
         if let Some(t) = self.targets.as_mut().filter(|t| t.size == size) {
             if mask && t.terrain_depth.is_none() {
-                t.terrain_depth = Some(Depth::new(device, "OIT terrain depth", size));
+                t.terrain_depth = Some(Depth::new(
+                    device,
+                    "OIT terrain depth",
+                    size,
+                    self.depth_format,
+                ));
             }
             if clouds && t.cloud_depth.is_none() {
-                t.cloud_depth = Some(Depth::new(device, "OIT cloud depth", size));
+                t.cloud_depth = Some(Depth::new(
+                    device,
+                    "OIT cloud depth",
+                    size,
+                    self.depth_format,
+                ));
             }
             return;
         }
@@ -681,8 +700,10 @@ impl Oit {
                 &self.layouts[3],
                 &[&views.bounds, c0, c1, &views.accumulated],
             ),
-            terrain_depth: mask.then(|| Depth::new(device, "OIT terrain depth", size)),
-            cloud_depth: clouds.then(|| Depth::new(device, "OIT cloud depth", size)),
+            terrain_depth: mask
+                .then(|| Depth::new(device, "OIT terrain depth", size, self.depth_format)),
+            cloud_depth: clouds
+                .then(|| Depth::new(device, "OIT cloud depth", size, self.depth_format)),
             bounds,
             culled,
             views,
@@ -826,7 +847,11 @@ impl Oit {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 }),
-                stencil_ops: None,
+                stencil_ops: super::stencil_ops_for(
+                    depth.texture().format(),
+                    wgpu::LoadOp::Load,
+                    wgpu::StoreOp::Store,
+                ),
             }),
             ..Default::default()
         });
@@ -870,7 +895,15 @@ impl Oit {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 }),
-                stencil_ops: None,
+                stencil_ops: (stage == Stage::DepthBounds)
+                    .then(|| {
+                        super::stencil_ops_for(
+                            cloud_depth.texture.format(),
+                            wgpu::LoadOp::Load,
+                            wgpu::StoreOp::Store,
+                        )
+                    })
+                    .flatten(),
             }),
             ..Default::default()
         });
@@ -916,7 +949,11 @@ impl Oit {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 }),
-                stencil_ops: None,
+                stencil_ops: super::stencil_ops_for(
+                    terrain.texture.format(),
+                    wgpu::LoadOp::Load,
+                    wgpu::StoreOp::Store,
+                ),
             }),
             ..Default::default()
         });

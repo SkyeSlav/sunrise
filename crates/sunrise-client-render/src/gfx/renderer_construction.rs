@@ -157,6 +157,7 @@ impl Renderer {
         let frame = output::resolve_frame(settings, request, output_caps, display, config.format);
         let (frame_format, hud_coverage, overlay_format) =
             (frame.format, frame.hud_layer, frame.overlay_format);
+        let depth_format = current_main_depth_format(&device);
         let linear_light = frame.linear_light;
         if previous.is_none() {
             startup_step(format_args!("creating the pipelines"));
@@ -333,7 +334,7 @@ impl Renderer {
                     ..Default::default()
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
+                    format: depth_format,
                     depth_write_enabled: Some(depth_write),
                     depth_compare: Some(if depth_test {
                         wgpu::CompareFunction::GreaterEqual
@@ -602,7 +603,7 @@ impl Renderer {
             },
             primitive: Default::default(),
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
+                format: depth_format,
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: Default::default(),
@@ -1586,7 +1587,7 @@ impl Renderer {
                 },
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
+                    format: depth_format,
                     depth_write_enabled: Some(true),
                     depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                     stencil: Default::default(),
@@ -1696,7 +1697,7 @@ impl Renderer {
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
+                format: depth_format,
                 depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                 stencil: Default::default(),
@@ -1919,7 +1920,7 @@ impl Renderer {
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
+                format: depth_format,
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                 stencil: Default::default(),
@@ -2269,15 +2270,16 @@ impl Renderer {
                 _ => depth_test,
             })
             .map(|depth_test| {
-                let mut cull = cull::Cull::new(&device, frame_format, depth_test);
+                let mut cull =
+                    cull::Cull::new_with_depth(&device, frame_format, depth_format, depth_test);
                 cull.always = cull_env.as_deref() == Ok("all");
                 if !cull.always && adapter_info.backend == wgpu::Backend::Metal {
                     cull.min_sections = cull::TILED_MIN_SECTIONS;
                 }
                 cull
             });
-        let depth = Self::depth(&device, &config);
-        let world_post = world_post::Post::new(&device, frame_format);
+        let depth = Self::depth(&device, &config, depth_format);
+        let world_post = world_post::Post::new_with_depth(&device, frame_format, depth_format);
         let uploads = upload::Uploads::new(&device);
         let section_uploads = upload::Uploads::with_chunk(&device, SECTION_UPLOAD_CHUNK);
         let stars = stars::Stars::new(&device, (frame_format, linear_light));
@@ -2309,8 +2311,11 @@ impl Renderer {
                 on_off(gpu_timer.is_some()),
             ));
         }
-        let mut world_primitives =
-            world_primitives::WorldPrimitives::new(&device, (frame_format, linear_light));
+        let mut world_primitives = world_primitives::WorldPrimitives::new_with_depth(
+            &device,
+            (frame_format, linear_light),
+            depth_format,
+        );
         world_primitives.reserve(
             &device,
             &mut |buffer, bytes| queue.write_buffer(buffer, 0, bytes),
@@ -2515,6 +2520,7 @@ impl Renderer {
             instance_capacity,
             outline,
             depth,
+            depth_format,
             sections: resident::Resident::default(),
             lods: FxHashMap::default(),
             lod_vertex_bytes: 0,

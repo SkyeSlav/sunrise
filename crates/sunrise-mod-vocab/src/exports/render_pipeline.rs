@@ -4,5 +4,6 @@ pub use client::render_pipeline::{
     PackPassSlot, PackUniformDecl, PackUniformType, PackUniformValue, PipelineBlend,
     PipelineDrawError, PipelineGeometryClass, PipelineModifier, PipelineModifierRef, PipelineQuad,
     PipelineState, PipelineTexture, PipelineTextureError, PipelineVertexFormat, PolygonMode,
-    PrimitiveTopology, RenderPipeline, RenderPipelineError, RenderPipelineRef,
+    PrimitiveTopology, RenderPipeline, RenderPipelineError, RenderPipelineRef, StencilFaceState,
+    StencilOp, StencilTest,
 };

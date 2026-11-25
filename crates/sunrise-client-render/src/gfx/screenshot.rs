@@ -80,7 +80,7 @@ impl Renderer {
         // tried again at half the size next frame; the window keeps its last one.
         let checks = GpuChecks::push(&self.device);
         let target = (!layered).then(|| Self::offscreen_target(&self.device, &config));
-        let depth = Self::depth(&self.device, &config);
+        let depth = Self::depth(&self.device, &config, self.depth_format);
         if let Some(e) = checks.pop() {
             log::warn!(
                 "Sunrise renderer: no memory for a {}x{} screenshot ({e}); trying half the size",

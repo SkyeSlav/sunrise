@@ -56,7 +56,7 @@ pub(super) fn pipelines(
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
+                format: super::current_main_depth_format(device),
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                 stencil: Default::default(),

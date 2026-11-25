@@ -56,7 +56,11 @@ pub(super) fn surface_pass<'e>(
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
             }),
-            stencil_ops: None,
+            stencil_ops: super::stencil_ops_for(
+                depth.texture().format(),
+                wgpu::LoadOp::Load,
+                wgpu::StoreOp::Store,
+            ),
         }),
         ..Default::default()
     })

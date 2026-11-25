@@ -299,6 +299,9 @@ pub struct Renderer {
     pub(crate) instance_capacity: u64,
     pub(crate) outline: wgpu::Buffer,
     pub(crate) depth: wgpu::TextureView,
+    /// Format of the main world depth buffer (`Depth32Float` by default, or
+    /// `Depth32FloatStencil8` / `Depth24PlusStencil8` when a mod enabled stencil at startup).
+    pub(crate) depth_format: wgpu::TextureFormat,
     pub(crate) sections: resident::Resident<SectionGpu>,
     pub(crate) lods: FxHashMap<crate::lod::TileKey, lod::Tile>,
     /// Vertex bytes of the current tile meshes (not their fading stand-ins).

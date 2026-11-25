@@ -691,6 +691,7 @@ pub(super) fn emit<'a>(
                             | ("StepOnEvent", "writes")
                             | ("ExtractBlockScreenEffectEvent", "renderer")
                             | ("RegisterDebugRenderersEvent", "entries")
+                            | ("ConfigureMainRenderTargetEvent", "enable_stencil")
                     ) =>
                 {
                     "pub(super)"

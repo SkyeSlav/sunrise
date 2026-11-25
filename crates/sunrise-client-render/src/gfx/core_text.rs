@@ -208,8 +208,9 @@ impl CoreText {
         if world.is_none() && see_through.is_none() {
             return None;
         }
+        let depth_format = super::current_main_depth_format(device);
         let depth = |write, compare, bias| wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
+            format: depth_format,
             depth_write_enabled: Some(write),
             depth_compare: Some(compare),
             stencil: Default::default(),

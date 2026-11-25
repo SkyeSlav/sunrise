@@ -1547,7 +1547,11 @@ impl Renderer {
                         load: wgpu::LoadOp::Clear(0.0),
                         store: wgpu::StoreOp::Discard,
                     }),
-                    stencil_ops: None,
+                    stencil_ops: stencil_ops_for(
+                        depth.texture().format(),
+                        wgpu::LoadOp::Clear(0),
+                        wgpu::StoreOp::Discard,
+                    ),
                 }),
                 ..Default::default()
             });
@@ -2470,6 +2474,7 @@ impl Renderer {
                         [&clouds[0], &clouds[1]],
                         sprites,
                         format,
+                        self.depth_format,
                     );
                     self.world_primitives
                         .as_mut()
@@ -2669,7 +2674,11 @@ impl Renderer {
                             wgpu::StoreOp::Discard
                         },
                     }),
-                    stencil_ops: None,
+                    stencil_ops: stencil_ops_for(
+                        world_depth.texture().format(),
+                        wgpu::LoadOp::Clear(0),
+                        wgpu::StoreOp::Store,
+                    ),
                 }),
                 ..Default::default()
             });

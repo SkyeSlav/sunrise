@@ -129,7 +129,7 @@ impl Visbuffer {
                     ..Default::default()
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
+                    format: super::current_main_depth_format(device),
                     depth_write_enabled: Some(true),
                     depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                     stencil: Default::default(),
@@ -269,7 +269,11 @@ impl Visbuffer {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 }),
-                stencil_ops: None,
+                stencil_ops: super::stencil_ops_for(
+                    depth.texture().format(),
+                    wgpu::LoadOp::Load,
+                    wgpu::StoreOp::Store,
+                ),
             }),
             ..Default::default()
         });

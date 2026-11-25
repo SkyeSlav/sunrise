@@ -152,6 +152,7 @@ pub struct Post {
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
+    depth_format: wgpu::TextureFormat,
     /// World resolution relative to the window (0.5..=2.0).
     pub scale: f32,
     pub antialias: bool,
@@ -173,6 +174,14 @@ pub struct Post {
 
 impl Post {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        Self::new_with_depth(device, format, wgpu::TextureFormat::Depth32Float)
+    }
+
+    pub fn new_with_depth(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Sunrise post"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../world_post.wgsl").into()),
@@ -338,6 +347,7 @@ impl Post {
             layout,
             sampler,
             format,
+            depth_format,
             scale: 1.0,
             antialias: false,
             taa: false,
@@ -553,13 +563,14 @@ impl Post {
             let color = make_tex("Scaled world", size, self.format, sampled)
                 .create_view(&Default::default());
             // TEXTURE_BINDING: occlusion culling and TAA read it.
-            let depth = make_tex(
+            let depth_tex = make_tex(
                 "Scaled world depth",
                 size,
-                wgpu::TextureFormat::Depth32Float,
+                self.depth_format,
                 sampled | wgpu::TextureUsages::COPY_SRC,
-            )
-            .create_view(&Default::default());
+            );
+            let depth = depth_tex.create_view(&Default::default());
+            let depth_read = super::texture_depth_read_view(&depth_tex);
             let group = self.bind(device, &color);
             let taa = history_size.and_then(|output| {
                 let res = self.taa_resources.as_ref()?;
@@ -586,7 +597,7 @@ impl Post {
                             },
                             wgpu::BindGroupEntry {
                                 binding: 3,
-                                resource: wgpu::BindingResource::TextureView(&depth),
+                                resource: wgpu::BindingResource::TextureView(&depth_read),
                             },
                             wgpu::BindGroupEntry {
                                 binding: 4,

@@ -682,6 +682,13 @@ impl PackPost {
                 .as_ref()
                 .is_none_or(|g| g.0[0] != *world || g.0[1] != *world_depth)
         {
+            let world_depth_read =
+                world_depth
+                    .texture()
+                    .create_view(&wgpu::TextureViewDescriptor {
+                        aspect: wgpu::TextureAspect::DepthOnly,
+                        ..Default::default()
+                    });
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Shader pack world"),
                 layout: &blit.1,
@@ -692,7 +699,7 @@ impl PackPost {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(world_depth),
+                        resource: wgpu::BindingResource::TextureView(&world_depth_read),
                     },
                 ],
             });
@@ -973,6 +980,28 @@ impl PackPost {
         // reversed-Z `world_depth` whenever the pack wrote depth, so post-pack consumers
         // (`world_drawn`, overlays, secondary views) depth-test against pack-drawn geometry.
         if self.draws_depth {
+            let world_depth_format = world_depth.texture().format();
+            if self.export_depth_format != world_depth_format {
+                self.export_depth = helper(
+                    device,
+                    "vs_full",
+                    "fs_export_depth",
+                    &[texture_entry(
+                        1,
+                        wgpu::TextureSampleType::Float { filterable: false },
+                    )],
+                    &[],
+                    Some(wgpu::DepthStencilState {
+                        format: world_depth_format,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(wgpu::CompareFunction::Always),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                );
+                self.export_depth_format = world_depth_format;
+                self.export_depth_group = None;
+            }
             if self
                 .export_depth_group
                 .as_ref()
@@ -997,7 +1026,12 @@ impl PackPost {
                         load: wgpu::LoadOp::Clear(0.0),
                         store: wgpu::StoreOp::Store,
                     }),
-                    stencil_ops: None,
+                    stencil_ops: world_depth_format.has_stencil_aspect().then_some(
+                        wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    ),
                 }),
                 ..Default::default()
             });

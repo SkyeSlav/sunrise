@@ -4,4 +4,6 @@ sunrise-client-render gfx::mod_pipelines::tests::opaque_pipeline_writes_solid_co
 sunrise-client-render gfx::mod_pipelines::tests::depth_bias_lifts_coplanar_quad_over_wall_and_strict_greater_rejects_without_bias lib daily gpu
 sunrise-client-render gfx::mod_pipelines::tests::custom_blend_invert_produces_exact_inverted_pixels lib daily gpu
 sunrise-client-render gfx::mod_pipelines::tests::depthless_triangles_debug_lines_and_triangle_fan_draw_expected_pixels lib daily gpu
+sunrise-client-render gfx::mod_pipelines::tests::main_depth_format_keeps_depth32float_when_stencil_disabled_and_picks_stencil_format_when_enabled lib daily gpu
+sunrise-client-render gfx::mod_pipelines::tests::stencil_mask_quad_writes_bit_and_second_quad_tests_equal_and_survives_resize lib daily gpu
 sunrise-client-render gfx::pack_post::mod_stage_tests::pack_composite_inverts_mod_glsl_quad_drawn_once_after_opaque_blocks lib daily gpu

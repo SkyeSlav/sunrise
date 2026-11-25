@@ -291,6 +291,16 @@ impl Cull {
     }
     /// `color` is the world pass's colour format.
     pub fn new(device: &wgpu::Device, color: wgpu::TextureFormat, depth_test: DepthTest) -> Self {
+        Self::new_with_depth(device, color, wgpu::TextureFormat::Depth32Float, depth_test)
+    }
+
+    /// `color` and `depth_format` are the world pass's colour and depth-stencil formats.
+    pub fn new_with_depth(
+        device: &wgpu::Device,
+        color: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
+        depth_test: DepthTest,
+    ) -> Self {
         let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {
             binding,
             visibility,
@@ -375,7 +385,7 @@ impl Cull {
             },
             // The world pass's reversed depth test, without writes.
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
+                format: depth_format,
                 depth_write_enabled: Some(false),
                 depth_compare: Some(depth_compare),
                 stencil: Default::default(),
@@ -641,6 +651,7 @@ impl Cull {
             return;
         };
         if self.depth_group.as_ref().is_none_or(|g| g.view != *depth) {
+            let depth_read = super::depth_read_view(depth);
             self.depth_group = Some(DepthGroup {
                 view: depth.clone(),
                 group: device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -648,7 +659,7 @@ impl Cull {
                     layout,
                     entries: &[wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(depth),
+                        resource: wgpu::BindingResource::TextureView(&depth_read),
                     }],
                 }),
             });

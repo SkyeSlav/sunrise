@@ -108,7 +108,7 @@ impl Part {
             primitive: wgpu::PrimitiveState::default(),
             // The sky is drawn first, behind everything: no depth test, no depth write.
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
+                format: super::current_main_depth_format(device),
                 depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: Default::default(),

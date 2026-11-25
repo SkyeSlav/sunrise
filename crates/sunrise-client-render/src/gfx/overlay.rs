@@ -74,7 +74,11 @@ impl Renderer {
                             wgpu::StoreOp::Discard
                         },
                     }),
-                    stencil_ops: None,
+                    stencil_ops: stencil_ops_for(
+                        self.depth_format,
+                        wgpu::LoadOp::Clear(0),
+                        wgpu::StoreOp::Discard,
+                    ),
                 }),
                 ..Default::default()
             });
@@ -138,7 +142,11 @@ impl Renderer {
                                 load: wgpu::LoadOp::Load,
                                 store: wgpu::StoreOp::Discard,
                             }),
-                            stencil_ops: None,
+                            stencil_ops: stencil_ops_for(
+                                self.depth_format,
+                                wgpu::LoadOp::Load,
+                                wgpu::StoreOp::Discard,
+                            ),
                         }),
                         ..Default::default()
                     });
@@ -350,7 +358,11 @@ impl Renderer {
                         load: wgpu::LoadOp::Clear(0.0),
                         store: wgpu::StoreOp::Discard,
                     }),
-                    stencil_ops: None,
+                    stencil_ops: stencil_ops_for(
+                        self.depth_format,
+                        wgpu::LoadOp::Clear(0),
+                        wgpu::StoreOp::Discard,
+                    ),
                 }),
                 ..Default::default()
             });

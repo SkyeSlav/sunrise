@@ -278,7 +278,11 @@ impl Renderer {
                     load: wgpu::LoadOp::Clear(0.0),
                     store: wgpu::StoreOp::Store,
                 }),
-                stencil_ops: None,
+                stencil_ops: super::stencil_ops_for(
+                    target.depth.texture().format(),
+                    wgpu::LoadOp::Clear(0),
+                    wgpu::StoreOp::Store,
+                ),
             }),
             ..Default::default()
         });
@@ -381,7 +385,7 @@ impl Target {
         let color = texture("Native world view", format, sampled);
         let depth = texture(
             "Native world view depth",
-            wgpu::TextureFormat::Depth32Float,
+            super::current_main_depth_format(device),
             sampled,
         );
         Self {

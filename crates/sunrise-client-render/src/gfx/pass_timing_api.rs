@@ -55,7 +55,11 @@ pub(super) fn after_culling_pass<'e>(
                     wgpu::StoreOp::Discard
                 },
             }),
-            stencil_ops: None,
+            stencil_ops: super::stencil_ops_for(
+                depth.texture().format(),
+                wgpu::LoadOp::Load,
+                wgpu::StoreOp::Store,
+            ),
         }),
         ..Default::default()
     })

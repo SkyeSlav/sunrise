@@ -174,6 +174,24 @@ pub trait ClientRenderClientHost {
     /// For a client mod: changes each time the resources load (a resource pack turned on or off can move every
     /// sprite): ask `native_block_sprites` again then. API 380.
     fn block_sprites_version(&self) -> u64;
+    /// Side: client.
+    /// Whether the main world render target has an 8-bit stencil attachment (NeoForge's
+    /// `RenderTarget.isStencilEnabled()`), enabled during startup via
+    /// `Hooks::configure_main_render_target`. When `false`, the main world depth buffer is
+    /// `Depth32Float` and draws with a [`StencilTest`] return
+    /// [`PipelineDrawError::NoStencilAttachment`].
+    fn main_target_stencil_enabled(&self) -> bool;
+    /// Side: client.
+    /// Reserve one free bit (`0..8`) from the cooperative 8-bit stencil bit allocator
+    /// (NeoForge's `StencilManager.reserveBit()`). Returns `None` when all 8 bits are held.
+    /// Reserved bits are owned by the calling mod and automatically released if the mod is
+    /// disabled or unloaded; call [`Self::release_stencil_bit`] when finished with a bit.
+    fn reserve_stencil_bit(&self) -> Option<u8>;
+    /// Side: client.
+    /// Release a stencil bit (`0..8`) previously obtained from [`Self::reserve_stencil_bit`]
+    /// (NeoForge's `StencilManager.releaseBit(int)`). Out-of-range, unreserved, or
+    /// other-mod-owned bits are a safe no-op.
+    fn release_stencil_bit(&self, bit: u8);
 }
 
 /// The retained instance-group operations behind [`InstanceGroupRef`].

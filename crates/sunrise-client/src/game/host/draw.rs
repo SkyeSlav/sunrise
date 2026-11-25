@@ -626,6 +626,17 @@ impl PrepareRenderBuffersContext for GamePrepareRenderBuffersContext<'_, '_> {
         if self.surface.effective_topology(base_topology) != PrimitiveTopology::Quads {
             return Err(PipelineDrawError::TopologyMismatch);
         }
+        let base_depth_stencil = self.game.pack.render.mod_pipelines.depth_stencil(slot);
+        if self.surface.effective_stencil(base_depth_stencil).is_some()
+            && !self.game.main_target_stencil_enabled()
+        {
+            self.game
+                .pack
+                .render
+                .mod_pipelines
+                .warn_no_stencil_attachment(slot);
+            return Err(PipelineDrawError::NoStencilAttachment);
+        }
         if stage.oit_stage().is_some() && !self.game.pack.render.mod_pipelines.is_oit_eligible(slot)
         {
             self.game

@@ -149,6 +149,15 @@ impl ClientReloadHost for Game<'_> {
     fn block_sprites_version(&self) -> u64 {
         <Self as prelude::ClientRenderClientHost>::block_sprites_version(self)
     }
+    fn main_target_stencil_enabled(&self) -> bool {
+        <Self as prelude::ClientRenderClientHost>::main_target_stencil_enabled(self)
+    }
+    fn reserve_stencil_bit(&self) -> Option<u8> {
+        <Self as prelude::ClientRenderClientHost>::reserve_stencil_bit(self)
+    }
+    fn release_stencil_bit(&self, bit: u8) {
+        <Self as prelude::ClientRenderClientHost>::release_stencil_bit(self, bit)
+    }
 }
 
 impl ClientReloadListenerContext for Game<'_> {

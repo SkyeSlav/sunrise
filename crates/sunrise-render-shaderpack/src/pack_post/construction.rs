@@ -1998,6 +1998,9 @@ pub struct PackPost {
     /// reversed-Z `world_depth` so post-pack stages (`AfterLevel`, `world_drawn`) see valid
     /// terrain, water, entity, and hand depth.
     pub export_depth: (wgpu::RenderPipeline, wgpu::BindGroupLayout),
+    /// Depth format `export_depth` was compiled for (rebuilt on demand if the world depth buffer
+    /// uses a depth-stencil format such as `Depth32FloatStencil8` or `Depth24PlusStencil8`).
+    pub export_depth_format: wgpu::TextureFormat,
     /// Cached bind group for `export_depth`, keyed by the pack's `targets.depth` view.
     pub export_depth_group: Option<(wgpu::TextureView, wgpu::BindGroup)>,
     /// The picture `final` draws while the world's size is not the window's.
@@ -3413,6 +3416,7 @@ impl PackPost {
             copy,
             upscale,
             export_depth,
+            export_depth_format: wgpu::TextureFormat::Depth32Float,
             export_depth_group: None,
             final_target: None,
             screen,

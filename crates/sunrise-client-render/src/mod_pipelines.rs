@@ -7,19 +7,91 @@
 //! to the renderer (`gfx::mod_pipelines`). A required pipeline the load cannot build fails the
 //! load; an optional one is logged and left out. A frame reads none of this by name.
 use mod_api::{
-    BlendFactor, ColorTargetState, DepthCompare, Identifier, PackGlslInput, PackPassSlot,
-    PackUniformType, PackUniformValue, PipelineBlend, PipelineModifier, PipelineModifierRef,
-    PipelineState, PipelineTexture, PipelineTextureError, PrimitiveTopology, RenderPipeline,
-    RenderPipelineError, RenderPipelineRef,
+    BlendFactor, ColorTargetState, DepthCompare, DepthState, Identifier, PackGlslInput,
+    PackPassSlot, PackUniformType, PackUniformValue, PipelineBlend, PipelineModifier,
+    PipelineModifierRef, PipelineState, PipelineTexture, PipelineTextureError, PrimitiveTopology,
+    RenderPipeline, RenderPipelineError, RenderPipelineRef,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use sunrise_mod_pipeline::{Options as PipelineOptions, ProgramSources};
 
 static REGISTERED: OnceLock<Vec<RenderPipeline>> = OnceLock::new();
 static REGISTERED_MODIFIERS: OnceLock<Vec<PipelineModifier>> = OnceLock::new();
 static PACK_UNIFORMS: OnceLock<HashMap<&'static str, PackUniformType>> = OnceLock::new();
+static MAIN_TARGET_STENCIL: AtomicBool = AtomicBool::new(false);
+
+/// Record the startup result of `Hooks::configure_main_render_target`
+/// (`ConfigureMainRenderTargetEvent`) before the renderer allocates its main depth buffer.
+pub fn configure_main_render_target(enable_stencil: bool) {
+    MAIN_TARGET_STENCIL.store(enable_stencil, Ordering::Release);
+}
+
+/// Whether any mod enabled a stencil attachment on the main world render target during startup
+/// (`ConfigureMainRenderTargetEvent::enable_stencil` / NeoForge `RenderTarget.isStencilEnabled`).
+pub fn main_target_stencil_enabled() -> bool {
+    MAIN_TARGET_STENCIL.load(Ordering::Acquire)
+}
+
+/// Cooperative 8-bit stencil bit allocator anchored on NeoForge's
+/// `net.neoforged.neoforge.client.StencilManager` (`BitSet(8)`).
+///
+/// Tracks the owning mod (when called from a native mod hook) for each bit `0..8` so bits held
+/// by a mod are released automatically if that mod is disabled or unloaded.
+#[derive(Debug, Default)]
+pub struct StencilManager {
+    /// Each slot `0..8` is `None` when free, `Some(owner)` when reserved (`owner` is `None`
+    /// when called outside a native mod context).
+    bits: [Option<Option<&'static str>>; 8],
+}
+
+impl StencilManager {
+    /// Number of cooperative stencil bits (`StencilManager`: `new BitSet(8)`).
+    pub const BIT_COUNT: u8 = 8;
+
+    /// Create an empty stencil bit allocator with all 8 bits free.
+    pub const fn new() -> Self {
+        Self { bits: [None; 8] }
+    }
+
+    /// Reserve the lowest free stencil bit `0..8` for `owner`, or `None` if all 8 bits are held.
+    pub fn reserve_bit(&mut self, owner: Option<&'static str>) -> Option<u8> {
+        for (idx, slot) in self.bits.iter_mut().enumerate() {
+            if slot.is_none() {
+                *slot = Some(owner);
+                return Some(idx as u8);
+            }
+        }
+        None
+    }
+
+    /// Release stencil bit `bit` (`0..8`). Out-of-range bits, unreserved bits, or bits owned by
+    /// a different mod are a safe no-op.
+    pub fn release_bit(&mut self, bit: u8, caller: Option<&'static str>) {
+        let Some(slot) = self.bits.get_mut(bit as usize) else {
+            return;
+        };
+        let Some(owner) = *slot else {
+            return;
+        };
+        if owner.is_none() || caller.is_none() || owner == caller {
+            *slot = None;
+        }
+    }
+
+    /// Release every stencil bit owned by any mod in `disabled`.
+    pub fn retire_disabled(&mut self, disabled: &BTreeSet<String>) {
+        for slot in &mut self.bits {
+            if let Some(Some(owner)) = *slot
+                && disabled.contains(owner)
+            {
+                *slot = None;
+            }
+        }
+    }
+}
 
 /// The built-in tables exported by `RenderPipelines.requiredPipelines` and `optionalPipelines`.
 #[derive(serde::Deserialize)]
@@ -619,6 +691,7 @@ pub struct Pipelines {
     generation: u64,
     invalid: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
     oit_ineligible_logged: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
+    no_stencil_logged: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
 }
 
 impl Pipelines {
@@ -786,7 +859,38 @@ impl Pipelines {
             generation,
             invalid: Default::default(),
             oit_ineligible_logged: Default::default(),
+            no_stencil_logged: Default::default(),
         })
+    }
+
+    /// The registered [`DepthState`] of `slot`, or `None` if `slot` is out of range, was not
+    /// built, or declared a depthless pipeline (`depth_stencil: None`).
+    pub fn depth_stencil(&self, slot: u32) -> Option<DepthState> {
+        self.built
+            .get(slot as usize)
+            .and_then(|b| b.as_ref())
+            .and_then(|b| b.state.depth_stencil)
+    }
+
+    /// Log once per `(mod, pipeline)` when a pipeline with a [`mod_api::StencilTest`] is
+    /// submitted to a target that has no stencil attachment.
+    pub fn warn_no_stencil_attachment(&self, slot: u32) {
+        let slot = slot as usize;
+        let mut logged = self
+            .no_stencil_logged
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if logged.contains(&slot) {
+            return;
+        }
+        logged.push(slot);
+        if let Some(Some(built)) = self.built.get(slot) {
+            log::warn!(
+                "Sunrise: mod {} pipeline {} refused: stencil test requires a stencil attachment (opt in via Hooks::configure_main_render_target)",
+                built.owner,
+                built.id
+            );
+        }
     }
 
     /// The registered [`PrimitiveTopology`] of `slot`, or `None` if `slot` is out of range or
@@ -2187,5 +2291,43 @@ void main() {
         )
         .color_target(1, Some(ColorTargetState::blended(PipelineBlend::Additive)))];
         assert!(Pipelines::build(&mixed_mrt, 4, read).is_err());
+    }
+
+    #[test]
+    fn stencil_manager_allocates_eight_bits_and_releases_on_owner_disable() {
+        let mut mgr = StencilManager::new();
+        let mut bits = Vec::new();
+        for i in 0..8u8 {
+            let owner = if i % 2 == 0 {
+                Some("mod_a")
+            } else {
+                Some("mod_b")
+            };
+            assert_eq!(mgr.reserve_bit(owner), Some(i));
+            bits.push(i);
+        }
+        // 9th reservation is refused while all 8 bits are held.
+        assert_eq!(mgr.reserve_bit(Some("mod_c")), None);
+
+        // Wrong mod cannot release another mod's bit.
+        mgr.release_bit(0, Some("mod_b"));
+        assert_eq!(mgr.reserve_bit(Some("mod_c")), None);
+
+        // Out-of-range release is a safe no-op.
+        mgr.release_bit(8, Some("mod_a"));
+        mgr.release_bit(255, None);
+
+        // Owner releases bit 3 -> reused on next reserve.
+        mgr.release_bit(3, Some("mod_b"));
+        assert_eq!(mgr.reserve_bit(Some("mod_c")), Some(3));
+        assert_eq!(mgr.reserve_bit(Some("mod_c")), None);
+
+        // Disabling mod_a frees all bits it owns (0, 2, 4, 6).
+        mgr.retire_disabled(&BTreeSet::from(["mod_a".to_owned()]));
+        assert_eq!(mgr.reserve_bit(Some("mod_d")), Some(0));
+        assert_eq!(mgr.reserve_bit(Some("mod_d")), Some(2));
+        assert_eq!(mgr.reserve_bit(Some("mod_d")), Some(4));
+        assert_eq!(mgr.reserve_bit(Some("mod_d")), Some(6));
+        assert_eq!(mgr.reserve_bit(Some("mod_d")), None);
     }
 }

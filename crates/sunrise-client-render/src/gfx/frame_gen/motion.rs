@@ -255,6 +255,7 @@ impl ObjectMotion {
         depth: &wgpu::TextureView,
     ) -> wgpu::TextureView {
         let target = self.target.as_ref().expect("prepare() ran").1.clone();
+        let depth_read = super::super::depth_read_view(depth);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Frame generation motion"),
             layout: &self.pipeline.get_bind_group_layout(0),
@@ -265,7 +266,7 @@ impl ObjectMotion {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(depth),
+                    resource: wgpu::BindingResource::TextureView(&depth_read),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,

@@ -232,6 +232,7 @@ mod clone_item_stack;
 mod component_hover;
 mod compute_camera_angles;
 mod compute_fov_modifier;
+mod configure_main_render_target;
 mod connects_to;
 mod console_line;
 mod contained_fluid;

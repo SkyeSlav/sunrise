@@ -186,6 +186,7 @@ struct PrimitivePipelines {
 
 /// The pipelines and buffers that draw a [`Batch`].
 pub struct WorldPrimitives {
+    depth_format: wgpu::TextureFormat,
     pipelines_standard: PrimitivePipelines,
     pack_pipelines: Option<((wgpu::TextureFormat, bool, bool), PrimitivePipelines)>,
     /// OIT pipelines for `DepthBounds`, `Transmittance`, and `Accumulate`, built when OIT is enabled.
@@ -328,6 +329,20 @@ impl WorldPrimitives {
     /// Pipelines drawing into `color_format` over a reversed Depth32Float depth, decoding their
     /// colours where the frame holds linear light (`linear`).
     pub fn new(device: &wgpu::Device, (color_format, linear): (wgpu::TextureFormat, bool)) -> Self {
+        Self::new_with_depth(
+            device,
+            (color_format, linear),
+            wgpu::TextureFormat::Depth32Float,
+        )
+    }
+
+    /// Pipelines drawing into `color_format` over a reversed depth buffer of `depth_format`,
+    /// decoding their colours where the frame holds linear light (`linear`).
+    pub fn new_with_depth(
+        device: &wgpu::Device,
+        (color_format, linear): (wgpu::TextureFormat, bool),
+        depth_format: wgpu::TextureFormat,
+    ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("World primitives"),
             entries: &[
@@ -363,6 +378,7 @@ impl WorldPrimitives {
             device,
             &layout,
             color_format,
+            depth_format,
             linear,
             false,
             wgpu::ColorWrites::ALL,
@@ -376,6 +392,7 @@ impl WorldPrimitives {
             })
         };
         Self {
+            depth_format,
             pipelines_standard,
             pack_pipelines: None,
             oit_pipelines: None,
@@ -405,7 +422,11 @@ impl WorldPrimitives {
             stage_ends: [[0; 4]; STAGES - 1],
             oit_counts: [0; 4],
             oit_stage_ends: [[0; 4]; OIT_STAGES - 1],
-            pipelines: super::mod_pipelines::ModPipelines::new(device, (color_format, linear)),
+            pipelines: super::mod_pipelines::ModPipelines::new_with_depth(
+                device,
+                (color_format, linear),
+                depth_format,
+            ),
             pack_uniforms: Vec::new(),
             bound_mod_slots: Vec::new(),
         }
@@ -432,7 +453,15 @@ impl WorldPrimitives {
             };
             self.pack_pipelines = Some((
                 key,
-                Self::standard_pipelines(device, &self.layout, format, linear, true, mask),
+                Self::standard_pipelines(
+                    device,
+                    &self.layout,
+                    format,
+                    wgpu::TextureFormat::Depth32Float,
+                    linear,
+                    true,
+                    mask,
+                ),
             ));
         }
         self.pipelines.ensure_pack_pipelines(device, format, rgb);
@@ -442,6 +471,7 @@ impl WorldPrimitives {
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         color_format: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
         linear: bool,
         pack: bool,
         write_mask: wgpu::ColorWrites,
@@ -495,7 +525,7 @@ impl WorldPrimitives {
                 // Blended over what is drawn, writing no depth: a translucent box doesn't hide
                 // the primitives behind it. Reversed depth: nearer is greater.
                 depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
+                    format: depth_format,
                     depth_write_enabled: Some(false),
                     depth_compare: Some(if through {
                         wgpu::CompareFunction::Always
@@ -611,7 +641,7 @@ impl WorldPrimitives {
                         ..Default::default()
                     },
                     depth_stencil: Some(wgpu::DepthStencilState {
-                        format: wgpu::TextureFormat::Depth32Float,
+                        format: self.depth_format,
                         depth_write_enabled: Some(false),
                         depth_compare: Some(if through {
                             wgpu::CompareFunction::Always
@@ -953,7 +983,11 @@ impl WorldPrimitives {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 }),
-                stencil_ops: None,
+                stencil_ops: super::stencil_ops_for(
+                    depth.texture().format(),
+                    wgpu::LoadOp::Load,
+                    wgpu::StoreOp::Store,
+                ),
             }),
             ..Default::default()
         });
@@ -1043,7 +1077,11 @@ impl WorldPrimitives {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 }),
-                stencil_ops: None,
+                stencil_ops: super::stencil_ops_for(
+                    depth.texture().format(),
+                    wgpu::LoadOp::Load,
+                    wgpu::StoreOp::Store,
+                ),
             }),
             ..Default::default()
         });

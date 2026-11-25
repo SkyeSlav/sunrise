@@ -54,6 +54,7 @@ impl Renderer {
     pub(super) fn depth(
         device: &wgpu::Device,
         config: &wgpu::SurfaceConfiguration,
+        format: wgpu::TextureFormat,
     ) -> wgpu::TextureView {
         device
             .create_texture(&wgpu::TextureDescriptor {
@@ -66,7 +67,7 @@ impl Renderer {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Depth32Float,
+                format,
                 // TEXTURE_BINDING: a post effect may read the depth buffer.
                 // COPY_SRC: improved transparency and a native shader pack's
                 // `opaque_depth` copy it.
@@ -124,7 +125,7 @@ impl Renderer {
         } else {
             self.offscreen = Some(Self::offscreen_target(&self.device, &self.config));
         }
-        self.depth = Self::depth(&self.device, &self.config);
+        self.depth = Self::depth(&self.device, &self.config, self.depth_format);
         if let Some(pipeline) = &mut self.external {
             pipeline.resize([width, height]);
         }

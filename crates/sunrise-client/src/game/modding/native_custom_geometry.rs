@@ -418,8 +418,35 @@ impl Game<'_> {
         if draw.effective_topology(base_topology) != mod_api::PrimitiveTopology::Quads {
             return Err(PipelineDrawError::TopologyMismatch);
         }
+        let base_depth_stencil = self.pack.render.mod_pipelines.depth_stencil(slot);
+        if draw.effective_stencil(base_depth_stencil).is_some()
+            && !self.main_target_stencil_enabled()
+        {
+            self.pack
+                .render
+                .mod_pipelines
+                .warn_no_stencil_attachment(slot);
+            return Err(PipelineDrawError::NoStencilAttachment);
+        }
         draw.pipeline_quads(slot, quads);
         Ok(())
+    }
+
+    /// Whether the main world render target has an 8-bit stencil attachment.
+    pub(in crate::game) fn main_target_stencil_enabled(&self) -> bool {
+        sunrise_client_render::mod_pipelines::main_target_stencil_enabled()
+    }
+
+    /// Reserve one cooperative stencil bit (`0..8`) for the calling mod.
+    pub(in crate::game) fn reserve_stencil_bit(&self) -> Option<u8> {
+        let owner = mod_api::content::crash::current_native_mod();
+        self.stencil_manager.borrow_mut().reserve_bit(owner)
+    }
+
+    /// Release a previously reserved cooperative stencil bit (`0..8`).
+    pub(in crate::game) fn release_stencil_bit(&self, bit: u8) {
+        let caller = mod_api::content::crash::current_native_mod();
+        self.stencil_manager.borrow_mut().release_bit(bit, caller);
     }
     /// Resolve `model` once, cull copies against the frustum first, and skip any individual
     /// invalid visible copy without rolling back valid copies.

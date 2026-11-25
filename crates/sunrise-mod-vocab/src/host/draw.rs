@@ -541,7 +541,9 @@ pub trait WorldDrawContext {
     /// quad's texture coordinate and colour, and its blend and depth modes apply. Checks
     /// `RenderPipelineRef` validity and staleness ([`PipelineDrawError::Pipeline`]), refuses
     /// pipelines whose effective [`PrimitiveTopology`] is not [`PrimitiveTopology::Quads`]
-    /// ([`PipelineDrawError::TopologyMismatch`]), skips any quad with non-finite coordinates or
+    /// ([`PipelineDrawError::TopologyMismatch`]), refuses pipelines whose effective
+    /// [`DepthState::stencil`] is `Some` when the main render target has no stencil attachment
+    /// ([`PipelineDrawError::NoStencilAttachment`]), skips any quad with non-finite coordinates or
     /// UVs individually without rejecting valid quads in the same slice, and lets quad storage
     /// grow dynamically into the GPU buffers. Within a stage, pipeline quads draw after its
     /// plain quads and lines, in the order submitted.
@@ -656,7 +658,9 @@ pub trait PrepareRenderBuffersContext {
     /// Prepare a batch of mod-pipeline quads for `stage` (standard pass stages or
     /// [`RenderLevelStage::OitTranslucent`]). Refuses pipelines whose effective
     /// [`PrimitiveTopology`] is not [`PrimitiveTopology::Quads`]
-    /// ([`PipelineDrawError::TopologyMismatch`]). At `OitTranslucent`, a pipeline without
+    /// ([`PipelineDrawError::TopologyMismatch`]), and refuses pipelines whose effective
+    /// [`DepthState::stencil`] is `Some` when the target pass has no stencil attachment
+    /// ([`PipelineDrawError::NoStencilAttachment`]). At `OitTranslucent`, a pipeline without
     /// [`RenderPipeline::order_independent`] or with [`PipelineBlend::Opaque`] is refused with
     /// [`PipelineDrawError::Pipeline`] (`RenderPipelineError::Invalid`), logged once per mod and
     /// pipeline. Individual quads with non-finite coordinates or UVs are skipped.
