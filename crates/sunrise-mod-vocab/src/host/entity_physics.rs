@@ -109,11 +109,11 @@ pub trait EntityPhysicsBackendMut {
     /// box is solid ground and walls only (sunrise-org/sunrise#1909). The collider is saved with
     /// the entity, sent to the Sunrise clients that track it when they start to (and then only
     /// what changed), and dropped with the entity. Replacing a collider sends the boxes that were
-    /// added or removed by index. A shape edit does not directly displace an overlapping body. On
-    /// its movement tick, a Sunrise local player checks solid boxes in the sampled collision scene
-    /// for the normal closest-space velocity nudge. Refused by name, with the old collider kept,
-    /// when the handle is stale, a box or pivot coordinate is not finite, the rotation is zero,
-    /// NaN or infinite, or the collider's wire encoding exceeds one clientbound custom payload
+    /// added or removed by index. A body the boxes overlap is not pushed out: vanilla pushes a
+    /// player only out of suffocating blocks (`LocalPlayer.suffocatesAt`), never out of another
+    /// entity's box. Refused by name, with the old collider kept, when the handle is stale, a box
+    /// or pivot coordinate is not finite, the rotation is zero, NaN or infinite, or the collider's
+    /// wire encoding exceeds one clientbound custom payload
     /// (`ClientboundCustomPayloadPacket.MAX_PAYLOAD_SIZE`, 1,048,576 bytes; see [`ColliderError`]).
     fn entity_set_collider(
         &mut self,
