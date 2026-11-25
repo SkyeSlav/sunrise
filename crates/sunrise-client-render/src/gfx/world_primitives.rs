@@ -121,6 +121,13 @@ pub trait FrameHooks {
         true
     }
     fn on_custom_geometry(&mut self, sections: &[mod_api::RenderableSection], oit_on: bool);
+    /// Fire `Hooks::frame_graph_setup` at the start of level rendering to record data-driven
+    /// offscreen passes and transient per-frame targets.
+    fn on_frame_graph_setup(&mut self, _sections: &[mod_api::RenderableSection], _oit_on: bool) {}
+    /// Take the recorded frame graph for compilation and execution during this world frame.
+    fn take_frame_graph(&mut self) -> Option<super::mod_frame_graph::RecordedFrameGraph> {
+        None
+    }
     fn on_after_sky(&mut self, sections: &[mod_api::RenderableSection], oit_on: bool);
     fn on_prepare_render_buffers(
         &mut self,

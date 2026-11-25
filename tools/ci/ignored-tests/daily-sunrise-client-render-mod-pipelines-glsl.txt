@@ -9,4 +9,5 @@ sunrise-client-render gfx::mod_pipelines::tests::instanced_vertex_binding_draws_
 sunrise-client-render gfx::mod_pipelines::tests::set1_uniform_buffer_inline_uniform_push_constant_and_texel_buffer_draw_expected_pixels lib daily gpu
 sunrise-client-render gfx::mod_pipelines::tests::set1_dynamic_and_standalone_textures_sample_with_repeat_addressing lib daily gpu
 sunrise-client-render gfx::mod_pipelines::tests::offscreen_render_target_draw_sample_persist_resize_and_hazard_check lib daily gpu
+sunrise-client-render gfx::mod_frame_graph::tests::gpu_frame_graph_runs_two_pass_transient_chain_culls_unused_and_rejects_cycle lib daily gpu
 sunrise-client-render gfx::pack_post::mod_stage_tests::pack_composite_inverts_mod_glsl_quad_drawn_once_after_opaque_blocks lib daily gpu

@@ -2419,6 +2419,13 @@ pub enum TextureSource<'a> {
     /// target the active offscreen pass renders into is allowed as long as the range does not
     /// contain the pass's [`OffscreenPass::mip_level`].
     RenderTargetColorMip(RenderTargetMipView),
+    /// Colour attachment `attachment` (`0..color_targets.len()`) of a transient per-frame target
+    /// allocated via [`crate::FrameGraphContext::create_transient`].
+    TransientTargetColor(crate::TransientTargetId, u8),
+    /// Depth aspect of a transient per-frame target allocated via
+    /// [`crate::FrameGraphContext::create_transient`] (must be bound to a non-filtering
+    /// [`SamplerFilter::Nearest`] sampler).
+    TransientTargetDepth(crate::TransientTargetId),
 }
 
 /// A view of a mip range of a render target colour attachment (vanilla's `GpuTextureView`:

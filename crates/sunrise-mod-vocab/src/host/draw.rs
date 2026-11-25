@@ -771,3 +771,80 @@ pub trait RenderLevelStageContext {
         }
     }
 }
+
+/// Draw recorder handed to a pass callback inside [`FrameGraphContext::add_pass`].
+///
+/// Draws are recorded as data during [`crate::Hooks::frame_graph_setup`] and executed when the
+/// pass runs in the compiled frame graph. Self-sampling the pass's own target returns
+/// [`PipelineDrawError::TargetReadWriteHazard`].
+pub trait OffscreenDrawContext {
+    /// Record a retained GPU [`MeshRef`] draw into this offscreen pass.
+    fn draw_mesh(
+        &mut self,
+        pipeline: RenderPipelineRef,
+        mesh: MeshRef,
+        draw: MeshDraw,
+        bindings: &DrawBindings<'_>,
+    ) -> Result<(), PipelineDrawError> {
+        let _ = (pipeline, mesh, draw, bindings);
+        Err(PipelineDrawError::Pipeline(RenderPipelineError::Invalid))
+    }
+
+    /// Record a transient per-frame vertex/index draw into this offscreen pass.
+    fn draw_vertices(
+        &mut self,
+        pipeline: RenderPipelineRef,
+        vertices: &[&[u8]],
+        indices: Option<(IndexFormat, &[u8])>,
+        draw: MeshDraw,
+        bindings: &DrawBindings<'_>,
+    ) -> Result<(), PipelineDrawError> {
+        let _ = (pipeline, vertices, indices, draw, bindings);
+        Err(PipelineDrawError::Pipeline(RenderPipelineError::Invalid))
+    }
+
+    /// Shorthand for drawing [`PipelineQuad`]s with a `PositionTexColor` quad pipeline into this
+    /// offscreen pass.
+    fn pipeline_quads(
+        &mut self,
+        pipeline: RenderPipelineRef,
+        quads: &[PipelineQuad],
+    ) -> Result<(), PipelineDrawError> {
+        let _ = (pipeline, quads);
+        Err(PipelineDrawError::Pipeline(RenderPipelineError::Invalid))
+    }
+}
+
+/// Per-frame graph setup surface passed to
+/// [`crate::Hooks::frame_graph_setup`] (NeoForge 26.3's `FrameGraphSetupEvent`, vanilla
+/// `FrameGraphBuilder`).
+pub trait FrameGraphContext {
+    /// Allocate a transient per-frame offscreen render target (`FrameGraphBuilder.createInternal`).
+    ///
+    /// Pooled across frames and released after the last pass in the compiled graph that reads it.
+    /// Passes that write only to transient targets with no downstream reader reaching an external
+    /// target (`FrameTarget::Mod` or a built-in `LevelTargetBundle` target) are culled unless
+    /// `disable_culling` is set.
+    fn create_transient(
+        &mut self,
+        desc: &RenderTargetDescriptor,
+    ) -> Result<TransientTargetId, RenderTargetError> {
+        let _ = desc;
+        Err(RenderTargetError::Unavailable)
+    }
+
+    /// Add a data-driven offscreen render pass to this frame's graph
+    /// (`FrameGraphBuilder.addPass`).
+    ///
+    /// `record` records draw commands synchronously during setup. Kept passes are executed in
+    /// deterministic topological order (registration order breaks ties); cycles are refused with
+    /// [`FrameGraphError::Cycle`] without panicking or breaking other passes in the frame.
+    fn add_pass(
+        &mut self,
+        desc: FramePassDescriptor,
+        record: &mut dyn FnMut(&mut dyn OffscreenDrawContext),
+    ) -> Result<FramePassId, FrameGraphError> {
+        let _ = (desc, record);
+        Err(FrameGraphError::Unavailable)
+    }
+}

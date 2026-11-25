@@ -666,6 +666,32 @@ impl super::Renderer {
             .retire_unloaded(unloaded);
     }
 
+    /// Maximum 2D texture dimension supported by this renderer's GPU device.
+    pub fn max_texture_dimension_2d(&self) -> u32 {
+        self.device.limits().max_texture_dimension_2d
+    }
+
+    /// Whether this renderer's GPU device supports linear filtering on `R32Float` textures.
+    pub fn float32_filterable(&self) -> bool {
+        self.device
+            .features()
+            .contains(wgpu::Features::FLOAT32_FILTERABLE)
+    }
+
+    /// Record a distinct frame-graph cycle warning once per reload/world session.
+    pub fn warn_frame_graph_cycle_once(&self, passes: &[String]) {
+        let mut warned = self
+            .warned_frame_graph_cycles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if warned.insert(passes.to_vec()) {
+            log::warn!(
+                "Sunrise: frame graph cycle detected between {}",
+                passes.join(", ")
+            );
+        }
+    }
+
     /// Resolve a mod render target colour attachment for set-1 sampling.
     pub fn resolve_mod_render_target_color(
         &self,
