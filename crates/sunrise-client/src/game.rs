@@ -10557,8 +10557,11 @@ impl Game<'_> {
                 &self.gui.atlas.sprites,
                 &self.gui.atlas.translucent,
             );
-            self.standalone_geometry =
-                native_block_entity_draw::StandaloneGeometry::new(&self.pack, &self.gui);
+            self.standalone_geometry = native_block_entity_draw::StandaloneGeometry::new(
+                &self.pack,
+                &self.gui,
+                self.res.try_block_entity_render(),
+            );
             let (pool, mut names) = self.gui.atlas.dynamic_names();
             self.dynamic_textures.rebind(pool, &mut names);
             sunrise_client::ui_theme::reset_atlas();
@@ -14137,7 +14140,11 @@ impl<'a> Game<'a> {
             1,
         );
         streaming.paused = true;
-        let standalone_geometry = native_block_entity_draw::StandaloneGeometry::new(&pack, &gui);
+        let standalone_geometry = native_block_entity_draw::StandaloneGeometry::new(
+            &pack,
+            &gui,
+            res.try_block_entity_render(),
+        );
         let mut game = Game {
             structure_spawns: sunrise_client::mobs::spawn_selection::StructureSpawns::load(
                 &options.resources,

@@ -76,6 +76,9 @@ impl Resources {
     pub(super) fn block_entity_render(&self) -> &BlockEntityRenderer {
         &self.rest().block_entity_render
     }
+    pub(super) fn try_block_entity_render(&self) -> Option<&BlockEntityRenderer> {
+        self.rest.get().map(|rest| &rest.block_entity_render)
+    }
     pub(super) fn animate(&self) -> &sunrise_client::animate_tick::AnimateTables {
         &self.rest().animate
     }

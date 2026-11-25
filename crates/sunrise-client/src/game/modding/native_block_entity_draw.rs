@@ -50,6 +50,9 @@ pub(super) struct StateModel {
     faces: Vec<sunrise_client::models::catalog::BakedFace>,
     prepared: Vec<super::minecarts::PreparedModelFace>,
     tints: FxHashMap<i32, u32>,
+    /// The state is also drawn by its block's special renderer, with default data
+    /// (`BuiltInBlockModels`' `CompositeBlockModel`: the block-state model, then the special one).
+    special: bool,
     bounds: [[f32; 3]; 2],
 }
 
@@ -58,27 +61,34 @@ pub(super) struct InstanceSlot {
     pub translucent: bool,
     /// A block state's model: drawn on the CPU route only, never as a GPU instance.
     pub state: bool,
+    /// The block state whose special renderer draws after the model's faces.
+    pub special: Option<BlockStateId>,
     pub bounds: [[f32; 3]; 2],
 }
 
-fn face_bounds(positions: impl IntoIterator<Item = [f32; 3]>) -> [[f32; 3]; 2] {
+/// The box around `points`, or `None` when there are none.
+fn point_bounds(points: impl IntoIterator<Item = [f32; 3]>) -> Option<[[f32; 3]; 2]> {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
-    for pos in positions {
+    for pos in points {
         for axis in 0..3 {
             min[axis] = min[axis].min(pos[axis]);
             max[axis] = max[axis].max(pos[axis]);
         }
     }
-    if min[0].is_finite() {
-        [min, max]
-    } else {
-        [[0.0; 3], [0.0; 3]]
-    }
+    min[0].is_finite().then_some([min, max])
+}
+
+fn face_bounds(positions: impl IntoIterator<Item = [f32; 3]>) -> [[f32; 3]; 2] {
+    point_bounds(positions).unwrap_or_default()
 }
 
 impl StandaloneGeometry {
-    pub(super) fn new(pack: &super::PackResources, gui: &super::UiResources) -> Self {
+    pub(super) fn new(
+        pack: &super::PackResources,
+        gui: &super::UiResources,
+        block_entity_render: Option<&sunrise_client::block_entity_render::BlockEntityRenderer>,
+    ) -> Self {
         let catalog = &pack.render.model_catalog;
         let layer_sprites: FxHashMap<_, _> = pack
             .layer_names
@@ -115,8 +125,46 @@ impl StandaloneGeometry {
             );
             slots[index] = Some(prepared);
         }
+        // The special parts are sized in an empty world, with no level loaded yet.
+        let special_renderer = block_entity_render.map(|renderer| {
+            (
+                renderer,
+                sunrise_client::world::World::new(BlockStateId(0), 0),
+            )
+        });
+        let mut special_scratch = Vec::new();
         let states = (0..pack.assets.registry.len() as u32)
-            .map(|state| Self::bind_state(pack, &layer_sprites, BlockStateId(state)))
+            .map(|state| {
+                let id = BlockStateId(state);
+                // `BuiltInBlockModels.addDefaults`: only run the special renderer for blocks
+                // that have one, widening the state's bounds with its default geometry.
+                let special = special_renderer.as_ref().and_then(|(renderer, world)| {
+                    if !pack
+                        .assets
+                        .registry
+                        .state(id)?
+                        .name
+                        .strip_prefix("minecraft:")
+                        .is_some_and(super::text_displays::has_special_model)
+                    {
+                        return None;
+                    }
+                    special_scratch.clear();
+                    super::minecarts::render_default_state(
+                        renderer,
+                        gui,
+                        world,
+                        0,
+                        false,
+                        id,
+                        Mat4::IDENTITY,
+                        0,
+                        &mut special_scratch,
+                    );
+                    point_bounds(special_scratch.iter().map(|vertex| vertex.pos))
+                });
+                Self::bind_state(pack, &layer_sprites, id, special)
+            })
             .collect();
         Self {
             generation: pack.render.generation,
@@ -131,11 +179,13 @@ impl StandaloneGeometry {
 
     /// Block state `id` as one model: the blockstate file's parts at `BLOCK_MODEL_SEED` with
     /// each tinted face holding the block's default tint (no position) in its colour, bound to
-    /// its atlas regions.
+    /// its atlas regions, plus `special`'s bounds when the state also draws with a special
+    /// renderer.
     fn bind_state(
         pack: &super::PackResources,
         layer_sprites: &FxHashMap<u32, Rect>,
         id: BlockStateId,
+        special: Option<[[f32; 3]; 2]>,
     ) -> StateModel {
         use sunrise_client::models::catalog::BakedFace;
         let mut faces = Vec::new();
@@ -168,11 +218,18 @@ impl StandaloneGeometry {
                 ));
             }
         }
-        let bounds = face_bounds(faces.iter().flat_map(|face| face.quad.positions));
+        let corners = special.into_iter().flatten();
+        let bounds = face_bounds(
+            faces
+                .iter()
+                .flat_map(|face| face.quad.positions)
+                .chain(corners),
+        );
         StateModel {
             faces,
             prepared,
             tints,
+            special: special.is_some(),
             bounds,
         }
     }
@@ -183,6 +240,7 @@ impl StandaloneGeometry {
             return Some(InstanceSlot {
                 translucent: false,
                 state: true,
+                special: model.special.then_some(BlockStateId(state)),
                 bounds: model.bounds,
             });
         }
@@ -190,6 +248,7 @@ impl StandaloneGeometry {
         self.slots.get(index)?.is_some().then_some(InstanceSlot {
             translucent: self.translucent[index],
             state: false,
+            special: None,
             bounds: self.bounds[index],
         })
     }
@@ -645,6 +704,11 @@ impl BlockEntityDraw {
         self.quad_capacity = quad_capacity;
         self.reserved_quads = reserved_quads;
         self
+    }
+
+    /// Device-derived entity quad capacity and reserved quad count for this draw.
+    pub(super) fn quad_budget(&self) -> (sunrise_client::gfx::EntityQuadCapacity, usize) {
+        (self.quad_capacity, self.reserved_quads)
     }
 
     /// Opens the renderer-owned scoped quad submission sink for this draw.
@@ -1759,12 +1823,53 @@ impl Game<'_> {
     ) -> Result<ModelRef, ModelError> {
         let _ = self
             .resolved_block_model(id)
-            .filter(|model| !model.faces.is_empty())
+            .filter(|model| !model.faces.is_empty() || model.special)
             .ok_or(ModelError::UnknownModel)?;
         Ok(mod_api::__private::built::model_ref(
             self.standalone_geometry.generation(),
             self.standalone_geometry.states_from + id.0,
         ))
+    }
+
+    /// `CompositeBlockModel`'s second part for block state `state`: what its special renderer
+    /// draws with default data, after the block-state model's faces, under the same pose and
+    /// packed `light`. It takes no tint and no hidden faces; `color` (`0xAARRGGBB`) multiplies
+    /// it, and below opaque it blends as `entityTranslucent` does. The end portal and gateway
+    /// draw their starfield whatever `color` is, as `rendertype_end_portal` does. Non-finite
+    /// quads are skipped individually and the contribution stays within `capacity` minus
+    /// `reserved_quads`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn special_model_part(
+        &self,
+        state: BlockStateId,
+        pose: Mat4,
+        light: u32,
+        color: u32,
+        out: &mut Vec<Vertex>,
+        capacity: sunrise_client::gfx::EntityQuadCapacity,
+        reserved_quads: usize,
+    ) {
+        use sunrise_client::block_entity_render::{END_GATEWAY_LAYER, END_PORTAL_LAYER};
+        if !sunrise_client::gfx::EntityQuadScope::new(out, capacity, reserved_quads).has_room() {
+            return;
+        }
+        let start = out.len();
+        self.special_block_model(state, pose, super::minecarts::special_light(light), out);
+        sunrise_client::gfx::EntityQuadScope::new(out, capacity, reserved_quads)
+            .retain_valid_since(start);
+        if color != u32::MAX {
+            for vertex in &mut out[start..] {
+                vertex.color =
+                    sunrise_client::terrain_model::multiply_draw_color(vertex.color, color);
+            }
+        }
+        // The portal shader writes an opaque starfield, so a faded portal stays opaque.
+        let portal = out[start..]
+            .iter()
+            .any(|vertex| matches!(vertex.layer & 0xFFFF, END_PORTAL_LAYER | END_GATEWAY_LAYER));
+        if color >> 24 != 0xFF && !portal {
+            sunrise_client::gfx::mark_oit(&mut out[start..]);
+        }
     }
 
     /// Share the same prepared state model for terrain submissions and block-entity draws.

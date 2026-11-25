@@ -560,8 +560,11 @@ impl Game<'_> {
         // A reload from the title can apply before the start's world-rest worker is done.
         self.join_world_rest()?;
         let tab_modifiers = sunrise_client::polytone_creative_tabs::TabModifier::read_all(&root);
-        let standalone_geometry =
-            super::native_block_entity_draw::StandaloneGeometry::new(&pack, &gui);
+        let standalone_geometry = super::native_block_entity_draw::StandaloneGeometry::new(
+            &pack,
+            &gui,
+            self.res.try_block_entity_render(),
+        );
         // Keep the working GPU resources, and hand its window surface over.
         if let Some(renderer) = &mut self.renderer {
             renderer.release_surface();

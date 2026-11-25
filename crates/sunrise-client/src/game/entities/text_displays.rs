@@ -1190,13 +1190,10 @@ impl Game<'_> {
                         .strip_prefix("minecraft:")
                         .is_some_and(has_special_model)
                     {
-                        let packed = ((((effective_light & 0xFF) / 16) << 4)
-                            | (((effective_light >> 8) & 0xFF) / 16))
-                            as u8;
                         self.special_block_model(
                             state,
                             pose.to_glam(),
-                            packed,
+                            super::minecarts::special_light(effective_light),
                             &mut translucent.scratch,
                         );
                     }
@@ -1381,7 +1378,7 @@ impl Game<'_> {
 
 /// Whether vanilla's built-in block models give this block a special model,
 /// drawn by its block-entity renderer.
-fn has_special_model(block: &str) -> bool {
+pub(super) fn has_special_model(block: &str) -> bool {
     matches!(
         block,
         "bell"

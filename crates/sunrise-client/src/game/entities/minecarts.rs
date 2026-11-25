@@ -2873,7 +2873,8 @@ impl Game<'_> {
         }
     }
     /// The model of a block drawn by its block-entity renderer, as a chest
-    /// minecart shows its chest and a block display its special block.
+    /// minecart shows its chest and a block display its special block. `light` is the
+    /// level's packed `sky << 4 | block` byte: see [`special_light`].
     pub(super) fn special_block_model(
         &self,
         state: BlockStateId,
@@ -2881,36 +2882,66 @@ impl Game<'_> {
         light: u8,
         out: &mut Vec<Vertex>,
     ) {
-        let lid = |_: [i32; 3]| 0.0;
-        let scene = sunrise_client::block_entity_render::Scene {
-            camera: glam::DVec3::ZERO,
-            sign_outline: sunrise_client::block_entity_render::SignOutline::None,
-            orientation: glam::Quat::IDENTITY,
-            anim: &|_| sunrise_client::block_entity_render::BlockAnim::default(),
-            texts: None,
-            partial: 0.0,
-            game_time: self.world.game_time,
-            max_y: self.world.shape.max_y() - 1,
-            world: &self.world,
-            sprites: &self.gui.atlas.sprites,
-            emissive: &self.gui.atlas.emissive,
-            translucent_sprites: &self.gui.atlas.translucent,
-            atlas_revision: self.gui.atlas.revision,
-            nether: self.nether_lighting(),
-            lid: &lid,
-            sign: &|_| None,
-            banner: &|_| Vec::new(),
-            skull: &|_| None,
-            glyph: &|c| self.gui.atlas.glyph_cell(c),
-            glyphs: self.gui.atlas.font.epoch(),
-            font: Some(&self.gui.atlas.font),
-            inline_images: None,
-            dynamic_visible: None,
-        };
-        self.res
-            .block_entity_render()
-            .render_state(&scene, state.0, m, light, out);
+        render_default_state(
+            self.res.block_entity_render(),
+            &self.gui,
+            &self.world,
+            self.world.game_time,
+            self.nether_lighting(),
+            state,
+            m,
+            light,
+            out,
+        );
     }
+}
+/// What `renderer` draws for block state `state` with no block entity data, as
+/// [`Game::special_block_model`] does, in `world` at `game_time`: shared with
+/// `StandaloneGeometry`, which sizes the special part before any level is loaded.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_default_state(
+    renderer: &sunrise_client::block_entity_render::BlockEntityRenderer,
+    gui: &super::UiResources,
+    world: &sunrise_client::world::World,
+    game_time: i64,
+    nether: bool,
+    state: BlockStateId,
+    m: glam::Mat4,
+    light: u8,
+    out: &mut Vec<Vertex>,
+) {
+    let lid = |_: [i32; 3]| 0.0;
+    let scene = sunrise_client::block_entity_render::Scene {
+        camera: glam::DVec3::ZERO,
+        sign_outline: sunrise_client::block_entity_render::SignOutline::None,
+        orientation: glam::Quat::IDENTITY,
+        anim: &|_| sunrise_client::block_entity_render::BlockAnim::default(),
+        texts: None,
+        partial: 0.0,
+        game_time,
+        max_y: world.shape.max_y() - 1,
+        world,
+        sprites: &gui.atlas.sprites,
+        emissive: &gui.atlas.emissive,
+        translucent_sprites: &gui.atlas.translucent,
+        atlas_revision: gui.atlas.revision,
+        nether,
+        lid: &lid,
+        sign: &|_| None,
+        banner: &|_| Vec::new(),
+        skull: &|_| None,
+        glyph: &|c| gui.atlas.glyph_cell(c),
+        glyphs: gui.atlas.font.epoch(),
+        font: Some(&gui.atlas.font),
+        inline_images: None,
+        dynamic_visible: None,
+    };
+    renderer.render_state(&scene, state.0, m, light, out);
+}
+/// Packed vertex light as the level's `sky << 4 | block` byte that
+/// [`Game::special_block_model`] takes: the inverse of `block_entity_render::vertex_light`.
+pub(super) fn special_light(light: u32) -> u8 {
+    ((((light & 0xFF) / 16) << 4) | (((light >> 8) & 0xFF) / 16)) as u8
 }
 /// Saving and loading.
 impl Minecart {

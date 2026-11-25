@@ -298,8 +298,11 @@ cull mask the caller supplies) are Sunrise's options for mod copies.
 `block_state_model(state)` (on `RenderAssets`) resolves a `BlockState` as one model: the parts
 its blockstate file selects for its properties, weighted alternatives at the fixed seed
 `BlockEntityDrawContext::block(state)` uses (which likewise takes a resolved `BlockState`),
-each tinted face in the block's default tint. It draws through `draw_model_instances`,
-instance groups and `draw.terrain_model`, not `draw.model`.
+each tinted face in the block's default tint. A block vanilla also draws with a special
+renderer (a chest, shulker box, banner, head, bell, decorated pot and the other blocks of
+vanilla's `BuiltInBlockModels`) adds that renderer's geometry with no block entity data, as a
+block display shows it: a closed chest, a plain banner. It draws through
+`draw_model_instances`, instance groups and `draw.terrain_model`, not `draw.model`.
 Resolve it once per state in `client_setup` and `client_resources_reloaded`.
 
 ## Terrain materials in a block entity

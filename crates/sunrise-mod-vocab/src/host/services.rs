@@ -367,11 +367,19 @@ pub trait RenderAssets {
     /// moving piston block, a falling block, a block display): all the parts its blockstate file
     /// selects for its properties, weighted alternatives picked at the fixed seed
     /// `BlockEntityDrawContext::block` uses, tint layers from the block's tint sources without a
-    /// position. Any state: a mod's, vanilla's, a resource pack's. It draws through
+    /// position. Any state: a mod's, vanilla's, a resource pack's. A block vanilla also draws with
+    /// a special renderer (the blocks vanilla's `BuiltInBlockModels` lists: chests, shulker
+    /// boxes, banners, heads and skulls, the bell, conduit, decorated pot, enchanting table's
+    /// book, copper golem statues, the end portal and gateway) is their composite: the
+    /// blockstate parts, then the special renderer's geometry with no block entity data (a
+    /// closed lid, a closed book lying on the enchanting table, a still banner with no
+    /// patterns, every face of the end portal and gateway, no profile), as a block display
+    /// shows it. It draws through
     /// [`WorldDrawContext::draw_model_instances`](crate::WorldDrawContext::draw_model_instances),
-    /// [`InstanceGroupRef`] and `BlockEntityDrawContext::terrain_model`. `ModelError::UnknownModel` for a
-    /// state with no baked model (air, a block drawn by a special renderer) or one the live
-    /// block-state index lacks (a block it does not hold, or an ordinal past the block's states).
+    /// [`InstanceGroupRef`] and `BlockEntityDrawContext::terrain_model`; the special part takes
+    /// the entity materials, no tint and no hidden faces. `ModelError::UnknownModel` for a state
+    /// that draws nothing (air, a block with no model) or one the live block-state index lacks
+    /// (a block it does not hold, or an ordinal past the block's states).
     /// Resolve once per distinct state in `client_setup` and again in `client_resources_reloaded`,
     /// not each frame; the handle goes stale on a reload.
     fn block_state_model(&self, state: BlockState) -> Result<ModelRef, ModelError> {
