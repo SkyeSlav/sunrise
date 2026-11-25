@@ -989,11 +989,36 @@ fn content_id(file: &str) -> Option<String> {
     let (ns, rest) = rest.split_once('/')?;
     let (kind, rest) = rest.split_once('/')?;
     let kind = match kind {
-        "recipe" | "recipe_filter" | "loot_table" | "advancement" | "trade_set"
-        | "villager_trade" | "dialog" | "damage_type" | "dimension_type" | "chat_type"
-        | "trim_pattern" | "trim_material" | "wolf_variant" | "wolf_sound_variant"
-        | "cat_variant" | "cat_sound_variant" | "data_maps" | "enchantment" | "jukebox_song"
-        | "instrument" | "painting_variant" | "banner_pattern" | "predicate" | "item_modifier"
+        "recipe"
+        | "recipe_filter"
+        | "loot_table"
+        | "advancement"
+        | "trade_set"
+        | "villager_trade"
+        | "dialog"
+        | "damage_type"
+        | "dimension_type"
+        | "chat_type"
+        | "trim_pattern"
+        | "trim_material"
+        | "wolf_variant"
+        | "wolf_sound_variant"
+        | "cat_variant"
+        | "cat_sound_variant"
+        | "pig_variant"
+        | "pig_sound_variant"
+        | "cow_variant"
+        | "cow_sound_variant"
+        | "chicken_variant"
+        | "chicken_sound_variant"
+        | "data_maps"
+        | "enchantment"
+        | "jukebox_song"
+        | "instrument"
+        | "painting_variant"
+        | "banner_pattern"
+        | "predicate"
+        | "item_modifier"
         | "world_clock" => kind,
         "worldgen" => {
             return resource_id(file, "worldgen/biome", ".json")
@@ -1125,6 +1150,10 @@ impl DataStore {
             "cat_sound_variant",
             "cat_variant",
             "chat_type",
+            "chicken_sound_variant",
+            "chicken_variant",
+            "cow_sound_variant",
+            "cow_variant",
             "damage_type",
             "data_maps",
             "dialog",
@@ -1136,6 +1165,8 @@ impl DataStore {
             "jukebox_song",
             "loot_table",
             "painting_variant",
+            "pig_sound_variant",
+            "pig_variant",
             "predicate",
             "recipe",
             "recipe_filter",

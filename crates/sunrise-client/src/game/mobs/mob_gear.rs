@@ -45,7 +45,7 @@ impl Game<'_> {
             return;
         }
         let params = EntityLootParams {
-            this: drops::loot_entity(mob, None),
+            this: drops::loot_entity_with_variants(mob, None, Some(self.world_variants())),
             ..EntityLootParams::default()
         };
         let seed = self.level.seed;
