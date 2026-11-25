@@ -1630,6 +1630,29 @@ radius. `kernel_size` 0 is none.
     "top": "carve", "bottom": "none", "rigid_junctions": true, "inflate": true } }
 ```
 
+#### NeoForge model loaders and the root transform
+
+Block and item model files read NeoForge's built-in loaders `neoforge:composite`, `neoforge:obj`,
+`neoforge:empty` and `neoforge:conditional`. `"loader": "neoforge:empty"` is a model with no quads:
+its other keys, `parent` and `textures` included, are ignored, and a model inheriting from it has no
+geometry either. `"loader": "neoforge:conditional"` tests `neoforge:conditions` against the client's
+loaded mods (with an empty tag/registry context): when all hold, it decodes the inline `model`
+object or the file itself as a plain cuboid model; otherwise it uses the required `fallback` (an
+inline model object, a model id, or `minecraft:builtin/missing`).
+
+A model's `transform` (NeoForge's root transform) moves its elements, its composite children and its OBJ faces
+before the blockstate's rotation. It is `"identity"`, a 3x4 row-major matrix (bare or as `{"matrix": ...}`), or an
+object of `translation`, `rotation` (or `left_rotation`), `scale` (one number or three), `right_rotation` (or
+`post-rotation`) and `origin` (`"center"`, `"corner"`, `"opposing-corner"`, the default, or three numbers). A
+rotation is one `{"x": degrees}` axis object, a list of them, three XYZ degrees or a quaternion. The model closest
+to the leaf that names a `transform` wins, so a child's `"identity"` removes its parent's. A composite's transform
+applies after each child's own. A registered loader's quads don't get it: the loader reads `transform` from
+`input.config` itself.
+
+```json
+{ "parent": "mymod:block/pipe", "transform": { "scale": 0.5, "origin": "center" } }
+```
+
 #### Custom block-state definition types
 
 Register a definition provider with `Hooks::register_block_state_models` before client resources

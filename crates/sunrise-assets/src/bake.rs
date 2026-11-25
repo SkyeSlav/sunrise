@@ -231,13 +231,16 @@ fn bake_elements(
     bake_into(model, transform, skip_flat, &mut output)?;
     Ok(output)
 }
-/// The elements, then what the model's loader adds.
+/// The elements, then what the model's loader adds. The model's root transform is composed
+/// after `transform` for its elements, composite children and obj faces, as NeoForge's geometries
+/// read it; a registered loader's quads take `transform` as given.
 fn bake_into(
     model: &ResolvedCuboidModel,
     transform: BlockModelTransform,
     skip_flat: bool,
     output: &mut Vec<ModelQuad>,
 ) -> Result<()> {
+    let own = transform.with_root(model.root_transform.as_ref());
     let render_type = model
         .render_type
         .as_deref()
@@ -268,7 +271,7 @@ fn bake_into(
                 *direction,
                 matrix,
                 material,
-                transform,
+                own,
                 render_type,
             )?);
         }
@@ -276,7 +279,7 @@ fn bake_into(
     match model.loader() {
         Some(ResolvedLoader::Composite(children)) => {
             for child in children {
-                bake_into(child, transform, skip_flat, output)?;
+                bake_into(child, own, skip_flat, output)?;
             }
         }
         Some(ResolvedLoader::Obj {
@@ -284,7 +287,7 @@ fn bake_into(
             flip_v,
             shade,
             hidden,
-        }) => bake_obj(model, obj, *flip_v, *shade, hidden, transform, output)?,
+        }) => bake_obj(model, obj, *flip_v, *shade, hidden, own, output)?,
         Some(ResolvedLoader::Obj { model: None, .. }) | None => {}
         Some(ResolvedLoader::Registered(quads)) => {
             for quad in quads.iter() {
@@ -646,6 +649,78 @@ mod loader_tests {
         assert!(library.resolve("t:loop").is_err());
     }
 
+    fn heights(quads: &[ModelQuad]) -> Vec<f32> {
+        quads
+            .iter()
+            .flat_map(|q| q.positions.map(|p| p[1]))
+            .collect()
+    }
+    /// NeoForge's root `transform` moves a model's elements; a model without one inherits its
+    /// parent's, and `"identity"` in a child replaces it.
+    #[test]
+    fn a_root_transform_moves_elements_and_the_leaf_most_one_wins() {
+        let moved = r#"{"parent":"t:cube","textures":{"all":"block/a"},
+            "transform":{"translation":[0,0.5,0]}}"#;
+        let library = library(
+            &[
+                ("t:cube", CUBE),
+                ("t:moved", moved),
+                ("t:inherits", r#"{"parent":"t:moved"}"#),
+                ("t:reset", r#"{"parent":"t:moved","transform":"identity"}"#),
+            ],
+            &[],
+        );
+        assert_eq!(heights(&bake(&library, "t:moved")), [1.5; 4]);
+        assert_eq!(heights(&bake(&library, "t:inherits")), [1.5; 4]);
+        assert_eq!(heights(&bake(&library, "t:reset")), [1.0; 4]);
+    }
+    /// A composite's root transform applies to its children, after each child's own
+    /// (`CompositeUnbakedGeometry` composes it into the state the children bake with).
+    #[test]
+    fn a_composite_root_transform_composes_with_its_childrens() {
+        let composite = r#"{"loader":"neoforge:composite","textures":{"all":"block/shared"},
+            "transform":{"translation":[0,0.25,0]},
+            "children":{"zeta":{"parent":"t:cube","transform":{"translation":[0,0.25,0]}},
+                "alpha":{"parent":"t:cube"}}}"#;
+        let library = library(&[("t:cube", CUBE), ("t:comp", composite)], &[]);
+        let quads = bake(&library, "t:comp");
+        assert_eq!(heights(&quads), [[1.5; 4], [1.25; 4]].concat());
+    }
+    /// The face direction and cull face follow the root transform: a half turn about X turns
+    /// the top face, culled by the block above, into a bottom face culled by the block below.
+    #[test]
+    fn faces_and_cull_faces_turn_with_the_root_transform() {
+        let culled = r##"{"textures":{"all":"block/a"},"transform":{"rotation":{"x":180},"origin":"center"},
+            "elements":[{"from":[0,0,0],"to":[16,16,16],"faces":{"up":{"texture":"#all","cullface":"up"}}}]}"##;
+        let library = library(&[("t:turned", culled)], &[]);
+        let quad = &bake(&library, "t:turned")[0];
+        assert_eq!(
+            (quad.facing, quad.cull),
+            (Direction::Down, Some(Direction::Down))
+        );
+        assert_eq!(heights(std::slice::from_ref(quad)), [0.0; 4]);
+    }
+    /// `neoforge:empty` is `EmptyModel`: no quads, whatever else the file names, and a model
+    /// inheriting from it has no geometry either.
+    #[test]
+    fn the_empty_loader_bakes_nothing() {
+        let empty = r#"{"loader":"neoforge:empty","parent":"t:cube","textures":{"all":"block/a"}}"#;
+        let library = library(
+            &[
+                ("t:cube", CUBE),
+                ("t:empty", empty),
+                (
+                    "t:child",
+                    r#"{"parent":"t:empty","textures":{"all":"block/b"}}"#,
+                ),
+            ],
+            &[],
+        );
+        assert!(bake(&library, "t:empty").is_empty());
+        assert!(bake(&library, "t:child").is_empty());
+        assert!(library.resolve("t:empty").unwrap().textures.is_empty());
+    }
+
     const OBJ: &str = "mtllib m.mtl\nv 0 0 0\nv 1 0 0\nv 1 0 1\nv 0 0 1\nv 0 1 0\n\
         vt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\n\
         usemtl top\nf 1/1 4/4 3/3 2/2\nusemtl side\nf 1/1 2/2 5/4\nusemtl bare\nf 1/1 2/2 5/4\n";
@@ -722,5 +797,126 @@ mod loader_tests {
         assert_eq!(quads.len(), 1);
         assert_eq!(quads[0].facing, Direction::Down);
         assert_eq!(bake(&library, "t:restoring").len(), 2);
+    }
+
+    fn conditional_library(
+        models: &[(&str, &str)],
+        conditions: &ConditionTest<'_>,
+    ) -> ModelLibrary {
+        let models = models
+            .iter()
+            .map(|(name, json)| {
+                (
+                    (*name).to_owned(),
+                    CuboidModel::from_json_with_loaders_and_conditions(
+                        json,
+                        name,
+                        &|_| None,
+                        conditions,
+                    )
+                    .unwrap(),
+                )
+            })
+            .collect();
+        ModelLibrary::new(models).unwrap()
+    }
+
+    #[test]
+    fn conditional_passing_with_inline_model_bakes_it() {
+        let cond = r#"{"loader":"neoforge:conditional",
+            "neoforge:conditions":[{"type":"neoforge:always"}],
+            "model":{"parent":"t:cube","textures":{"all":"block/primary"}},
+            "fallback":{"parent":"t:cube","textures":{"all":"block/fallback"}}}"#;
+        let library = conditional_library(&[("t:cube", CUBE), ("t:cond", cond)], &|_, _| Ok(true));
+        assert_eq!(
+            sprites(&bake(&library, "t:cond")),
+            ["minecraft:block/primary"]
+        );
+    }
+
+    #[test]
+    fn conditional_passing_without_model_bakes_own_elements() {
+        let cond = r##"{"loader":"neoforge:conditional",
+            "neoforge:conditions":[{"type":"neoforge:always"}],
+            "textures":{"all":"block/self"},
+            "elements":[{"from":[0,0,0],"to":[16,16,16],"faces":{"up":{"texture":"#all"}}}],
+            "fallback":"t:other"}"##;
+        let library = conditional_library(&[("t:cond", cond)], &|_, _| Ok(true));
+        assert_eq!(sprites(&bake(&library, "t:cond")), ["minecraft:block/self"]);
+    }
+
+    #[test]
+    fn conditional_failing_bakes_inline_fallback() {
+        let cond = r#"{"loader":"neoforge:conditional",
+            "neoforge:conditions":[{"type":"neoforge:never"}],
+            "model":{"parent":"t:cube","textures":{"all":"block/primary"}},
+            "fallback":{"parent":"t:cube","textures":{"all":"block/inline_fallback"}}}"#;
+        let library = conditional_library(&[("t:cube", CUBE), ("t:cond", cond)], &|_, _| Ok(false));
+        assert_eq!(
+            sprites(&bake(&library, "t:cond")),
+            ["minecraft:block/inline_fallback"]
+        );
+    }
+
+    #[test]
+    fn conditional_failing_bakes_fallback_by_id() {
+        let alt = r#"{"parent":"t:cube","textures":{"all":"block/by_id"}}"#;
+        let cond = r#"{"loader":"neoforge:conditional",
+            "neoforge:conditions":[{"type":"neoforge:never"}],
+            "model":{"parent":"t:cube","textures":{"all":"block/primary"}},
+            "fallback":"t:alt"}"#;
+        let library = conditional_library(
+            &[("t:cube", CUBE), ("t:alt", alt), ("t:cond", cond)],
+            &|_, _| Ok(false),
+        );
+        assert_eq!(
+            sprites(&bake(&library, "t:cond")),
+            ["minecraft:block/by_id"]
+        );
+    }
+
+    #[test]
+    fn conditional_failing_builtin_missing_bakes_missing_model() {
+        let cond = r#"{"loader":"neoforge:conditional",
+            "neoforge:conditions":[{"type":"neoforge:never"}],
+            "model":{"parent":"t:cube","textures":{"all":"block/primary"}},
+            "fallback":"builtin/missing"}"#;
+        let library = conditional_library(&[("t:cond", cond)], &|_, _| Ok(false));
+        let quads = bake(&library, "t:cond");
+        assert_eq!(quads.len(), 6);
+        assert!(
+            quads
+                .iter()
+                .all(|q| q.material.sprite == "minecraft:missingno")
+        );
+    }
+
+    #[test]
+    fn conditional_missing_fallback_and_bad_conditions_are_refused_by_name() {
+        let missing_fallback = r#"{"loader":"neoforge:conditional",
+            "neoforge:conditions":[{"type":"neoforge:never"}],
+            "model":{"parent":"t:cube"}}"#;
+        let err = CuboidModel::from_json_with_loaders_and_conditions(
+            missing_fallback,
+            "t:block/no_fallback",
+            &|_| None,
+            &|_, _| Ok(false),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("t:block/no_fallback"), "{err}");
+
+        let bad_conditions = r#"{"loader":"neoforge:conditional",
+            "neoforge:conditions":[{"type":"demo:unknown"}],
+            "fallback":"builtin/missing"}"#;
+        let err = CuboidModel::from_json_with_loaders_and_conditions(
+            bad_conditions,
+            "t:block/bad_cond",
+            &|_| None,
+            &|_, _| Err("unknown load condition".to_owned()),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("t:block/bad_cond"), "{err}");
     }
 }
