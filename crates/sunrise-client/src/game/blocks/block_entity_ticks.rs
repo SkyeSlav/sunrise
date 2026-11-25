@@ -611,10 +611,6 @@ impl Game<'_> {
         let pending = self.world.entities_pending.clone();
         move |x, z| block_ticking_at(&levels, &pending, x, z)
     }
-    /// Single-position read without copying the pending-entity set.
-    pub(super) fn block_ticking_at(&self, x: i32, z: i32) -> bool {
-        block_ticking_at(&self.tickets.levels(), &self.world.entities_pending, x, z)
-    }
     /// `DaylightDetectorBlock.tickEntity` of the detector at `pos`.
     fn tick_daylight_detector(&mut self, pos: Pos) {
         // It updates every 20 game ticks (the behaviour checks this too).
