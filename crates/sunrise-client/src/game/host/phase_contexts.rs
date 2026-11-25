@@ -116,6 +116,9 @@ impl ReloadContext for Game<'_> {
     fn biome_key_id(&self, key: &BiomeKey) -> Result<&str, BiomeKeyError> {
         <Self as prelude::KeysBackend>::biome_view(self, key).map(|view| view.id())
     }
+    fn profession_key_id(&self, key: &ProfessionKey) -> Option<&str> {
+        <Self as prelude::KeysBackend>::profession_key_id(self, key)
+    }
     fn dimension_key_id(&self, key: DimensionKey) -> Option<&str> {
         <Self as prelude::LevelDimensionBackend>::dimension_key_id(self, key)
     }

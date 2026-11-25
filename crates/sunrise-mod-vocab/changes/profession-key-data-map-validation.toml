@@ -1,0 +1,14 @@
+ids = [
+    "struct:ProfessionKey",
+    "trait:ReloadContext",
+]
+why = """
+Validate `ProfessionKey::data` against the installed villager profession table (`ResolvedProfessions`)
+via `KeysBackend::profession_key_id` and `ReloadContext::profession_key_id`, returning
+`DataMapError::InvalidKey` for unregistered professions.
+"""
+migrate = """
+No caller changes are required for registered professions; callers passing an unregistered
+`ProfessionKey` to `ProfessionKey::data` or `ReloadContext::data_map` now receive
+`Err(DataMapError::InvalidKey)` instead of `Ok(None)`.
+"""
