@@ -700,3 +700,38 @@ fn a_relay_answering_its_own_answer_stops_at_the_repeat() {
         });
     });
 }
+
+/// `/teammsg` is chat to the team: the other member is sent a disguised chat of the world's
+/// `team_msg_command_incoming` type, the sender one of `team_msg_command_outgoing`, both
+/// bound to the team's display name; a player outside the team is sent nothing.
+#[test]
+#[ignore = "daily"]
+fn teammsg_sends_the_team_chat_types_bound_to_the_team_name() {
+    with_game(|game| {
+        let (sender, other) = two_guests(game);
+        lines(&sender);
+        lines(&other);
+        game.score.board.add_team("red");
+        game.score.board.add_to_team("guest12", "red");
+        game.score.board.add_to_team("guest13", "red");
+        game.guest_command(12, "teammsg hi", None);
+        let hub = &game.lan.as_ref().unwrap().hub;
+        let (outgoing, incoming) = (
+            hub.chat_type_id("team_msg_command_outgoing").network_id() as i32,
+            hub.chat_type_id("team_msg_command_incoming").network_id() as i32,
+        );
+        let play::Clientbound::DisguisedChat(mine) = packets(&sender).next().unwrap() else {
+            panic!("the sender is sent chat");
+        };
+        assert_eq!(mine.chat_type.chat_type, outgoing);
+        let play::Clientbound::DisguisedChat(theirs) = packets(&other).next().unwrap() else {
+            panic!("the team member is sent chat");
+        };
+        assert_eq!(theirs.chat_type.chat_type, incoming);
+        assert!(
+            theirs.chat_type.target.is_some(),
+            "bound to the team's name"
+        );
+        assert_eq!(theirs.chat_type.target, mine.chat_type.target);
+    });
+}
