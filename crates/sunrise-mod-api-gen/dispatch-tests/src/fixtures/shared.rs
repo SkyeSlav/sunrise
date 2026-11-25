@@ -370,6 +370,7 @@ fn enter_listener(entry: &'static ModEntry, hook: &'static str) -> ((), &'static
     ENTERED.with(|entered| entered.borrow_mut().push((index, hook)));
     ((), &*entry.hooks)
 }
+#[allow(dead_code)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Side {
     Both,
