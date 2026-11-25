@@ -349,7 +349,7 @@ fn client_resolves_synced_cat_variant_asset_id_by_network_id() {
             })
             .collect(),
     });
-    let client_variants = VariantTables::from_synced(&dynamic, &VariantTables::default());
+    let client_variants = VariantTables::from_synced(&dynamic, &VariantTables::default()).unwrap();
 
     // Entity data carries `midnight.network_id()` directly.
     let mut client_cat = Mob::new(1, cat_type(), Vec3::ZERO, 0.0);

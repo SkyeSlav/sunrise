@@ -133,7 +133,7 @@ fn sync_tables(packed: &PackRegistryDefinitions, registries: &[&str]) -> Variant
         };
         synced.add(packet);
     }
-    VariantTables::from_synced(&synced, &VariantTables::default())
+    VariantTables::from_synced(&synced, &VariantTables::default()).unwrap()
 }
 
 struct TestLevel<'a> {

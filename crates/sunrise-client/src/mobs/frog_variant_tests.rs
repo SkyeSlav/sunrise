@@ -280,7 +280,7 @@ fn synced_frog_variant_network_id_resolves_to_pack_asset_id_on_client() {
             })
             .collect(),
     });
-    let client_variants = VariantTables::from_synced(&dynamic, &VariantTables::default());
+    let client_variants = VariantTables::from_synced(&dynamic, &VariantTables::default()).unwrap();
 
     let mut client_frog = Mob::new(1, frog_type(), Vec3::ZERO, 0.0);
     client_frog.extra.frog_variant = Some(RegistryRef::new(glow.network_id()));

@@ -337,14 +337,6 @@ pub struct WolfAssetInfo {
 }
 
 impl WolfAssetInfo {
-    fn missing() -> Self {
-        Self {
-            wild: String::new(),
-            tame: String::new(),
-            angry: String::new(),
-        }
-    }
-
     fn decode(field: &str, value: &Value) -> Result<Self, String> {
         let obj = value
             .as_object()
@@ -401,14 +393,6 @@ impl HasSpawnConditions for WolfVariant {
 }
 
 impl WolfVariant {
-    fn missing() -> Self {
-        Self {
-            assets: WolfAssetInfo::missing(),
-            baby_assets: WolfAssetInfo::missing(),
-            spawn_conditions: Vec::new(),
-        }
-    }
-
     /// `WolfVariant.DIRECT_CODEC`.
     pub fn decode(value: &Value) -> Result<Self, String> {
         let obj = value.as_object().ok_or("not a map")?;
@@ -481,18 +465,6 @@ pub struct WolfSoundSet {
 }
 
 impl WolfSoundSet {
-    fn missing() -> Self {
-        Self {
-            ambient: String::new(),
-            death: String::new(),
-            growl: String::new(),
-            hurt: String::new(),
-            pant: String::new(),
-            whine: String::new(),
-            step: String::new(),
-        }
-    }
-
     fn decode_with(
         field: &str,
         value: &Value,
@@ -564,13 +536,6 @@ pub struct WolfSoundVariant {
 }
 
 impl WolfSoundVariant {
-    fn missing() -> Self {
-        Self {
-            adult_sounds: WolfSoundSet::missing(),
-            baby_sounds: WolfSoundSet::missing(),
-        }
-    }
-
     /// `WolfSoundVariant.DIRECT_CODEC` / `NETWORK_CODEC`.
     pub fn decode_with(
         value: &Value,
@@ -632,14 +597,6 @@ impl HasSpawnConditions for CatVariant {
 }
 
 impl CatVariant {
-    fn missing() -> Self {
-        Self {
-            asset_id: String::new(),
-            baby_asset_id: String::new(),
-            spawn_conditions: Vec::new(),
-        }
-    }
-
     /// `CatVariant.DIRECT_CODEC`.
     pub fn decode(value: &Value) -> Result<Self, String> {
         let obj = value.as_object().ok_or("not a map")?;
@@ -707,20 +664,6 @@ pub struct CatSoundSet {
 }
 
 impl CatSoundSet {
-    fn missing() -> Self {
-        Self {
-            ambient: String::new(),
-            stray_ambient: String::new(),
-            hiss: String::new(),
-            hurt: String::new(),
-            death: String::new(),
-            eat: String::new(),
-            beg_for_food: String::new(),
-            purr: String::new(),
-            purreow: String::new(),
-        }
-    }
-
     fn decode_with(
         field: &str,
         value: &Value,
@@ -790,13 +733,6 @@ pub struct CatSoundVariant {
 }
 
 impl CatSoundVariant {
-    fn missing() -> Self {
-        Self {
-            adult_sounds: CatSoundSet::missing(),
-            baby_sounds: CatSoundSet::missing(),
-        }
-    }
-
     /// `CatSoundVariant.DIRECT_CODEC` / `NETWORK_CODEC`.
     pub fn decode_with(
         value: &Value,
@@ -932,15 +868,6 @@ impl HasSpawnConditions for PigVariant {
 }
 
 impl PigVariant {
-    fn missing() -> Self {
-        Self {
-            model: PigModelType::Normal,
-            asset_id: String::new(),
-            baby_asset_id: String::new(),
-            spawn_conditions: Vec::new(),
-        }
-    }
-
     /// `PigVariant.DIRECT_CODEC`.
     pub fn decode(value: &Value) -> Result<Self, String> {
         let obj = value.as_object().ok_or("not a map")?;
@@ -1017,16 +944,6 @@ pub struct PigSoundSet {
 }
 
 impl PigSoundSet {
-    fn missing() -> Self {
-        Self {
-            ambient: String::new(),
-            hurt: String::new(),
-            death: String::new(),
-            step: String::new(),
-            eat: String::new(),
-        }
-    }
-
     fn decode_with(
         field: &str,
         value: &Value,
@@ -1084,13 +1001,6 @@ pub struct PigSoundVariant {
 }
 
 impl PigSoundVariant {
-    fn missing() -> Self {
-        Self {
-            adult_sounds: PigSoundSet::missing(),
-            baby_sounds: PigSoundSet::missing(),
-        }
-    }
-
     /// `PigSoundVariant.DIRECT_CODEC` / `NETWORK_CODEC`.
     pub fn decode_with(
         value: &Value,
@@ -1195,15 +1105,6 @@ impl HasSpawnConditions for CowVariant {
 }
 
 impl CowVariant {
-    fn missing() -> Self {
-        Self {
-            model: CowModelType::Normal,
-            asset_id: String::new(),
-            baby_asset_id: String::new(),
-            spawn_conditions: Vec::new(),
-        }
-    }
-
     /// `CowVariant.DIRECT_CODEC`.
     pub fn decode(value: &Value) -> Result<Self, String> {
         let obj = value.as_object().ok_or("not a map")?;
@@ -1280,15 +1181,6 @@ pub struct CowSoundVariant {
 }
 
 impl CowSoundVariant {
-    fn missing() -> Self {
-        Self {
-            ambient: String::new(),
-            hurt: String::new(),
-            death: String::new(),
-            step: String::new(),
-        }
-    }
-
     /// `CowSoundVariant.DIRECT_CODEC` / `NETWORK_CODEC`.
     pub fn decode_with(
         value: &Value,
@@ -1390,15 +1282,6 @@ impl HasSpawnConditions for ChickenVariant {
 }
 
 impl ChickenVariant {
-    fn missing() -> Self {
-        Self {
-            model: ChickenModelType::Normal,
-            asset_id: String::new(),
-            baby_asset_id: String::new(),
-            spawn_conditions: Vec::new(),
-        }
-    }
-
     /// `ChickenVariant.DIRECT_CODEC`.
     pub fn decode(value: &Value) -> Result<Self, String> {
         let obj = value.as_object().ok_or("not a map")?;
@@ -1474,15 +1357,6 @@ pub struct ChickenSoundSet {
 }
 
 impl ChickenSoundSet {
-    fn missing() -> Self {
-        Self {
-            ambient: String::new(),
-            hurt: String::new(),
-            death: String::new(),
-            step: String::new(),
-        }
-    }
-
     fn decode_with(
         field: &str,
         value: &Value,
@@ -1537,13 +1411,6 @@ pub struct ChickenSoundVariant {
 }
 
 impl ChickenSoundVariant {
-    fn missing() -> Self {
-        Self {
-            adult_sounds: ChickenSoundSet::missing(),
-            baby_sounds: ChickenSoundSet::missing(),
-        }
-    }
-
     /// `ChickenSoundVariant.DIRECT_CODEC` / `NETWORK_CODEC`.
     pub fn decode_with(
         value: &Value,
@@ -1603,13 +1470,6 @@ impl HasSpawnConditions for FrogVariant {
 }
 
 impl FrogVariant {
-    fn missing() -> Self {
-        Self {
-            asset_id: String::new(),
-            spawn_conditions: Vec::new(),
-        }
-    }
-
     /// `FrogVariant.DIRECT_CODEC`.
     pub fn decode(value: &Value) -> Result<Self, String> {
         let obj = value.as_object().ok_or("not a map")?;
@@ -1682,14 +1542,6 @@ impl HasSpawnConditions for ZombieNautilusVariant {
 }
 
 impl ZombieNautilusVariant {
-    fn missing() -> Self {
-        Self {
-            model: ZombieNautilusModelType::Normal,
-            asset_id: String::new(),
-            spawn_conditions: Vec::new(),
-        }
-    }
-
     /// `ZombieNautilusVariant.DIRECT_CODEC`.
     pub fn decode(value: &Value) -> Result<Self, String> {
         let obj = value.as_object().ok_or("not a map")?;
@@ -1827,94 +1679,84 @@ impl VariantTables {
 
     /// Build a client's variant tables from the server's synchronized `Dynamic`
     /// registries, keeping the server's exact network id order and resolving
-    /// known-pack omitted entries from `fallback`.
-    pub fn from_synced(registries: &Dynamic, fallback: &VariantTables) -> Self {
-        Self {
+    /// known-pack omitted entries from `fallback`. An entry that does not decode, or
+    /// that has no data and is not in `fallback`, refuses the whole load
+    /// (`RegistryDataLoader.load`).
+    pub fn from_synced(registries: &Dynamic, fallback: &VariantTables) -> Result<Self, String> {
+        Ok(Self {
             wolf: from_synced_table(
                 registries,
                 "minecraft:wolf_variant",
                 &fallback.wolf,
                 WolfVariant::decode_network_nbt,
-                WolfVariant::missing,
-            ),
+            )?,
             wolf_sound: from_synced_table(
                 registries,
                 "minecraft:wolf_sound_variant",
                 &fallback.wolf_sound,
                 WolfSoundVariant::decode_network_nbt,
-                WolfSoundVariant::missing,
-            ),
+            )?,
             cat: from_synced_table(
                 registries,
                 "minecraft:cat_variant",
                 &fallback.cat,
                 CatVariant::decode_network_nbt,
-                CatVariant::missing,
-            ),
+            )?,
             cat_sound: from_synced_table(
                 registries,
                 "minecraft:cat_sound_variant",
                 &fallback.cat_sound,
                 CatSoundVariant::decode_network_nbt,
-                CatSoundVariant::missing,
-            ),
+            )?,
             pig: from_synced_table(
                 registries,
                 "minecraft:pig_variant",
                 &fallback.pig,
                 PigVariant::decode_network_nbt,
-                PigVariant::missing,
-            ),
+            )?,
             pig_sound: from_synced_table(
                 registries,
                 "minecraft:pig_sound_variant",
                 &fallback.pig_sound,
                 PigSoundVariant::decode_network_nbt,
-                PigSoundVariant::missing,
-            ),
+            )?,
             cow: from_synced_table(
                 registries,
                 "minecraft:cow_variant",
                 &fallback.cow,
                 CowVariant::decode_network_nbt,
-                CowVariant::missing,
-            ),
+            )?,
             cow_sound: from_synced_table(
                 registries,
                 "minecraft:cow_sound_variant",
                 &fallback.cow_sound,
                 CowSoundVariant::decode_network_nbt,
-                CowSoundVariant::missing,
-            ),
+            )?,
             chicken: from_synced_table(
                 registries,
                 "minecraft:chicken_variant",
                 &fallback.chicken,
                 ChickenVariant::decode_network_nbt,
-                ChickenVariant::missing,
-            ),
+            )?,
             chicken_sound: from_synced_table(
                 registries,
                 "minecraft:chicken_sound_variant",
                 &fallback.chicken_sound,
                 ChickenSoundVariant::decode_network_nbt,
-                ChickenSoundVariant::missing,
-            ),
+            )?,
             frog: from_synced_table(
                 registries,
                 "minecraft:frog_variant",
                 &fallback.frog,
                 FrogVariant::decode_network_nbt,
-                FrogVariant::missing,
-            ),
+            )?,
             zombie_nautilus: from_synced_table(
                 registries,
                 "minecraft:zombie_nautilus_variant",
                 &fallback.zombie_nautilus,
                 ZombieNautilusVariant::decode_network_nbt,
-                ZombieNautilusVariant::missing,
-            ),
-        }
+            )?,
+        })
     }
 }
 
@@ -1923,27 +1765,26 @@ fn from_synced_table<T: Clone>(
     registry: &str,
     fallback: &VariantTable<T>,
     decode_nbt: impl Fn(&Tag) -> Option<T>,
-    missing: impl Fn() -> T,
-) -> VariantTable<T> {
-    registries
-        .registries
-        .get(registry)
-        .map(|entries| {
-            VariantTable::from_synced(
-                entries
-                    .iter()
-                    .map(|(id, data)| {
-                        let entry = data
-                            .as_ref()
-                            .and_then(&decode_nbt)
-                            .or_else(|| fallback.lookup(id).and_then(|r| fallback.get(r)).cloned())
-                            .unwrap_or_else(&missing);
-                        (id.clone(), entry)
-                    })
-                    .collect(),
-            )
+) -> Result<VariantTable<T>, String> {
+    let Some(entries) = registries.registries.get(registry) else {
+        return Ok(VariantTable::default());
+    };
+    let entries = entries
+        .iter()
+        .map(|(id, data)| {
+            let entry = match data {
+                Some(data) => decode_nbt(data)
+                    .ok_or_else(|| format!("{registry}/{id}: the entry does not decode"))?,
+                None => fallback
+                    .lookup(id)
+                    .and_then(|r| fallback.get(r))
+                    .cloned()
+                    .ok_or_else(|| format!("{registry}/{id}: not in the client's known pack"))?,
+            };
+            Ok((id.clone(), entry))
         })
-        .unwrap_or_default()
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(VariantTable::from_synced(entries))
 }
 
 fn load_prepared_table<T>(

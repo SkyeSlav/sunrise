@@ -283,7 +283,7 @@ fn synced_zombie_nautilus_variant_network_id_resolves_texture_and_model_on_clien
             })
             .collect(),
     });
-    let client_variants = VariantTables::from_synced(&dynamic, &VariantTables::default());
+    let client_variants = VariantTables::from_synced(&dynamic, &VariantTables::default()).unwrap();
 
     let mut client_mob = Mob::new(1, zombie_nautilus_type(), Vec3::ZERO, 0.0);
     client_mob.extra.zombie_nautilus_variant = Some(RegistryRef::new(abyssal.network_id()));
