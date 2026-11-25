@@ -718,6 +718,7 @@ fn teammsg_sends_the_team_chat_types_bound_to_the_team_name() {
         game.score.board.add_to_team("guest12", "red");
         game.score.board.add_to_team("guest13", "red");
         game.guest_command(12, "teammsg hi", None);
+        game.run_guest_commands();
         let hub = &game.lan.as_ref().unwrap().hub;
         let (outgoing, incoming) = (
             hub.chat_type_id("team_msg_command_outgoing")
