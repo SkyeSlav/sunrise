@@ -1393,9 +1393,6 @@ pub struct Extra {
     pub drop_chances: Option<Box<[f32; 8]>>,
     /// `Mob.leftHanded`.
     pub left_handed: bool,
-    /// The sound variant: index in the species' `*_sound_variant` registry
-    /// (`finalize::sound_variants`); None is the default, `classic`.
-    pub sound_variant: Option<u8>,
     /// `Wolf.DATA_VARIANT_ID`: the world's `minecraft:wolf_variant` holder
     /// (network id in the world's sync order); `None` before initialization
     /// resolves to `minecraft:pale` (or the registry's first entry).
@@ -1434,6 +1431,11 @@ pub struct Extra {
     /// (network id in the world's sync order); `None` before initialization
     /// resolves to `minecraft:temperate` (or the registry's first entry).
     pub frog_variant: Option<crate::lan::data::RegistryRef<variants::FrogVariant>>,
+    /// `ZombieNautilus.DATA_VARIANT_ID`: the world's `minecraft:zombie_nautilus_variant`
+    /// holder; `None` before initialization resolves to `minecraft:temperate`
+    /// (or the registry's first entry).
+    pub zombie_nautilus_variant:
+        Option<crate::lan::data::RegistryRef<variants::ZombieNautilusVariant>>,
     /// `Zombie.canBreakDoors`.
     pub can_break_doors: bool,
     /// A goat's `IsScreamingGoat` and the horns it lost (left, right).
@@ -5842,6 +5844,16 @@ impl Mob {
     ) -> Option<crate::lan::data::RegistryRef<variants::FrogVariant>> {
         self.extra
             .frog_variant
+            .or_else(|| table.default_or_any("minecraft:temperate"))
+    }
+    /// `ZombieNautilus.getVariant` resolved against `table`: the stored holder, or
+    /// `VariantUtils.getDefaultOrAny(..., ZombieNautilusVariants.TEMPERATE)` when unset.
+    pub fn zombie_nautilus_variant(
+        &self,
+        table: &variants::VariantTable<variants::ZombieNautilusVariant>,
+    ) -> Option<crate::lan::data::RegistryRef<variants::ZombieNautilusVariant>> {
+        self.extra
+            .zombie_nautilus_variant
             .or_else(|| table.default_or_any("minecraft:temperate"))
     }
 }
