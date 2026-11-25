@@ -26,6 +26,21 @@ fn load_chunk(game: &mut Game<'_>, cx: i32, cz: i32) {
     let _ = game.block_ticks.add_empty_chunk(ChunkPos::new(cx, cz));
 }
 
+fn load_ticking_chunk(game: &mut Game<'_>, cx: i32, cz: i32) {
+    // `ChunkMap.prepareTickingChunk` (`ChunkMap::is_ticking_ready`): a ticking chunk must be
+    // lit and surrounded by all eight neighbour chunks.
+    for dx in -1..=1 {
+        for dz in -1..=1 {
+            let mut chunk = Chunk::empty(cx + dx, cz + dz);
+            chunk.lit = true;
+            game.world
+                .chunks
+                .insert((cx + dx, cz + dz), Arc::new(chunk));
+        }
+    }
+    let _ = game.block_ticks.add_empty_chunk(ChunkPos::new(cx, cz));
+}
+
 fn state(game: &Game<'_>, name: &str) -> BlockStateId {
     game.pack.assets.registry.default_state(name).unwrap()
 }
@@ -232,11 +247,9 @@ fn chest_with_attachment_moves_across_levels_as_same_holder_without_drop_or_dupl
 fn pending_block_tick_fires_at_destination_on_scheduled_game_tick() {
     with_game(|game| {
         game.options.dedicated = Some(Vec::new());
-        load_chunk(game, 0, 0);
-        game.tickets.add_portal((0, 0));
+        load_ticking_chunk(game, 0, 0);
         let back = game.enter_command_level(Dim::Nether).unwrap();
-        load_chunk(game, 0, 0);
-        game.tickets.add_portal((0, 0));
+        load_ticking_chunk(game, 0, 0);
         game.enter_command_level(back).unwrap();
 
         let overworld = game.level("minecraft:overworld").unwrap();
@@ -274,6 +287,10 @@ fn pending_block_tick_fires_at_destination_on_scheduled_game_tick() {
 
         let back = game.enter_command_level(Dim::Nether).unwrap();
         assert_eq!(game.world.block(to[0], to[1], to[2]), lamp_lit);
+        assert!(
+            game.block_ticks
+                .has_block_tick(BlockPos::new(to[0], to[1], to[2]), lamp_block)
+        );
         for dt in 1..4 {
             game.world.game_time = start_time + dt;
             game.tick_scheduled().unwrap();
@@ -300,6 +317,10 @@ fn unloaded_chunk_refuses_with_not_loaded_and_both_levels_unchanged() {
     with_game(|game| {
         game.options.dedicated = Some(Vec::new());
         load_chunk(game, 0, 0);
+        // Open and park the Nether without loading any chunks so `game.level` can resolve it
+        // while destination chunk (2, 0) remains unloaded.
+        let back = game.enter_command_level(Dim::Nether).unwrap();
+        game.enter_command_level(back).unwrap();
         let overworld = game.level("minecraft:overworld").unwrap();
         let nether = game.level("minecraft:the_nether").unwrap();
         let stone = state(game, "minecraft:stone");
