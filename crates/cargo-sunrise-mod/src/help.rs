@@ -73,8 +73,8 @@ const COMMANDS: &[Command] = &[
     Command {
         name: "use-jar",
         everyday: false,
-        usage: "use-jar <path>",
-        summary: "Lists an exact original Java jar as a passive asset and data source and caches it for runs.",
+        usage: "use-jar <path | modrinth-url | <project> <version>>",
+        summary: "Lists an exact original Java jar as a passive asset and data source from a local file, a Modrinth version URL, or a Modrinth project and version, and caches it for runs.",
     },
     Command {
         name: "self-update",

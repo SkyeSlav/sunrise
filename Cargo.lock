@@ -544,6 +544,7 @@ dependencies = [
  "sha2 0.10.9",
  "sunrise-addresses",
  "sunrise-attestation",
+ "sunrise-jar-fetch",
  "sunrise-mod-api-gen",
  "sunrise-mod-package",
  "sunrise-mod-pipeline",
@@ -4998,6 +4999,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sunrise-jar-fetch"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "sunrise-java-properties"
 version = "0.1.0"
 
@@ -5438,6 +5448,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.10.9",
+ "sunrise-jar-fetch",
  "sunrise-mod-api",
  "sunrise-mod-api-gen",
  "sunrise-mod-package",

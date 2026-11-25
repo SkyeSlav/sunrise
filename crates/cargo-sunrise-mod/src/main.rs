@@ -25,7 +25,7 @@
 //! - `sdk diff <build> <build>`: what changed in the surface between two builds.
 //! - `check [<file.smod>] --build <name> [--build <name>]…`: whether the mod fits each build; exit 0 when all
 //!   do, 1 when one does not, 2 when it cannot be told.
-//! - `use-jar <path>`: list an exact original Java jar as a passive asset/data source.
+//! - `use-jar <path | modrinth-url | <project> <version>>`: list an exact original Java jar as a passive asset/data source, downloading it from Modrinth when given a Modrinth reference.
 //! - `native-build < plan.json`: compile native mods against an unpacked SDK, as the launcher does
 //!   (docs/modding/src/reference/sdk/08-native-build.md).
 //! - `native-check < plan.json`: how native mods stand against one build before anything compiles (the same page).

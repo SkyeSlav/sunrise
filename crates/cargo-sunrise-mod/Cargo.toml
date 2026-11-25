@@ -27,6 +27,7 @@ sunrise-native-build = { path = "../sunrise-native-build" }
 sunrise-mod-surface = { path = "../sunrise-mod-surface" }
 sunrise-mod-pipeline = { path = "../sunrise-mod-pipeline" }
 sunrise-release-sign = { path = "../sunrise-release-sign" }
+sunrise-jar-fetch = { path = "../sunrise-jar-fetch" }
 sunrise-port-pack = { path = "../sunrise-port-pack" }
 sunrise-proxy = { path = "../sunrise-proxy" }
 rustc-demangle = "0.1"

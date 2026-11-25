@@ -75,3 +75,9 @@ pub const GAME_GIT_API: &str = "https://api.github.com/repos/sunrise-org/sunrise
 /// leads to port 24454). Reached by name, never by IP address, which can shift. The Sunrise layer
 /// presents the client identity the server requires (`sunrise-official`).
 pub const HORIZON_SERVER: &str = "play.playhorizon.dev";
+
+/// Modrinth's v2 API, used to resolve original `[[jar]]` references by SHA-512 or version.
+pub const MODRINTH_API: &str = "https://api.modrinth.com/v2";
+
+/// Modrinth's file CDN host, from which original `[[jar]]` archives are downloaded.
+pub const MODRINTH_CDN_HOST: &str = "cdn.modrinth.com";

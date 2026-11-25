@@ -1090,7 +1090,7 @@ pub use lenient::without_comments;
 #[cfg(feature = "references")]
 mod references;
 #[cfg(feature = "references")]
-pub use references::{Findings, check_references};
+pub use references::{Findings, JarLayer, check_references};
 
 /// A block entity type declared in code, with the blocks it supports.
 #[derive(Clone, Debug, PartialEq, Eq)]

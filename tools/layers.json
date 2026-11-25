@@ -58,6 +58,7 @@
     "sunrise-platform": "platform",
     "sunrise-polytone": "platform",
     "sunrise-port-pack": "platform",
+    "sunrise-jar-fetch": "platform",
     "sunrise-shader-api": "platform",
     "sunrise-render-shaderpack": "engine",
     "sunrise-shaders": "platform",
