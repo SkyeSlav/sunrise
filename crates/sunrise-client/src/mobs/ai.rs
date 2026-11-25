@@ -6851,14 +6851,17 @@ mod poison_effect_tests {
     /// place: a Poison hit reads Resistance there (0.8 of 1.0 at level I).
     #[test]
     fn effect_ticks_find_the_other_effects() {
-        let mut test_level = crate::health::TestLevel::new(0);
-        let level = &mut test_level.level();
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/sunrise-client")
             .join(sunrise_core::VANILLA_VERSION);
         if !root.join("entity-types.json").exists() {
             return;
         }
+        // A pig always holds a sound variant, so a hurt pig always makes its
+        // sound and draws the voice pitch before `onMobHurt` rolls Infested.
+        let tables = crate::mobs::variants::VariantTables::load_prepared(&root);
+        let mut test_level = crate::health::TestLevel::new(0);
+        let level = &mut test_level.level().with_variants(&tables);
         let data = MobTypes::load(&root).unwrap();
         let pig_kind = Arc::new(data.types.get("minecraft:pig").unwrap().clone());
         let mut pig = Mob::new(1, pig_kind.clone(), Vec3::new(0.0, 4.0, 0.0), 0.0);
