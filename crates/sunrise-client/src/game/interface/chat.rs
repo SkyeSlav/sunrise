@@ -1629,7 +1629,7 @@ impl Game<'_> {
         sunrise_client::confirm_screen::Choice::new(
             &self.gui.atlas.font,
             size,
-            &Text::translate(prompt.title_key(), &[]),
+            &Text::translate(confirm_link_title(prompt.trusted), &[]),
             &message,
             3,
             100.0,
@@ -1645,14 +1645,14 @@ impl Game<'_> {
         sunrise_client::widgets::begin_screen(|| {
             super::screen_info::confirm(
                 "chat/confirm_link",
-                &super::screen_info::tr(prompt.title_key(), &[]),
+                &super::screen_info::tr(confirm_link_title(prompt.trusted), &[]),
                 &prompt.url,
             )
         });
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         sunrise_client::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
-        let labels = prompt.button_keys().map(|key| Text::translate(key, &[]));
+        let labels = confirm_link_buttons(prompt.trusted).map(|key| Text::translate(key, &[]));
         let mut layout = self.link_prompt_layout(prompt, (w, h));
         layout.declare_no(2);
         layout.draw(batch, atlas, self.cursor, &labels);
@@ -2531,23 +2531,22 @@ impl From<&str> for LinkPrompt {
     }
 }
 
-impl LinkPrompt {
-    /// `ConfirmLinkScreen.confirmMessage`'s title.
-    fn title_key(&self) -> &'static str {
-        if self.trusted {
-            "chat.link.confirmTrusted"
-        } else {
-            "chat.link.confirm"
-        }
+/// `ConfirmLinkScreen.confirmMessage`'s title: `trusted` is vanilla's argument.
+pub(super) fn confirm_link_title(trusted: bool) -> &'static str {
+    if trusted {
+        "chat.link.confirmTrusted"
+    } else {
+        "chat.link.confirm"
     }
-    /// The yes, copy and no labels: `GUI_YES` / `GUI_NO`, or `GUI_OPEN_IN_BROWSER` /
-    /// `GUI_CANCEL` when trusted; `GUI_COPY_TO_CLIPBOARD` either way.
-    fn button_keys(&self) -> [&'static str; 3] {
-        if self.trusted {
-            ["chat.link.open", "chat.copy", "gui.cancel"]
-        } else {
-            ["gui.yes", "chat.copy", "gui.no"]
-        }
+}
+
+/// `ConfirmLinkScreen`'s yes, copy and no labels: `GUI_YES` / `GUI_NO`, or
+/// `GUI_OPEN_IN_BROWSER` / `GUI_CANCEL` when trusted; `GUI_COPY_TO_CLIPBOARD` either way.
+pub(super) fn confirm_link_buttons(trusted: bool) -> [&'static str; 3] {
+    if trusted {
+        ["chat.link.open", "chat.copy", "gui.cancel"]
+    } else {
+        ["gui.yes", "chat.copy", "gui.no"]
     }
 }
 
@@ -3444,8 +3443,11 @@ mod link_and_path_tests {
             let prompt = game.link_prompt.clone().expect("the prompt opens");
             assert_eq!(prompt.url, "https://example.com/a?b=c");
             assert!(!prompt.trusted);
-            assert_eq!(prompt.title_key(), "chat.link.confirm");
-            assert_eq!(prompt.button_keys(), ["gui.yes", "chat.copy", "gui.no"]);
+            assert_eq!(confirm_link_title(prompt.trusted), "chat.link.confirm");
+            assert_eq!(
+                confirm_link_buttons(prompt.trusted),
+                ["gui.yes", "chat.copy", "gui.no"]
+            );
             let was_playing = game.screen == Screen::Playing;
             game.answer_link_prompt(false);
             assert!(game.link_prompt.is_none());
@@ -3455,9 +3457,12 @@ mod link_and_path_tests {
             assert_eq!(result, Ok(()));
             let prompt = game.link_prompt.clone().expect("the prompt opens");
             assert!(prompt.trusted);
-            assert_eq!(prompt.title_key(), "chat.link.confirmTrusted");
             assert_eq!(
-                prompt.button_keys(),
+                confirm_link_title(prompt.trusted),
+                "chat.link.confirmTrusted"
+            );
+            assert_eq!(
+                confirm_link_buttons(prompt.trusted),
                 ["chat.link.open", "chat.copy", "gui.cancel"]
             );
             game.answer_link_prompt(false);

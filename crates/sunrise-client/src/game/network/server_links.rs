@@ -362,7 +362,7 @@ impl Game<'_> {
         for (line, x, y) in &layout.lines {
             batch.text_styled(atlas, line, *x, *y, u32::MAX, true);
         }
-        let labels = confirm_link_labels(self.links_ui.trusted);
+        let labels = super::chat::confirm_link_buttons(self.links_ui.trusted);
         // Its third button answers no, as Escape does.
         if let Some(&(x, y)) = layout.buttons.get(2) {
             sunrise_client::widgets::declare_action(
@@ -551,27 +551,11 @@ fn confirm_link_layout(
     confirm_layout(
         &atlas.font,
         size,
-        &Text::translate(
-            if trusted {
-                "chat.link.confirmTrusted"
-            } else {
-                "chat.link.confirm"
-            },
-            &[],
-        ),
+        &Text::translate(super::chat::confirm_link_title(trusted), &[]),
         &Text::literal(url.to_owned()),
         if trusted { &[] } else { &warning },
         &[100.0; 3],
     )
-}
-/// `ConfirmLinkScreen`'s yes, copy and no labels: Open in Browser and Cancel
-/// when trusted.
-fn confirm_link_labels(trusted: bool) -> [&'static str; 3] {
-    if trusted {
-        ["chat.link.open", "gui.copy_link_to_clipboard", "gui.cancel"]
-    } else {
-        ["gui.yes", "gui.copy_link_to_clipboard", "gui.no"]
-    }
 }
 fn dialog_warning_layout(atlas: &sunrise_client::hud::HudAtlas, size: (f32, f32)) -> ConfirmLayout {
     confirm_layout(
@@ -587,19 +571,6 @@ fn dialog_warning_layout(atlas: &sunrise_client::hud::HudAtlas, size: (f32, f32)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_trusted_link_asks_with_open_in_browser_and_cancel() {
-        // ConfirmLinkScreen: trusted swaps yes/no for chat.link.open / gui.cancel.
-        assert_eq!(
-            confirm_link_labels(true),
-            ["chat.link.open", "gui.copy_link_to_clipboard", "gui.cancel"]
-        );
-        assert_eq!(
-            confirm_link_labels(false),
-            ["gui.yes", "gui.copy_link_to_clipboard", "gui.no"]
-        );
-    }
 
     #[test]
     fn untrusted_uris_are_http_or_https_with_a_scheme() {

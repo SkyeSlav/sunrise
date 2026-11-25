@@ -57,6 +57,14 @@ leaves the clipboard unchanged). Both work from any client callback (a tick, a f
 input event, a screen hook), as vanilla's `KeyboardHandler` does. Without a native window (a server or a
 headless host) the read is `None` and the write is `false`. Both take `&self`, so a screen hook can call them.
 
+`ClientHost::confirm_link(uri, trusted)` opens vanilla's link confirmation over whatever screen is open
+(`ConfirmLinkScreen.confirmLinkNow`); Yes hands the link to the browser, Copy to Clipboard copies it, and
+either answer returns to the screen it opened over. Opened over gameplay, it releases the pointer until the
+player answers. `trusted` only changes the prompt, as vanilla's argument does. Only http and https links are
+accepted (`OpenLinkError::Invalid` otherwise). `ClientHost::open_path(path)` hands a file or folder to the
+desktop's handler at once, with no prompt (`Blaze3D.openPath`); a missing path is `OpenPathError::NotFound`.
+Neither needs an input event, and both are `Unavailable` without a native window.
+
 ## Camera snapshots and perspective
 
 The `ClientHost::camera()` helper returns the most recently extracted world frame's camera, or none before one exists. Its position, interpolated eye height, partial tick, angles, final FOV, near/far planes and dimension accompany column-major view and projection matrices. The view is camera-relative and includes bob and spin; projection uses reversed Z. Earlier callbacks in a frame can see the previous frame. `block_collision(pos)` returns block-local `[min_x, min_y, min_z, max_x, max_y, max_z]` boxes with an empty collision context; unloaded blocks and collision errors give no boxes.
