@@ -440,7 +440,7 @@ fn required_map_disconnects_vanilla_client() {
                 )
                 .unwrap(),
             cfg::Clientbound::Disconnect(d) => {
-                break format!("{:?}", d.reason);
+                break sunrise_protocol::text::plain(&d.reason, &Default::default());
             }
             cfg::Clientbound::FinishConfiguration(_) => {
                 panic!("vanilla client must be disconnected when server has mandatory data maps");
