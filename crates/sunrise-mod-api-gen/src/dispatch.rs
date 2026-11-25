@@ -1817,7 +1817,7 @@ pub(super) fn emit<'a>(
                 let active = enter_active(&format!("{mod_entry}.id"));
                 let side_guard = if movement_side_filter {
                     format!(
-                        "if {client_controlled} && {mod_entry}.side == super::Side::Server {{ continue; }} "
+                        "if {client_controlled} && {mod_entry}.side == super::Side::Server {{ continue; }}\n"
                     )
                 } else {
                     String::new()
