@@ -6,7 +6,7 @@ The book build renders it directly from those declarations; there is no generate
 A key names the event class (`PlayerEvent.Clone`) or runtime callback (`IPayloadHandler.handle`);
 notes about cancelling or the event bus belong in the hook's `///` doc, not in the key.
 
-769 hooks: 461 name a counterpart, 304 say they have none.
+747 hooks: 451 name a counterpart, 291 say they have none.
 This is a declaration reference, not an independent verification of every mapping. Registration events and the
 callbacks they register are different moments: packet receipt names `IPayloadHandler.handle`, and per-draw item
 decoration names `IItemDecorator.render`, not their registration events. A `none` explains why no event or method
@@ -53,11 +53,10 @@ matches that hook's runtime contract.
 | `build_creative_mode_tab_contents` | both | `BuildCreativeModeTabContentsEvent` |
 | `calculate_player_turn` | client | `CalculatePlayerTurnEvent` |
 | `camera_distance` | client | `CalculateDetachedCameraDistanceEvent` |
-| `camera_pose` | client | `ViewportEvent.ComputeCameraAngles` |
-| `camera_shake` | client | `ViewportEvent.ComputeCameraAngles` |
 | `can_be_connected_to` | server | `IBlockExtension.canBeConnectedTo` |
 | `can_be_hydrated` | server | `IBlockExtension.canBeHydrated` |
 | `can_continue_sleeping` | server | `CanContinueSleepingEvent` |
+| `can_continue_using` | both | `IItemExtension.canContinueUsing` |
 | `can_drop_from_explosion` | server | `IBlockExtension.canDropFromExplosion` |
 | `can_entity_destroy` | server | `IBlockExtension.canEntityDestroy` |
 | `can_equip` | both | `IItemExtension.canEquip` |
@@ -83,7 +82,6 @@ matches that hook's runtime contract.
 | `client_chat_received` | client | `ClientChatReceivedEvent, ClientChatReceivedEvent.Player, ClientChatReceivedEvent.System` |
 | `client_chunk_load` | client | `ChunkEvent.Load` |
 | `client_chunk_unload` | client | `ChunkEvent.Unload` |
-| `client_disconnecting` | client | `ClientPlayerNetworkEvent.LoggingOut` |
 | `client_information_updated` | server | `ClientInformationUpdatedEvent` |
 | `client_level_load` | client | `LevelEvent.Load` |
 | `client_level_unload` | client | `LevelEvent.Unload` |
@@ -101,22 +99,19 @@ matches that hook's runtime contract.
 | `client_tick_pre` | client | `ClientTickEvent.Pre` |
 | `clone_item_stack` | server | `IBlockExtension.getCloneItemStack` |
 | `component_types` | both | `RegisterEvent` |
+| `compute_camera_angles` | client | `ViewportEvent.ComputeCameraAngles` |
 | `compute_fog_color` | client | `ViewportEvent.ComputeFogColor` |
 | `compute_fov` | client | `ViewportEvent.ComputeFov` |
 | `compute_fov_modifier` | client | `ComputeFovModifierEvent` |
-| `config_loading` | both | `ModConfigEvent.Loading` |
-| `config_reloading` | both | `ModConfigEvent.Reloading` |
-| `config_unloading` | server | `ModConfigEvent.Unloading` |
 | `crafting_remainder` | server | `IItemExtension.getCraftingRemainder(ItemStack)` |
 | `create_fluid_source` | server | `CreateFluidSourceEvent` |
 | `create_skull_models` | client | `EntityRenderersEvent.CreateSkullModels` |
 | `create_spawn_position` | server | `LevelEvent.CreateSpawnPosition` |
 | `creator_mod_id` | both | `IItemExtension.getCreatorModId` |
-| `critical_hit` | server | `CriticalHitEvent` |
+| `critical_hit` | both | `CriticalHitEvent` |
 | `crop_grow_post` | server | `CropGrowEvent.Post` |
 | `crop_grow_pre` | server | `CropGrowEvent.Pre` |
 | `custom_click_action` | server | `CustomClickActionEvent` |
-| `custom_spawner_tick` | server | `ModifyCustomSpawnersEvent` |
 | `customize_boss_event_progress` | client | `CustomizeGuiOverlayEvent.BossEventProgress` |
 | `customize_chat_overlay` | client | `CustomizeGuiOverlayEvent.Chat` |
 | `damage_item` | server | `IItemExtension.damageItem` |
@@ -128,7 +123,6 @@ matches that hook's runtime contract.
 | `difficulty_changed` | server | `DifficultyChangeEvent` |
 | `effect_particle_modification` | server | `EffectParticleModificationEvent` |
 | `empty_contents` | server | `IDispensibleContainerItemExtension.emptyContents` |
-| `enchant_effect` | server | `RegisterEvent` |
 | `enchant_power_bonus` | both | `IBlockExtension.getEnchantPowerBonus, IBlockStateExtension.getEnchantPowerBonus` |
 | `enchanted_block_loot` | server | `EnchantedBlockLootEvent` |
 | `enchanted_entity_loot` | server | `EnchantedEntityLootEvent` |
@@ -178,7 +172,6 @@ matches that hook's runtime contract.
 | `grindstone_take` | server | `GrindstoneEvent.OnTakeItem` |
 | `gui_layer_post` | client | `RenderGuiLayerEvent.Post` |
 | `gui_layer_pre` | client | `RenderGuiLayerEvent.Pre` |
-| `gui_render_post` | client | `RenderGuiEvent.Post` |
 | `hand_drawn` | client | `RenderHandEvent` |
 | `highlight_tip` | client | `IItemExtension.getHighlightTip` |
 | `ignited_by_lava` | server | `IBlockExtension.ignitedByLava` |
@@ -192,6 +185,7 @@ matches that hook's runtime contract.
 | `is_not_replaceable_by_pick_action` | server | `IItemExtension.isNotReplaceableByPickAction` |
 | `is_piglin_currency` | both | `IItemExtension.isPiglinCurrency` |
 | `is_primary_item_for` | server | `IItemExtension.isPrimaryItemFor` |
+| `is_shearable` | both | `IShearable.isShearable` |
 | `is_slime_block` | server | `IBlockExtension.isSlimeBlock` |
 | `is_sticky_block` | server | `IBlockExtension.isStickyBlock` |
 | `item_attribute_modifier` | both | `ItemAttributeModifierEvent` |
@@ -205,7 +199,7 @@ matches that hook's runtime contract.
 | `item_name` | both | `Item.getName` |
 | `item_picked_up` | server | `ItemEntityPickupEvent.Pre` |
 | `item_picked_up_post` | server | `ItemEntityPickupEvent.Post` |
-| `item_smelted` | server | `PlayerEvent.ItemSmeltedEvent` |
+| `item_smelted` | both | `PlayerEvent.ItemSmeltedEvent` |
 | `item_stacked_on_other` | both | `ItemStackedOnOtherEvent` |
 | `item_tooltip` | client | `ItemTooltipEvent` |
 | `item_toss` | server | `ItemTossEvent` |
@@ -251,17 +245,14 @@ matches that hook's runtime contract.
 | `map_decoration_types` | both | `RegisterEvent` |
 | `map_decorations` | client | `MapDecorationType` |
 | `may_place_on` | both | `IBlockExtension.canSustainPlant` |
-| `menu_closed` | server | `PlayerContainerEvent.Close` |
 | `menu_extra_data` | server | `IPlayerExtension.openMenu` |
 | `mob_despawn` | server | `MobDespawnEvent` |
 | `mob_effect_added` | server | `MobEffectEvent.Added` |
 | `mob_effect_applicable` | server | `MobEffectEvent.Applicable` |
 | `mob_effect_expired` | server | `MobEffectEvent.Expired` |
 | `mob_effect_remove` | server | `MobEffectEvent.Remove` |
-| `mob_killed` | server | `LivingDeathEvent` |
 | `mob_spawn_placement_check` | server | `MobSpawnEvent.SpawnPlacementCheck` |
 | `mob_spawn_position_check` | server | `MobSpawnEvent.PositionCheck` |
-| `mob_spawned` | server | `EntityJoinLevelEvent, FinalizeSpawnEvent` |
 | `mob_split` | server | `MobSplitEvent` |
 | `mod_mismatch` | both | `ModMismatchEvent` |
 | `model_baking_completed` | client | `ModelEvent.BakingCompleted` |
@@ -285,9 +276,11 @@ matches that hook's runtime contract.
 | `on_dropped_by_player` | server | `IItemExtension.onDroppedByPlayer` |
 | `on_entity_item_update` | server | `IItemExtension.onEntityItemUpdate` |
 | `on_entity_swing` | both | `IItemExtension.onEntitySwing` |
-| `on_item_use_first` | server | `IItemExtension.onItemUseFirst` |
+| `on_item_use_first` | both | `IItemExtension.onItemUseFirst` |
 | `on_left_click_entity` | server | `IItemExtension.onLeftClickEntity` |
 | `on_neighbor_change` | server | `IBlockExtension.onNeighborChange` |
+| `on_sheared` | both | `IShearable.onSheared` |
+| `on_stop_using` | both | `IItemExtension.onStopUsing` |
 | `on_tree_grow` | server | `IBlockExtension.onTreeGrow` |
 | `on_use_tick` | both | `LivingEntityUseItemEvent.Tick` |
 | `permissions_changed` | server | `PermissionsChangedEvent` |
@@ -312,7 +305,6 @@ matches that hook's runtime contract.
 | `player_container_close` | server | `PlayerContainerEvent.Close` |
 | `player_container_open` | server | `PlayerContainerEvent.Open` |
 | `player_destroy_item` | both | `PlayerDestroyItemEvent` |
-| `player_died` | server | `LivingDeathEvent` |
 | `player_enchant_item` | server | `PlayerEnchantItemEvent` |
 | `player_flyable_fall` | server | `PlayerFlyableFallEvent` |
 | `player_game_mode_changed` | server | `PlayerEvent.PlayerChangeGameModeEvent` |
@@ -343,6 +335,7 @@ matches that hook's runtime contract.
 | `potential_spawns` | server | `LevelEvent.PotentialSpawns` |
 | `potion_brew_post` | server | `PotionBrewEvent.Post` |
 | `potion_brew_pre` | server | `PotionBrewEvent.Pre` |
+| `prepare_render_buffers` | client | `PrepareRenderBuffersEvent` |
 | `projectile_impact` | server | `ProjectileImpactEvent` |
 | `rail_can_make_slopes` | server | `IBaseRailBlockExtension.canMakeSlopes` |
 | `rail_direction` | both | `IBaseRailBlockExtension.getRailDirection` |
@@ -359,12 +352,11 @@ matches that hook's runtime contract.
 | `register_client_tooltip_component_factories` | client | `RegisterClientTooltipComponentFactoriesEvent` |
 | `register_color_resolvers` | client | `RegisterColorHandlersEvent.ColorResolvers` |
 | `register_commands` | server | `RegisterCommandsEvent` |
-| `register_configs` | both | `ModContainer.registerConfig` |
 | `register_configuration_tasks` | server | `RegisterConfigurationTasksEvent` |
 | `register_debug_entries` | client | `RegisterDebugEntriesEvent` |
 | `register_debug_renderers` | client | `RegisterDebugRenderersEvent` |
 | `register_dimension_transition_screen` | client | `RegisterDimensionTransitionScreenEvent` |
-| `register_enchantment_damage_effects` | server | `RegisterEvent` |
+| `register_enchantment_effects` | server | `RegisterEvent` |
 | `register_entity_layers` | client | `EntityRenderersEvent.AddLayers` |
 | `register_entity_renderers` | client | `EntityRenderersEvent.RegisterRenderers` |
 | `register_entity_spectator_shaders` | client | `RegisterEntitySpectatorShadersEvent` |
@@ -387,7 +379,6 @@ matches that hook's runtime contract.
 | `register_sprite_sources` | client | `RegisterSpriteSourcesEvent` |
 | `register_texture_atlases` | client | `RegisterTextureAtlasesEvent` |
 | `register_villager_professions` | server | `RegisterEvent` |
-| `release_using` | both | `LivingEntityUseItemEvent.Stop` |
 | `render_arm` | client | `RenderArmEvent` |
 | `render_fog` | client | `ViewportEvent.RenderFog` |
 | `render_frame_post` | client | `RenderFrameEvent.Post` |
@@ -443,7 +434,7 @@ matches that hook's runtime contract.
 | `server_stopped` | server | `ServerStoppedEvent` |
 | `server_stopping` | server | `ServerStoppingEvent` |
 | `server_tick` | server | `ServerTickEvent.Pre, ServerTickEvent.Post` |
-| `setting_changed` | client | `ModConfigEvent.Reloading (a ModConfigSpec value set on the config screen)` |
+| `setting_changed` | both | `ModConfigEvent.Reloading` |
 | `should_cause_block_break_reset` | client | `IItemExtension.shouldCauseBlockBreakReset` |
 | `should_cause_reequip_animation` | client | `IItemExtension.shouldCauseReequipAnimation` |
 | `should_check_weak_power` | server | `IBlockExtension.shouldCheckWeakPower` |
@@ -452,6 +443,7 @@ matches that hook's runtime contract.
 | `sleep_finished_time` | server | `SleepFinishedTimeEvent` |
 | `sound_engine_load` | client | `SoundEngineLoadEvent` |
 | `sound_type` | both | `IBlockExtension.getSoundType` |
+| `spawn_cluster_size` | server | `SpawnClusterSizeEvent` |
 | `spread_players_teleport` | server | `EntityTeleportEvent.SpreadPlayersCommand` |
 | `standalone_models` | client | `ModelEvent.RegisterStandalone` |
 | `state_at_viewpoint` | client | `IBlockExtension.getStateAtViewpoint, IBlockStateExtension.getStateAtViewpoint` |
@@ -468,13 +460,11 @@ matches that hook's runtime contract.
 | `use_item` | both | `PlayerInteractEvent.RightClickItem` |
 | `use_item_on_block` | both | `UseItemOnBlockEvent` |
 | `use_on` | both | `UseItemOnBlockEvent` |
-| `validate_tickets` | server | `LoadingValidationCallback` |
 | `vanilla_game_event` | server | `VanillaGameEvent` |
 | `village_siege` | server | `VillageSiegeEvent` |
 | `weak_changes` | server | `IBlockExtension.getWeakChanges` |
 | `window_resize` | client | `WindowResizeEvent` |
 | `world_drawn` | client | `RenderLevelStageEvent.AfterLevel` |
-| `world_lifecycle` | server | `ServerStartingEvent, ServerStartedEvent, ServerStoppingEvent, ServerStoppedEvent` |
 | `xp_orb_targeting` | server | `XpOrbTargetingEvent` |
 | `xp_repair_ratio` | server | `IItemExtension.getXpRepairRatio` |
 
@@ -501,12 +491,10 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `block_dispense_armor` | server | NeoForge has no such event |
 | `block_entity` | both | vanilla EntityBlock.newBlockEntity; NeoForge adds no event or extension for it |
 | `block_entity_client_tick` | client | vanilla BlockEntityTicker from EntityBlock.getTicker with the client level; NeoForge adds no event |
-| `block_entity_client_ticks` | client | vanilla EntityBlock.getTicker with the client level; NeoForge adds no event or extension for it |
 | `block_entity_data_received` | client | post-merge notice; IBlockEntityExtension.onDataPacket and handleUpdateTag are related loading paths, not counterparts |
 | `block_entity_load_additional` | server | vanilla BlockEntity.loadAdditional; NeoForge adds no event for this moment |
 | `block_entity_save_additional` | server | vanilla BlockEntity.saveAdditional; NeoForge adds no event for this moment |
 | `block_entity_tick` | server | vanilla BlockEntityTicker; NeoForge adds no event or extension for it |
-| `block_entity_ticks` | server | vanilla EntityBlock.getTicker; NeoForge adds no event or extension for it |
 | `block_entity_update_tag` | server | vanilla BlockEntity.getUpdateTag; NeoForge adds no event or extension for it); IBlockEntityExtension.handleUpdateTag is the client half |
 | `block_entity_view_distance` | client | vanilla BlockEntityRenderer.getViewDistance; NeoForge adds no event or extension for it |
 | `block_fade` | server | NeoForge has no such event |
@@ -523,11 +511,11 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `block_spread` | server | BlockEvent.FluidPlaceBlockEvent covers only fluids making stone and the like, not flow or fire spread |
 | `bounce_on` | server | vanilla Block.bounceOn; IBlockExtension.getBounceRestitution only returns a factor |
 | `break_progress_positions` | client | vanilla LevelRenderer.destroyBlockProgress |
-| `brewing_complete` | server | NeoForge has no such event |
 | `brewing_fuel` | server | NeoForge has no such event |
 | `brewing_start` | server | NeoForge has no such event |
 | `broadcast_message` | server | NeoForge has no such event; Bukkit's BroadcastMessageEvent |
 | `bucket_empty` | server | vanilla BucketItem.emptyContents; NeoForge has no matching event |
+| `camera_position` | client | vanilla Camera.setPosition; NeoForge has no camera position event |
 | `camera_submersion` | client | vanilla Camera.getFluidInCamera; NeoForge adds no event for it |
 | `camera_type_cycle` | client | NeoForge has no camera type event |
 | `campfire_start` | server | NeoForge has no such event |
@@ -546,7 +534,6 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `client_packet_send` | client | NeoForge has no raw play-packet send event |
 | `client_pick` | client | vanilla Minecraft.pick, before tick inputs and frame extraction |
 | `collision_shape` | both | vanilla BlockBehaviour.getCollisionShape with its CollisionContext; NeoForge adds no event or extension for it |
-| `command` | client | ClientChatEvent is for chat messages; client commands are added by RegisterClientCommandsEvent |
 | `component_hover` | client | vanilla GuiGraphicsExtractor.componentHoverEffect; NeoForge adds no event |
 | `compost_item` | server | NeoForge has no such event |
 | `connects_to` | server | vanilla FenceBlock.connectsTo / WallBlock.connectsTo / IronBarsBlock.attachsTo |
@@ -559,6 +546,7 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `creative_slot` | server | vanilla ServerGamePacketListenerImpl.handleSetCreativeModeSlot; NeoForge adds no event or extension for it |
 | `creeper_ignite` | server | NeoForge has no such event |
 | `creeper_power` | server | NeoForge has no such event |
+| `destroy_progress` | both | vanilla BlockBehaviour.getDestroyProgress; NeoForge adds no event or extension for it |
 | `dispense_item` | server | vanilla DispenserBlock.getDispenseMethod; NeoForge adds no event or extension for it |
 | `dispense_method` | server | vanilla DispenserBlock.getDispenseMethod; NeoForge adds no event or extension for it |
 | `dragon_egg_form` | server | NeoForge has no such event |
@@ -578,10 +566,8 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `entity_outline` | client | NeoForge 26.3 has no glowing or team colour override |
 | `entity_portal` | server | NeoForge has no such event |
 | `entity_pose_change` | server | NeoForge has no such event |
-| `entity_shoot_bow` | server | NeoForge has no such event |
 | `entity_tame` | server | NeoForge has no such event |
 | `entity_teleport` | server | NeoForge has no such event |
-| `entity_tick_listened` | both | Sunrise-only; NeoForge has no counterpart); an opt-in gate for a hook |
 | `entity_toggle_glide` | server | NeoForge has no such event |
 | `entity_unleash` | server | NeoForge has no such event; Bukkit's EntityUnleashEvent |
 | `exp_bottle` | server | NeoForge has no such event |
@@ -599,14 +585,12 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `food_level_changed` | server | vanilla: FoodData; Bukkit's FoodLevelChangeEvent |
 | `framerate_limit` | client | vanilla FramerateLimitTracker.getFramerateLimit fires no event |
 | `furnace_burn` | server | NeoForge has no such event |
-| `furnace_extract` | server | NeoForge has no such event |
 | `furnace_smelt` | server | NeoForge has no such event |
 | `furnace_start_smelt` | server | NeoForge has no such event |
 | `general_entity_tick` | server | vanilla Entity.tick has no part-scoped counterpart; NeoForge's EntityTickEvent is the global pre/post pair |
 | `hanging_break` | server | vanilla hanging entity breaking; NeoForge adds no event or extension for it); AttackEntityEvent fires for players only |
 | `hanging_place` | server | vanilla HangingEntityItem.useOn; NeoForge adds no event or extension for it); PlayerInteractEvent.RightClickBlock fires before it |
 | `has_analog_output` | server | vanilla BlockBehaviour.hasAnalogOutputSignal; NeoForge adds no event or extension for it |
-| `hears_projectile_impacts` | server | Sunrise-only; NeoForge has no counterpart); an opt-in gate for a hook |
 | `held_item_tint` | client | vanilla ItemInHandLayer.submitArmWithItem and PlayerItemInHandLayer.submitArmWithItem |
 | `hopper_inventory_search` | server | NeoForge has no such event; Bukkit's InventoryMoveItemEvent |
 | `hopper_pickup_item` | server | NeoForge has no direct equivalent; Bukkit's InventoryPickupItemEvent |
@@ -622,24 +606,23 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `is_valid_bonemeal_target` | both | vanilla BonemealableBlock.isValidBonemealTarget; NeoForge adds no event or extension for it); BonemealEvent fires when meal is used, before the block's contract |
 | `item_after_vertical_collision` | both | Block.updateEntityAfterFallOn; dropped-item contact |
 | `item_bar` | client | vanilla Item.isBarVisible/getBarWidth/getBarColor; RegisterItemDecorationsEvent registers decorators, not bar queries |
-| `item_despawn` | server | NeoForge has no such event; Bukkit's ItemDespawnEvent |
 | `item_interact_mob` | both | Item.interactLivingEntity |
 | `item_spawn` | server | NeoForge has no such event |
 | `leaves_decay` | server | NeoForge has no such event |
 | `lightning_strike` | server | NeoForge has no such event |
 | `living_death_message` | server | vanilla TamableAnimal.die owner message; separate from living death |
 | `living_death_post` | server | LivingDeathEvent fires before the death |
-| `living_equipment_listened` | server | Sunrise-only; NeoForge has no counterpart); an opt-in gate for a hook |
 | `living_flying_speed` | both | vanilla LivingEntity.getFlyingSpeed; NeoForge adds no event or extension for it |
 | `living_jump_power` | both | vanilla LivingEntity.getJumpPower; not LivingEvent.LivingJumpEvent |
 | `living_speed` | both | vanilla LivingEntity.getSpeed; NeoForge adds no event or extension for it |
-| `living_travel` | server | fork addition, #2308 |
+| `living_travel` | both | fork addition, #2308 |
 | `menu_background` | client | NeoForge has no menu blur event |
 | `menu_button` | server | NeoForge has no such event; vanilla AbstractContainerMenu.clickMenuButton |
 | `menu_button_valid` | server | vanilla menu button ids are handled by their menu implementation |
 | `menu_clicked` | server | a Java menu overrides AbstractContainerMenu.clicked; no event |
 | `menu_links` | server | Sunrise mod menus expose linked container slots |
 | `menu_quick_move` | server | a Java menu overrides AbstractContainerMenu.quickMoveStack; no event |
+| `menu_removed` | server | vanilla AbstractContainerMenu.removed, which each menu overrides |
 | `menu_slot_changed` | server | vanilla Container.setItem and AbstractContainerMenu.slotsChanged; NeoForge adds no event |
 | `menu_slot_rules` | both | vanilla Slot.mayPlace and mayPickup; NeoForge adds no event or extension for it |
 | `menu_slot_take` | server | a Java menu's slot overrides Slot.onTake; NeoForge adds no event |
@@ -652,7 +635,6 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `must_survive` | both | vanilla BlockItem.mustSurvive |
 | `neighbor_changed` | server | vanilla Block.neighborChanged; NeoForge adds no event or extension for it); BlockEvent.NeighborNotifyEvent is the neighbour broadcast, a different point |
 | `on_effect_added` | server | vanilla MobEffect.onEffectAdded; NeoForge adds no event or extension for it |
-| `on_equip` | server | vanilla's `LivingEntity.onEquipItem`; `living_equipment_change` is the `LivingEquipmentChangeEvent` counterpart |
 | `panel_event` | client | Sunrise-only; NeoForge has no counterpart |
 | `perform_bonemeal` | server | vanilla BonemealableBlock.performBonemeal; NeoForge adds no event or extension for it |
 | `piston_carries_block_entity` | both | NeoForge has no counterpart; IBlockExtension.getRelocability is unrelated |
@@ -665,7 +647,7 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `player_bundle_item_select` | server | NeoForge has no such event; Bukkit's PlayerBundleItemSelect |
 | `player_change_beacon_effect` | server | NeoForge has no such event |
 | `player_client_loaded_world` | server | NeoForge has no such event; Bukkit's PlayerClientLoadedWorld |
-| `player_commands_sent` | server | NeoForge 26.3 has no such event |
+| `player_commands_sent` | server | NeoForge 26.3 has no send-time filter event |
 | `player_deep_sleep` | server | NeoForge has no such event |
 | `player_destroyed_block` | server | NeoForge has no event for Block.destroy; BreakEvent fires before the removal |
 | `player_edit_book` | server | NeoForge has no such event; Bukkit's PlayerEditBookEvent |
@@ -680,9 +662,7 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `player_item_cooldown` | server | NeoForge has no such event; Paper's PlayerItemCooldownEvent |
 | `player_item_frame_change` | server | NeoForge has no such event |
 | `player_item_mend` | server | NeoForge has no such event |
-| `player_jump` | server | NeoForge has no such event; Bukkit's PlayerJumpEvent |
 | `player_kicked` | server | NeoForge has no such event; Bukkit's PlayerKickEvent |
-| `player_launch_projectile` | server | NeoForge has no such event; Bukkit's PlayerLaunchProjectile |
 | `player_lectern_page_change` | server | NeoForge has no such event |
 | `player_level_change` | server | NeoForge has no such event; Bukkit's PlayerLevelChangeEvent |
 | `player_login` | server | Bukkit's PlayerLoginEvent; NeoForge's PlayerNegotiationEvent is not cancellable |
@@ -695,7 +675,6 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `player_passage_cross` | server | NeoForge has no such event; Immersive Portals' Portal.canTeleportEntity |
 | `player_pick_item` | server | NeoForge has no such event; Paper's PlayerPickItemEvent |
 | `player_pickup_arrow` | server | NeoForge has no such event |
-| `player_ready_arrow` | server | NeoForge has no such event; Bukkit's PlayerReadyArrow |
 | `player_recipe_book_click` | server | NeoForge has no such event |
 | `player_recipe_book_settings_change` | server | NeoForge has no such event; Bukkit's PlayerRecipeBookSettingsChange |
 | `player_recipe_discovered` | server | NeoForge has no such event; Bukkit's PlayerRecipeDiscoverEvent |
@@ -707,7 +686,6 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `player_stays_on_ground_surface` | both | vanilla Player.isStayingOnGroundSurface; NeoForge adds no event or extension for it |
 | `player_stonecutter_recipe_select` | server | NeoForge has no such event |
 | `player_stop_spectating_entity` | server | NeoForge has no such event |
-| `player_stop_using_item` | server | NeoForge has no such event; Bukkit's PlayerStopUsingItem |
 | `player_swap_with_equipment_slot` | server | NeoForge has no such event |
 | `player_take_lectern_book` | server | NeoForge has no such event |
 | `player_teleport_end_gateway` | server | NeoForge has no such event |
@@ -715,8 +693,7 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `player_toggle_entity_age_lock` | server | NeoForge has no such event |
 | `player_toggle_flight` | server | NeoForge has no flight toggle event; Bukkit's PlayerToggleFlightEvent |
 | `player_toggle_sneak` | server | NeoForge has no such event; Bukkit's PlayerToggleSneakEvent |
-| `player_totem` | server | NeoForge's LivingUseTotemEvent can cancel the save; this hook only listens. Bukkit's EntityResurrectEvent |
-| `player_trade` | server | NeoForge has no such event |
+| `player_turn` | client | vanilla Entity.turn; CalculatePlayerTurnEvent covers mouse sensitivity/cinematic state only |
 | `player_unleash_entity` | server | NeoForge has no such event |
 | `player_velocity` | server | NeoForge has no such event |
 | `portal_create` | server | NeoForge has no such event |
@@ -726,7 +703,6 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `prepare_item_craft` | server | NeoForge has no such event |
 | `prepare_item_enchant` | server | NeoForge has no such event |
 | `prepare_smithing` | server | NeoForge has no such event |
-| `projectile_launch` | server | NeoForge has no such event |
 | `raid_spawn_wave` | server | NeoForge has no such event |
 | `raid_state_change` | server | NeoForge has no such event |
 | `random_tick` | server | vanilla BlockBehaviour.randomTick; NeoForge adds no event or extension for it |
@@ -734,8 +710,11 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `recipe_book_ghost` | client | vanilla RecipeBookComponent.fillGhostRecipe, which each book component overrides; no event |
 | `recipe_book_place` | server | vanilla RecipeBookMenu.handlePlacement, which each menu overrides; no event |
 | `recipe_sources` | server | Sunrise mod crafting menus lend ingredient containers |
+| `register_behaviors` | server | vanilla LivingEntity.makeBrain |
+| `register_goals` | server | vanilla Mob.registerGoals |
 | `remove_block` | server | vanilla Level.removeBlock; no NeoForge event covers this call |
 | `render_needs` | client | Sunrise-only; NeoForge has no counterpart |
+| `render_view_transform` | client | vanilla GameRenderer.bobHurt/bobView; NeoForge adds no event for it |
 | `resolve_player_skin` | client | vanilla AbstractClientPlayer.getSkin |
 | `resource_pack_status` | server | NeoForge has no resource-pack status event |
 | `screen_exclusion_areas` | client | NeoForge has no counterpart in the game; recipe viewers define their own API |
@@ -758,7 +737,6 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `substitute_inline_images` | client | vanilla ChatComponent and AbstractSignRenderer.submitSignText |
 | `tab_complete` | server | NeoForge has no generic tab completion event |
 | `target_hit` | server | NeoForge has no such event |
-| `thunder_change` | server | NeoForge has no such event |
 | `tick_block` | server | vanilla BlockBehaviour.tick; NeoForge adds no event or extension for it |
 | `tick_target_millis` | client | vanilla Minecraft.getTickTargetMillis; NeoForge adds no event or extension for it |
 | `time_skip` | server | NeoForge has no such event |
@@ -768,8 +746,8 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `update_shape` | server | vanilla BlockBehaviour.updateShape; NeoForge adds no event or extension for it |
 | `use_animation` | both | vanilla Item.getUseAnimation; NeoForge adds no event or extension for it |
 | `use_duration` | both | vanilla Item.getUseDuration; NeoForge adds no event or extension for it); LivingEntityUseItemEvent.Start can set a use's duration |
-| `use_item_on` | server | vanilla BlockBehaviour.useItemOn; PlayerInteractEvent.RightClickBlock cancels or answers before it |
-| `use_without_item` | server | vanilla BlockBehaviour.useWithoutItem; PlayerInteractEvent.RightClickBlock cancels or answers before it |
+| `use_item_on` | both | vanilla BlockBehaviour.useItemOn; PlayerInteractEvent.RightClickBlock cancels or answers before it |
+| `use_without_item` | both | vanilla BlockBehaviour.useWithoutItem; PlayerInteractEvent.RightClickBlock cancels or answers before it |
 | `vault_change_state` | server | NeoForge has no such event |
 | `vault_loot` | server | NeoForge has no such event; Bukkit's BlockDispenseLoot |
 | `vehicle_create` | server | NeoForge has no such event; Bukkit's VehicleCreateEvent |
@@ -787,4 +765,3 @@ A hook with no NeoForge counterpart is judged on its merits like any other. The 
 | `world_saved` | server | NeoForge has no such event |
 | `world_view_drawn` | client | Sunrise-only; NeoForge has no counterpart |
 | `world_views` | client | Sunrise-only; NeoForge has no counterpart |
-| `zoom` | client | Sunrise-only; ViewportEvent.ComputeFov is the nearest way to change the view |
