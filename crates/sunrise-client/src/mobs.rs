@@ -4946,13 +4946,17 @@ impl Mob {
             let sound_kind = if dead { "death" } else { "hurt" };
             // Wolf.getHurtSound: the armor's own sound when it takes the hit;
             // otherwise Wolf.getHurtSound/getDeathSound and Cat.getHurtSound/getDeathSound
-            // read the world's sound variant table.
+            // read the world's sound variant table, as do Pig, Cow and Chicken's
+            // (their variant always resolves, so there is no sound of their own).
             let variant_sound = if absorbed {
                 None
             } else {
                 match self.species() {
                     Species::Wolf => ai::wolf_sound(self, variants, sound_kind),
                     Species::Cat => ai::cat_sound(self, variants, sound_kind),
+                    Species::Pig | Species::Cow | Species::Chicken => {
+                        Some(ai::farm_sound(self, variants, sound_kind).unwrap_or(""))
+                    }
                     _ => None,
                 }
             };
@@ -8194,11 +8198,20 @@ mod silent_voice_tests {
     use super::*;
     use crate::mobs::world::with_test_world;
 
-    /// The sounds `Mob::voice` plays for `ambient_sound` of one mob, with
-    /// `silent` set on it, and the random state it leaves behind.
-    fn ambient(silent: bool) -> Option<(Vec<(&'static str, f32, f32)>, f32)> {
+    /// The sounds `Mob::voice_id` plays for the ambient sound of one cow, resolved
+    /// from the prepared vanilla sound variants, with `silent` set on it, and the
+    /// random state it leaves behind.
+    fn ambient(silent: bool) -> Option<(Vec<(String, f32, f32)>, f32)> {
         let mut out = None;
-        let ran = with_test_world(&[], |w, types| {
+        let ran = with_test_world(&[], |_, types| {
+            let root = std::env::var_os("SUNRISE_TEST_RESOURCES")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../.local/sunrise-client")
+                        .join(sunrise_core::VANILLA_VERSION)
+                });
+            let tables = variants::VariantTables::load_prepared(&root);
             let mut m = Mob::new(
                 1,
                 Arc::new(types.types["minecraft:cow"].clone()),
@@ -8207,11 +8220,11 @@ mod silent_voice_tests {
             );
             m.silent = silent;
             let mut events = Vec::new();
-            crate::mobs::ai::ambient_sound(&mut m, w, &mut events);
+            crate::mobs::ai::play_farm_ambient(&mut m, Some(&tables), &mut events);
             let heard = events
                 .iter()
                 .filter_map(|e| match e {
-                    MobEvent::Sound(s, _, volume, pitch) => Some((*s, *volume, *pitch)),
+                    MobEvent::SoundId(s, _, volume, pitch) => Some((s.clone(), *volume, *pitch)),
                     _ => None,
                 })
                 .collect();
@@ -8236,7 +8249,7 @@ mod silent_voice_tests {
         let (quiet, quiet_next) = ambient(true).expect("same data");
         // Cow.getSoundVolume is 0.4 and the pitch is the voice pitch.
         assert_eq!(loud.len(), 1);
-        assert_eq!(loud[0].0, "entity.cow.ambient");
+        assert_eq!(loud[0].0, "minecraft:entity.cow.ambient");
         assert_eq!(loud[0].1, 0.4);
         assert!((0.8..=1.2).contains(&loud[0].2), "{}", loud[0].2);
         assert!(quiet.is_empty(), "{quiet:?}");

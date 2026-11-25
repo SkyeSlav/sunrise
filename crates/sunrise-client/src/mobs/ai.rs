@@ -5546,6 +5546,21 @@ pub(super) fn chicken_sound<'a>(
     let r = m.chicken_sound_variant(&variants.chicken_sound)?;
     variants.chicken_sound.get(r)?.sound(m.is_baby(), kind)
 }
+/// `Pig`/`Cow`/`Chicken.getSoundSet` for `kind` (`ambient`, `hurt`, `death`): the
+/// sound variant every such mob holds, which `Mob::pig_sound_variant` and its
+/// siblings resolve to the registry default when the mob stores none.
+pub(super) fn farm_sound<'a>(
+    m: &Mob,
+    variants: Option<&'a super::variants::VariantTables>,
+    kind: &str,
+) -> Option<&'a str> {
+    match m.species() {
+        Species::Pig => pig_sound(m, variants, kind),
+        Species::Cow => cow_sound(m, variants, kind),
+        Species::Chicken => chicken_sound(m, variants, kind),
+        _ => None,
+    }
+}
 /// `Pig`/`Cow`/`Chicken.getAmbientSound` + `Mob.playAmbientSound` over the world's
 /// sound-variant tables.
 pub(super) fn play_farm_ambient(
@@ -5553,23 +5568,9 @@ pub(super) fn play_farm_ambient(
     variants: Option<&super::variants::VariantTables>,
     events: &mut Vec<MobEvent>,
 ) {
-    let sound = match m.species() {
-        Species::Pig => pig_sound(m, variants, "ambient"),
-        Species::Cow => cow_sound(m, variants, "ambient"),
-        Species::Chicken => chicken_sound(m, variants, "ambient"),
-        _ => None,
-    };
-    if let Some(sound) = sound {
+    if let Some(sound) = farm_sound(m, variants, "ambient") {
         m.voice_id(sound, events);
-        return;
     }
-    let fallback = match m.species() {
-        Species::Pig => "entity.pig.ambient",
-        Species::Cow => "entity.cow.ambient",
-        Species::Chicken => "entity.chicken.ambient",
-        _ => return,
-    };
-    m.voice(fallback, events);
 }
 /// `Wolf.getAmbientSound` + `Mob.playAmbientSound` over the world's sound-variant table.
 pub(super) fn play_wolf_ambient(
