@@ -41,6 +41,7 @@ pub(super) struct Raiding {
     unseeded: Option<Vec<(i32, usize)>>,
     /// The last raider hurt each raid's bar has seen (`Raider.hurtServer`).
     bar_hurts: HashMap<i32, u64>,
+    /// The attributes of a game without staged world tables (`WorldTables::gameplay` otherwise).
     attributes: Option<std::sync::Arc<GameplayAttributes>>,
     /// Beds near each raid's centre, rescanned now and then (`HOME` points
     /// of interest for `RaiderMoveThroughVillageGoal`).
@@ -395,9 +396,13 @@ impl Game<'_> {
         }
     }
     fn gameplay_attributes(&mut self) -> std::sync::Arc<GameplayAttributes> {
+        if let Some(tables) = &self.world_tables {
+            return tables.gameplay.clone();
+        }
         if self.raiding.attributes.is_none() {
             self.raiding.attributes = Some(std::sync::Arc::new(GameplayAttributes::load(
                 &self.options.resources,
+                &sunrise_world::loot::PackOverlay::NONE,
             )));
         }
         self.raiding.attributes.clone().unwrap_or_default()

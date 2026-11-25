@@ -687,7 +687,7 @@ impl Game<'_> {
             ),
             (&sources, &recipes),
         );
-        self.prepare_professions(root, &items, &mut stations)?;
+        self.prepare_professions(root, &items, &overlay, &mut stations)?;
         // Use the same candidate's IDs and bound tags for data map targets.
         let datapack_registries =
             datapack_candidate?.map(mod_api::DatapackRegistrySet::from_candidate);
@@ -748,6 +748,10 @@ impl Game<'_> {
                     .is_ok(),
             },
         )?;
+        // The timeline tags the raid code reads bind from this world's packs too.
+        let gameplay = Arc::new(sunrise_client::patrol::GameplayAttributes::load(
+            root, &overlay,
+        ));
         let data_maps = native_data_maps::DataMaps::load(&data_map_types, &overlay, &registries)
             .with_builtins(builtin)
             .with_biome_keys(mod_api::__private::BiomeKeys::new(
@@ -755,6 +759,25 @@ impl Game<'_> {
                 biomes.table.registered_keys().iter().cloned(),
             ));
         drop(registries);
+        // Vanilla reads tags of these registries too: `LootTable.LIST_CODEC` (advancement
+        // rewards, the loot table trigger) and `Recipe.LIST_CODEC` (the recipe triggers).
+        pack_tags.insert(
+            "loot_table",
+            loot.registry_tags("loot_table")
+                .into_iter()
+                .flatten()
+                .map(|(tag, members)| (tag.clone(), members.iter().cloned().collect()))
+                .collect(),
+        );
+        pack_tags.insert(
+            "recipe",
+            sunrise_world::tag_layers::load(root, "recipe", &overlay, |id| {
+                stations.recipe_index.contains(id)
+            })?
+            .into_iter()
+            .map(|(tag, members)| (tag, members.into_iter().collect()))
+            .collect(),
+        );
         // The API's key order is live state as well: do not change it for a
         // candidate refused by the condition readers.
         api_values::resolve_enchantment_registry(&items)?;
@@ -789,6 +812,7 @@ impl Game<'_> {
                 reload_sources: reload.then_some(sources),
                 data_maps,
                 pack_tags,
+                gameplay,
             }),
             advancements,
             health,

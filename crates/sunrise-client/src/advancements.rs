@@ -310,7 +310,7 @@ pub struct Tree {
     /// trigger id -> (advancement index, criterion index).
     pub by_trigger: HashMap<String, Vec<(usize, usize)>>,
     /// `recipe_unlocked` criteria by the recipe they name (`index_recipes`);
-    /// those naming none in `recipes_any`.
+    /// those naming none, a list or a `#tag` (`HolderSet<Recipe>`) in `recipes_any`.
     by_recipe: HashMap<String, Vec<(usize, usize)>>,
     recipes_any: Vec<(usize, usize)>,
     /// The triggers with a criterion that may test what the player looks at
@@ -549,12 +549,12 @@ impl Tree {
         {
             // `read`: the index alone keeps none of the criteria read.
             match self.list[ai].criteria[ci].conditions.read()["recipes"].as_str() {
-                Some(r) => self
+                Some(r) if !r.starts_with('#') => self
                     .by_recipe
                     .entry(full(r).into_owned())
                     .or_default()
                     .push((ai, ci)),
-                None => self.recipes_any.push((ai, ci)),
+                _ => self.recipes_any.push((ai, ci)),
             }
         }
     }
