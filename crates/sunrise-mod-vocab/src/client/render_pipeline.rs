@@ -2043,6 +2043,32 @@ pub enum BindingKind {
         /// Whether shaders only read the block.
         read_only: bool,
     },
+    /// A single mip level of a mod-owned offscreen [`RenderTargetRef`] colour attachment bound
+    /// as a storage image (`layout(<format>) [readonly|writeonly] uniform image2D Name;`), bound
+    /// with [`BindingValue::StorageImage`]. The shader's `layout(<format>)` names the texel
+    /// format, which must be the target's own, and its `readonly`/`writeonly` qualifiers must
+    /// agree with `access`. The target must have been created with
+    /// [`RenderTargetDescriptor::storage`] covering `access`, which is where an unsupported
+    /// format or access is refused: not here, and not when a draw binds it.
+    StorageImage {
+        /// How shaders use the image.
+        access: StorageImageAccess,
+    },
+}
+
+/// How a shader uses a storage image ([`BindingKind::StorageImage`],
+/// [`RenderTargetDescriptor::storage`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client storage image access mode.
+pub enum StorageImageAccess {
+    /// The shader only writes (`writeonly`); every supported format allows it.
+    WriteOnly,
+    /// The shader only reads (`readonly`).
+    ReadOnly,
+    /// The shader reads and writes; only formats the adapter reports read-write storage for
+    /// ([`RenderCapabilities::read_write_storage`]) allow it.
+    ReadWrite,
 }
 
 /// One named binding in a mod-declared set-1 [`BindGroupLayout`]
@@ -2388,6 +2414,50 @@ pub enum TextureSource<'a> {
     /// Depth aspect of a mod-owned offscreen [`RenderTargetRef`] (must be bound to a
     /// non-filtering [`SamplerFilter::Nearest`] sampler).
     RenderTargetDepth(RenderTargetRef),
+    /// A mip range of a colour attachment of a mod-owned offscreen [`RenderTargetRef`]
+    /// (`GpuDevice.createTextureView(texture, baseMipLevel, mipLevels)`). Sampling the mips of a
+    /// target the active offscreen pass renders into is allowed as long as the range does not
+    /// contain the pass's [`OffscreenPass::mip_level`].
+    RenderTargetColorMip(RenderTargetMipView),
+}
+
+/// A view of a mip range of a render target colour attachment (vanilla's `GpuTextureView`:
+/// `baseMipLevel()` and `mipLevels()`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render target mip view.
+pub struct RenderTargetMipView {
+    /// The render target.
+    pub target: RenderTargetRef,
+    /// The colour attachment (`0..color_targets.len()`).
+    pub attachment: u8,
+    /// First mip level of the view.
+    pub base_mip: u32,
+    /// Number of mip levels from `base_mip`: at least 1, and `base_mip + mip_levels` at most the
+    /// target's [`RenderTargetDescriptor::mip_levels`].
+    pub mip_levels: u32,
+}
+
+impl RenderTargetMipView {
+    /// `mip_levels` levels of colour attachment `attachment` of `target`, from `base_mip`.
+    pub const fn new(
+        target: RenderTargetRef,
+        attachment: u8,
+        base_mip: u32,
+        mip_levels: u32,
+    ) -> Self {
+        Self {
+            target,
+            attachment,
+            base_mip,
+            mip_levels,
+        }
+    }
+
+    /// The single level `mip` of colour attachment `attachment` of `target`.
+    pub const fn single(target: RenderTargetRef, attachment: u8, mip: u32) -> Self {
+        Self::new(target, attachment, mip, 1)
+    }
 }
 
 /// Colour attachment format for a mod-owned offscreen [`RenderTargetRef`].
@@ -2421,6 +2491,22 @@ pub enum RenderTargetDepth {
     Depth24PlusStencil8,
 }
 
+/// The optional device features mod render code can ask about
+/// ([`crate::prelude::ClientRenderClientHost::render_capabilities`]): one read, answered from
+/// the adapter the game runs on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+// no wire: local client render capabilities.
+pub struct RenderCapabilities {
+    /// Whether `R32Float` textures can be sampled with a linear filter. Without it an
+    /// `R32Float` render target is bound with [`SamplerFilter::Nearest`] only.
+    pub float32_filterable: bool,
+    /// The render target colour formats that support [`StorageImageAccess::ReadWrite`] storage
+    /// images on this adapter. [`StorageImageAccess::WriteOnly`] and
+    /// [`StorageImageAccess::ReadOnly`] work for every [`RenderTargetFormat`].
+    pub read_write_storage: Vec<RenderTargetFormat>,
+}
+
 /// Why a mod-owned offscreen [`RenderTargetRef`] operation was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -2439,6 +2525,16 @@ pub enum RenderTargetError {
     TooManyColorTargets,
     /// Both `color_targets` was empty and `depth` was [`RenderTargetDepth::None`].
     NoAttachments,
+    /// `mip_levels` was 0 or more than [`RenderTargetDescriptor::max_mip_levels`] of the size
+    /// (or more than 1 with a depth attachment), or a pass or view named a mip level the target
+    /// does not have.
+    InvalidMipLevels,
+    /// [`RenderTargetDescriptor::storage`] was set on a target with no colour attachment (depth
+    /// attachments cannot be storage textures).
+    StorageNeedsColorTarget,
+    /// A colour format of the target does not support the requested storage access on this
+    /// adapter ([`RenderCapabilities`]).
+    UnsupportedStorage,
 }
 
 impl std::fmt::Display for RenderTargetError {
@@ -2453,6 +2549,11 @@ impl std::fmt::Display for RenderTargetError {
             Self::TooManyColorTargets => "render target exceeds MAX_COLOR_TARGETS (8)",
             Self::NoAttachments => {
                 "render target must declare at least one colour or depth attachment"
+            }
+            Self::InvalidMipLevels => "mip levels must be 1..=max_mip_levels of the target size",
+            Self::StorageNeedsColorTarget => "storage images need a colour attachment",
+            Self::UnsupportedStorage => {
+                "this adapter does not support that storage access for the colour format"
             }
         })
     }
@@ -2483,15 +2584,32 @@ pub struct RenderTargetDescriptor {
     pub color_targets: Vec<RenderTargetFormat>,
     /// Optional depth/stencil attachment.
     pub depth: RenderTargetDepth,
+    /// Mip levels of every colour attachment (vanilla's `mipLevels` of `createTexture`): at
+    /// least 1 and at most [`Self::max_mip_levels`] of `size`. Default 1. A target with more
+    /// than one mip level has no depth attachment, and a resize keeps the count.
+    pub mip_levels: u32,
+    /// The storage access the colour attachments are created for (`None`, the default, makes no
+    /// storage image possible). Refused with [`RenderTargetError::UnsupportedStorage`] when a
+    /// colour format does not support it on this adapter.
+    pub storage: Option<StorageImageAccess>,
 }
 
 impl RenderTargetDescriptor {
+    /// The most mip levels a `size` target can have: `32 - max(width, height).leading_zeros()`
+    /// (0 for a zero side).
+    pub const fn max_mip_levels(size: [u32; 2]) -> u32 {
+        let longest = if size[0] > size[1] { size[0] } else { size[1] };
+        32 - longest.leading_zeros()
+    }
+
     /// Start an empty descriptor for `[width, height]` with no attachments yet.
     pub fn new(size: [u32; 2]) -> Self {
         Self {
             size,
             color_targets: Vec::new(),
             depth: RenderTargetDepth::None,
+            mip_levels: 1,
+            storage: None,
         }
     }
 
@@ -2502,6 +2620,8 @@ impl RenderTargetDescriptor {
             size,
             color_targets: vec![RenderTargetFormat::Rgba8Unorm],
             depth,
+            mip_levels: 1,
+            storage: None,
         }
     }
 
@@ -2523,8 +2643,20 @@ impl RenderTargetDescriptor {
         self
     }
 
-    /// Validate size, colour attachment count, and non-empty attachments against
-    /// `max_texture_dimension_2d`.
+    /// Give every colour attachment `mip_levels` mip levels.
+    pub fn mip_levels(mut self, mip_levels: u32) -> Self {
+        self.mip_levels = mip_levels;
+        self
+    }
+
+    /// Create the colour attachments for storage image `access` ([`BindingKind::StorageImage`]).
+    pub fn storage(mut self, access: StorageImageAccess) -> Self {
+        self.storage = Some(access);
+        self
+    }
+
+    /// Validate size, colour attachment count, non-empty attachments, mip levels and the
+    /// storage request's attachment against `max_texture_dimension_2d`.
     pub fn validate(&self, max_texture_dimension_2d: u32) -> Result<(), RenderTargetError> {
         let [w, h] = self.size;
         if w == 0 || h == 0 || w > max_texture_dimension_2d || h > max_texture_dimension_2d {
@@ -2535,6 +2667,15 @@ impl RenderTargetDescriptor {
         }
         if self.color_targets.is_empty() && self.depth == RenderTargetDepth::None {
             return Err(RenderTargetError::NoAttachments);
+        }
+        if self.mip_levels == 0
+            || self.mip_levels > Self::max_mip_levels(self.size)
+            || (self.mip_levels > 1 && self.depth != RenderTargetDepth::None)
+        {
+            return Err(RenderTargetError::InvalidMipLevels);
+        }
+        if self.storage.is_some() && self.color_targets.is_empty() {
+            return Err(RenderTargetError::StorageNeedsColorTarget);
         }
         Ok(())
     }
@@ -2568,8 +2709,8 @@ impl<H: crate::ClientHost + ?Sized> RenderTargetContext for H {
 /// [`crate::prelude::ClientRenderClientHost::create_render_target`].
 ///
 /// Targets always retain their contents across frames until cleared or resized. Handles are
-/// owner-checked and retired automatically on mod disable, world close, resource reload, or
-/// [`Self::destroy`].
+/// owner-checked. A target survives a resource reload and a world close, and is freed by
+/// [`Self::release`] or when its mod unloads.
 // no wire: process-local generational handle to a retained GPU render target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 // exhaustive: only the engine creates handles.
@@ -2610,16 +2751,16 @@ impl RenderTargetRef {
             .render_target_size(self)
     }
 
-    /// Immediately free this render target's GPU textures and retire the handle
+    /// Free this render target's GPU textures and retire the handle
     /// ([`RenderTargetError::Stale`] thereafter).
-    pub fn destroy(
+    pub fn release(
         self,
         host: &(impl RenderTargetContext + ?Sized),
     ) -> Result<(), RenderTargetError> {
         host.render_target_backend()
             .ok_or(RenderTargetError::Unavailable)?
             .0
-            .render_target_destroy(self)
+            .render_target_release(self)
     }
 }
 
@@ -2657,6 +2798,10 @@ pub struct OffscreenPass {
     /// Optional column-major 4x4 model-view matrix overriding `DynamicTransforms.ModelViewMat`
     /// for this pass.
     pub view: Option<[f32; 16]>,
+    /// The mip level of the target's attachments the pass renders into (default 0), at that
+    /// level's size (`GpuTextureView.getWidth(mipLevel)`). Must be below the target's
+    /// [`RenderTargetDescriptor::mip_levels`].
+    pub mip_level: u32,
 }
 
 impl OffscreenPass {
@@ -2669,7 +2814,14 @@ impl OffscreenPass {
             clear_stencil: None,
             projection: None,
             view: None,
+            mip_level: 0,
         }
+    }
+
+    /// Render into mip level `mip_level` of the target (default 0).
+    pub fn mip_level(mut self, mip_level: u32) -> Self {
+        self.mip_level = mip_level;
+        self
     }
 
     /// Set per-attachment colour clear operations.
@@ -2727,6 +2879,34 @@ pub enum BindingValue<'a> {
     TexelBuffer(&'a [u8]),
     /// A range of a retained [`StorageBufferRef`] for a [`BindingKind::StorageBuffer`] entry.
     StorageBuffer(StorageBufferSlice),
+    /// One mip level of a render target colour attachment for a [`BindingKind::StorageImage`]
+    /// entry.
+    StorageImage(StorageImageBinding),
+}
+
+/// One mip level of a mod-owned offscreen render target's colour attachment, bound as a storage
+/// image ([`DrawBindings::storage_image`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client storage image binding.
+pub struct StorageImageBinding {
+    /// The render target.
+    pub target: RenderTargetRef,
+    /// The colour attachment (`0..color_targets.len()`).
+    pub attachment: u8,
+    /// The mip level (`0..mip_levels`).
+    pub mip_level: u32,
+}
+
+impl StorageImageBinding {
+    /// Mip level `mip_level` of colour attachment `attachment` of `target`.
+    pub const fn new(target: RenderTargetRef, attachment: u8, mip_level: u32) -> Self {
+        Self {
+            target,
+            attachment,
+            mip_level,
+        }
+    }
 }
 
 /// Per-draw set-1 resource bindings passed to [`crate::WorldDrawContext::draw_mesh`] and
@@ -2778,6 +2958,12 @@ impl<'a> DrawBindings<'a> {
     pub fn storage_buffer(mut self, name: &'a str, slice: StorageBufferSlice) -> Self {
         self.entries
             .push((name, BindingValue::StorageBuffer(slice)));
+        self
+    }
+
+    /// Bind one mip level of a render target colour attachment to storage image entry `name`.
+    pub fn storage_image(mut self, name: &'a str, image: StorageImageBinding) -> Self {
+        self.entries.push((name, BindingValue::StorageImage(image)));
         self
     }
 
@@ -5021,7 +5207,7 @@ mod tests {
             Err(RenderTargetError::Unavailable)
         );
         assert_eq!(rt.size(&Bare), Err(RenderTargetError::Unavailable));
-        assert_eq!(rt.destroy(&Bare), Err(RenderTargetError::Unavailable));
+        assert_eq!(rt.release(&Bare), Err(RenderTargetError::Unavailable));
 
         struct Recording {
             calls: std::cell::RefCell<Vec<&'static str>>,
@@ -5054,8 +5240,8 @@ mod tests {
                 self.calls.borrow_mut().push("size");
                 Ok(self.size.get())
             }
-            fn render_target_destroy(&self, _: RenderTargetRef) -> Result<(), RenderTargetError> {
-                self.calls.borrow_mut().push("destroy");
+            fn render_target_release(&self, _: RenderTargetRef) -> Result<(), RenderTargetError> {
+                self.calls.borrow_mut().push("release");
                 Ok(())
             }
         }
@@ -5067,10 +5253,10 @@ mod tests {
         assert_eq!(rt.size(&host), Ok([32, 32]));
         rt.resize(&host, [128, 64]).unwrap();
         assert_eq!(rt.size(&host), Ok([128, 64]));
-        rt.destroy(&host).unwrap();
+        rt.release(&host).unwrap();
         assert_eq!(
             *host.calls.borrow(),
-            vec!["size", "resize", "size", "destroy"]
+            vec!["size", "resize", "size", "release"]
         );
 
         let pass = OffscreenPass::new(rt)
@@ -5090,5 +5276,75 @@ mod tests {
             .texture("uColor", TextureSource::RenderTargetColor(rt, 0))
             .texture("uDepth", TextureSource::RenderTargetDepth(rt));
         assert_eq!(bindings.entries.len(), 2);
+    }
+
+    #[test]
+    fn mip_levels_are_bounded_by_the_size_and_storage_needs_a_colour_target() {
+        let rgba =
+            |size| RenderTargetDescriptor::new(size).color_target(RenderTargetFormat::R32Float);
+        // `32 - leading_zeros(max side)`: 64 -> 7, 65 -> 7, 1 -> 1, a 128 x 8 strip -> 8.
+        for (size, levels) in [([64, 64], 7), ([65, 3], 7), ([1, 1], 1), ([128, 8], 8)] {
+            assert_eq!(
+                RenderTargetDescriptor::max_mip_levels(size),
+                levels,
+                "{size:?}"
+            );
+            assert_eq!(rgba(size).mip_levels(levels).validate(8192), Ok(()));
+            assert_eq!(
+                rgba(size).mip_levels(levels + 1).validate(8192),
+                Err(RenderTargetError::InvalidMipLevels)
+            );
+        }
+        assert_eq!(rgba([64, 64]).validate(8192), Ok(()));
+        assert_eq!(rgba([64, 64]).mip_levels, 1);
+        assert_eq!(
+            rgba([64, 64]).mip_levels(0).validate(8192),
+            Err(RenderTargetError::InvalidMipLevels)
+        );
+        // A mip chain has no depth attachment.
+        assert_eq!(
+            rgba([64, 64])
+                .depth(RenderTargetDepth::Depth32Float)
+                .mip_levels(2)
+                .validate(8192),
+            Err(RenderTargetError::InvalidMipLevels)
+        );
+        // Depth cannot be a storage texture.
+        assert_eq!(
+            RenderTargetDescriptor::new([64, 64])
+                .depth(RenderTargetDepth::Depth32Float)
+                .storage(StorageImageAccess::WriteOnly)
+                .validate(8192),
+            Err(RenderTargetError::StorageNeedsColorTarget)
+        );
+        assert_eq!(
+            rgba([64, 64])
+                .depth(RenderTargetDepth::Depth32Float)
+                .storage(StorageImageAccess::ReadWrite)
+                .validate(8192),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn mip_views_and_storage_images_are_bound_by_name_and_level() {
+        let rt = RenderTargetRef::from_parts(1, 0).unwrap();
+        let view = RenderTargetMipView::new(rt, 1, 2, 3);
+        assert_eq!((view.attachment, view.base_mip, view.mip_levels), (1, 2, 3));
+        assert_eq!(RenderTargetMipView::single(rt, 0, 4).mip_levels, 1);
+        let image = StorageImageBinding::new(rt, 0, 5);
+        let bindings = DrawBindings::new()
+            .texture("uPyramid", TextureSource::RenderTargetColorMip(view))
+            .storage_image("uNext", image);
+        assert!(matches!(
+            bindings.entries[0],
+            ("uPyramid", BindingValue::Texture(TextureSource::RenderTargetColorMip(v))) if v == view
+        ));
+        assert!(matches!(
+            bindings.entries[1],
+            ("uNext", BindingValue::StorageImage(i)) if i == image
+        ));
+        assert_eq!(OffscreenPass::new(rt).mip_level, 0);
+        assert_eq!(OffscreenPass::new(rt).mip_level(3).mip_level, 3);
     }
 }

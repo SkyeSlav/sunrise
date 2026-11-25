@@ -239,6 +239,11 @@ pub enum ModBindingKind {
         /// Whether the block is `readonly`.
         read_only: bool,
     },
+    /// `layout(<format>) uniform image2D` storage image (`binding = k`).
+    StorageImage {
+        /// What the declaration's `readonly`/`writeonly` qualifiers must say.
+        access: sunrise_glsl::ImageAccess,
+    },
 }
 
 /// One mod-declared set-1 binding passed into [`Options::mod_bindings`].
@@ -255,6 +260,7 @@ pub struct Set1Bindings<'a> {
     pub samplers: Vec<(&'a str, u32)>,
     pub texel_buffers: Vec<(&'a str, u32)>,
     pub storage_buffers: Vec<(&'a str, u32, bool)>,
+    pub storage_images: Vec<(&'a str, u32, sunrise_glsl::ImageAccess)>,
     pub push_constant_binding: Option<u32>,
     pub next_binding: u32,
 }
@@ -283,6 +289,10 @@ pub fn assign_set1_bindings<'a>(
             }
             ModBindingKind::StorageBuffer { read_only } => {
                 out.storage_buffers.push((b.name, next, read_only));
+                next += 1;
+            }
+            ModBindingKind::StorageImage { access } => {
+                out.storage_images.push((b.name, next, access));
                 next += 1;
             }
         }
@@ -336,6 +346,17 @@ pub fn extract_mod_bindings(
                 line = line[..comment].trim();
             }
             if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(image) = sunrise_glsl::storage_image(line) {
+                if !is_reserved(image.name) && !out.iter().any(|(n, _)| n == image.name) {
+                    out.push((
+                        image.name.to_owned(),
+                        ModBindingKind::StorageImage {
+                            access: sunrise_glsl::ImageAccess::of_qualifiers(&image.qualifiers),
+                        },
+                    ));
+                }
                 continue;
             }
             if let Some(block) = sunrise_glsl::storage_block(line) {
@@ -820,6 +841,7 @@ fn translate_inner(
         extra_samplers: &set1.samplers,
         extra_texel_buffers: &set1.texel_buffers,
         extra_storage_buffers: &set1.storage_buffers,
+        extra_storage_images: &set1.storage_images,
         push_constant_binding: set1.push_constant_binding,
         loose: &[],
         defines,
@@ -908,6 +930,7 @@ pub fn translate_linear_fragment(
             extra_samplers: &set1.samplers,
             extra_texel_buffers: &set1.texel_buffers,
             extra_storage_buffers: &set1.storage_buffers,
+            extra_storage_images: &set1.storage_images,
             push_constant_binding: set1.push_constant_binding,
             loose: &[],
             defines: &defines,
@@ -1560,6 +1583,119 @@ void main() {
             vec![(
                 "Quads".to_owned(),
                 ModBindingKind::StorageBuffer { read_only: true }
+            )]
+        );
+    }
+
+    #[test]
+    fn storage_images_translate_into_set_one_with_their_declared_format_and_access() {
+        let vsh = "\
+#version 330
+in vec3 Position;
+in vec2 UV0;
+in vec4 Color;
+out vec2 texCoord0;
+out vec4 vertexColor;
+void main() {
+    gl_Position = vec4(Position, 1.0);
+    texCoord0 = UV0;
+    vertexColor = Color;
+}
+";
+        let fsh = |image: &str| {
+            format!(
+                "\
+#version 330
+in vec2 texCoord0;
+in vec4 vertexColor;
+{image}
+out vec4 fragColor;
+void main() {{
+    imageStore(Pyramid, ivec2(0), vertexColor);
+    fragColor = vertexColor;
+}}
+"
+            )
+        };
+        let declared = |access| {
+            [ModBinding {
+                name: "Pyramid",
+                kind: ModBindingKind::StorageImage { access },
+            }]
+        };
+        let write_only = fsh("layout(rgba8) writeonly uniform image2D Pyramid;");
+        let bindings = declared(sunrise_glsl::ImageAccess::WriteOnly);
+        let opts = Options {
+            mod_bindings: &bindings,
+            check_backends: true,
+            ..Default::default()
+        };
+        let built = translate(&sources(vsh, &write_only), &opts, &stub_include)
+            .expect("a write-only rgba8 image translates");
+        let module = &built.translated.fragment;
+        let (_, image) = module
+            .global_variables
+            .iter()
+            .find(|(_, var)| var.name.as_deref() == Some("Pyramid"))
+            .expect("the image is a global");
+        assert_eq!(
+            image.binding,
+            Some(naga::ResourceBinding {
+                group: MOD_BIND_GROUP_SET,
+                binding: 0
+            })
+        );
+        assert!(matches!(
+            module.types[image.ty].inner,
+            naga::TypeInner::Image {
+                class: naga::ImageClass::Storage {
+                    format: naga::StorageFormat::Rgba8Unorm,
+                    ..
+                },
+                ..
+            }
+        ));
+
+        // The qualifiers must agree with the declared access, and the image must be declared.
+        let read_write = declared(sunrise_glsl::ImageAccess::ReadWrite);
+        let opts = Options {
+            mod_bindings: &read_write,
+            ..Default::default()
+        };
+        let err = translate(&sources(vsh, &write_only), &opts, &stub_include)
+            .expect_err("`writeonly` on a read-write image is refused");
+        assert!(err[0].message.contains("ReadWrite"), "got: {err:?}");
+        let err = translate(
+            &sources(vsh, &write_only),
+            &Options::default(),
+            &stub_include,
+        )
+        .expect_err("an undeclared image is refused");
+        assert!(err[0].message.contains("Pyramid"), "got: {err:?}");
+
+        // The texel format comes from `layout(<format>)`: without one the image is refused.
+        let no_format = fsh("writeonly uniform image2D Pyramid;");
+        let opts = Options {
+            mod_bindings: &bindings,
+            ..Default::default()
+        };
+        let err = translate(&sources(vsh, &no_format), &opts, &stub_include)
+            .expect_err("an image with no format is refused");
+        assert!(err[0].message.contains("layout("), "got: {err:?}");
+
+        // `uniform readonly image2D` orders its qualifiers after the storage word.
+        let (extracted, _) = extract_mod_bindings(
+            vsh,
+            &fsh("layout(r32f) uniform readonly image2D Pyramid;"),
+            false,
+        );
+        assert_eq!(
+            extracted,
+            vec![(
+                "Pyramid".to_owned(),
+                ModBindingKind::StorageImage {
+                    access: sunrise_glsl::ImageAccess::ReadOnly
+                }
             )]
         );
     }

@@ -197,18 +197,26 @@ pub trait ClientRenderClientHost {
         &self,
         desc: &StorageBufferDescriptor,
     ) -> Result<StorageBufferRef, BufferError>;
+    /// Side: client.
     /// Allocate a mod-owned offscreen GPU render target (`RenderTarget` / `TextureTarget`),
     /// returning an owner-checked generational [`RenderTargetRef`] handle.
     ///
     /// Size is validated against `1..=device.limits().max_texture_dimension_2d`, colour
     /// attachments against `0..=MAX_COLOR_TARGETS` (with at least one colour or depth
-    /// attachment). Contents are retained across frames until cleared by an [`OffscreenPass`] or
-    /// reallocated by [`RenderTargetRef::resize`]. Handles are retired automatically on mod
-    /// disable, world close, resource reload, or [`RenderTargetRef::destroy`].
+    /// attachment), `mip_levels` against `1..=RenderTargetDescriptor::max_mip_levels(size)` and
+    /// a requested storage access against the adapter ([`RenderCapabilities`]): all before any
+    /// GPU call, and the allocation itself sits in error scopes, so a refusal is an `Err`.
+    /// Contents are retained across frames until cleared by an [`OffscreenPass`] or
+    /// reallocated by [`RenderTargetRef::resize`]. A target survives a resource reload and a
+    /// world close, and is freed by [`RenderTargetRef::release`] or when its mod unloads.
     fn create_render_target(
         &self,
         desc: &RenderTargetDescriptor,
     ) -> Result<RenderTargetRef, RenderTargetError>;
+    /// Side: client.
+    /// The optional device features render code can use, read from the adapter the game runs on
+    /// ([`RenderCapabilities`]).
+    fn render_capabilities(&self) -> RenderCapabilities;
 }
 
 /// The retained instance-group and mesh operations behind [`InstanceGroupRef`] and [`MeshRef`].
@@ -304,7 +312,7 @@ pub trait ClientRenderClientBackend {
     #[manual_handle]
     fn render_target_size(&self, target: RenderTargetRef) -> Result<[u32; 2], RenderTargetError>;
     /// Free a mod-owned offscreen render target and retire the handle; called through
-    /// [`RenderTargetRef::destroy`].
+    /// [`RenderTargetRef::release`].
     #[manual_handle]
-    fn render_target_destroy(&self, target: RenderTargetRef) -> Result<(), RenderTargetError>;
+    fn render_target_release(&self, target: RenderTargetRef) -> Result<(), RenderTargetError>;
 }

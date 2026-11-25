@@ -106,6 +106,13 @@ pub enum ResolvedSet1Entry {
         offset: u64,
         size: u64,
     },
+    /// One mip level of a render target colour attachment bound as a storage image, already
+    /// checked against the target's storage access, with the texel `format` of its texture.
+    StorageImage {
+        view_id: u64,
+        view: wgpu::TextureView,
+        format: wgpu::TextureFormat,
+    },
 }
 
 /// Resolved set-1 resource bindings for one [`PipelineDraw`] in exact declaration order.
@@ -611,6 +618,8 @@ struct CompiledOit {
 struct CompiledSet1Entry {
     binding: u32,
     kind: BindingKind,
+    /// The texel format the shader declares for a [`BindingKind::StorageImage`] entry.
+    storage_format: Option<wgpu::TextureFormat>,
 }
 
 /// Cache key for one resource slot in a cached set-1 `wgpu::BindGroup`.
@@ -626,6 +635,8 @@ enum Set1ResourceKey {
     TexelBuffer(u64, u64),
     /// Retained storage buffer range `(unique_id, offset, size)`.
     Storage(u64, u64, u64),
+    /// Storage image view `(unique_view_id)`.
+    StorageImage(u64),
 }
 
 /// Cache key for steady-state zero-allocation set-1 `wgpu::BindGroup` reuse.
@@ -760,6 +771,37 @@ fn create_mod_samplers(device: &wgpu::Device) -> [[wgpu::Sampler; 3]; 2] {
     })
 }
 
+/// The texel format `built`'s shader declares (`layout(rgba8) uniform image2D`) for the storage
+/// image at set-1 `binding`, when it is one a render target can have.
+fn storage_image_format(built: &Built, binding: u32) -> Option<wgpu::TextureFormat> {
+    [&built.program.vertex, &built.program.fragment]
+        .into_iter()
+        .find_map(|module| {
+            module
+                .global_variables
+                .iter()
+                .filter(|(_, var)| {
+                    var.binding.as_ref().is_some_and(|at| {
+                        at.group == sunrise_mod_pipeline::MOD_BIND_GROUP_SET
+                            && at.binding == binding
+                    })
+                })
+                .find_map(|(_, var)| match module.types[var.ty].inner {
+                    naga::TypeInner::Image {
+                        class: naga::ImageClass::Storage { format, .. },
+                        ..
+                    } => Some(format),
+                    _ => None,
+                })
+        })
+        .and_then(|format| match format {
+            naga::StorageFormat::Rgba8Unorm => Some(wgpu::TextureFormat::Rgba8Unorm),
+            naga::StorageFormat::Rgba16Float => Some(wgpu::TextureFormat::Rgba16Float),
+            naga::StorageFormat::R32Float => Some(wgpu::TextureFormat::R32Float),
+            _ => None,
+        })
+}
+
 fn build_set1_layout(
     device: &wgpu::Device,
     built: &Built,
@@ -783,6 +825,7 @@ fn build_set1_layout(
     let mut texture_count = 0u32;
     let mut sampler_count = 0u32;
     let mut storage_count = 0u32;
+    let mut storage_image_count = 0u32;
     for entry in &built.bind_group_layout.entries {
         match entry.kind {
             BindingKind::UniformBuffer { min_size } => {
@@ -807,6 +850,7 @@ fn build_set1_layout(
                 compiled_entries.push(CompiledSet1Entry {
                     binding: next_binding,
                     kind: entry.kind,
+                    storage_format: None,
                 });
                 next_binding += 1;
             }
@@ -837,6 +881,7 @@ fn build_set1_layout(
                 compiled_entries.push(CompiledSet1Entry {
                     binding: next_binding,
                     kind: entry.kind,
+                    storage_format: None,
                 });
                 next_binding += 2;
             }
@@ -855,6 +900,7 @@ fn build_set1_layout(
                 compiled_entries.push(CompiledSet1Entry {
                     binding: next_binding,
                     kind: entry.kind,
+                    storage_format: None,
                 });
                 next_binding += 1;
             }
@@ -885,6 +931,60 @@ fn build_set1_layout(
                 compiled_entries.push(CompiledSet1Entry {
                     binding: next_binding,
                     kind: entry.kind,
+                    storage_format: None,
+                });
+                next_binding += 1;
+            }
+            BindingKind::StorageImage { access } => {
+                storage_image_count += 1;
+                let Some(format) = storage_image_format(built, next_binding) else {
+                    return Err(format!(
+                        "storage image `{}` needs a `layout(rgba8)`, `layout(rgba16f)` or `layout(r32f)` declaration in its shader",
+                        entry.name
+                    ));
+                };
+                let (access, read_only) = match access {
+                    mod_api::StorageImageAccess::WriteOnly => {
+                        (wgpu::StorageTextureAccess::WriteOnly, false)
+                    }
+                    mod_api::StorageImageAccess::ReadOnly => {
+                        (wgpu::StorageTextureAccess::ReadOnly, true)
+                    }
+                    mod_api::StorageImageAccess::ReadWrite => {
+                        (wgpu::StorageTextureAccess::ReadWrite, false)
+                    }
+                    _ => {
+                        return Err(format!(
+                            "unsupported storage image access for `{}`",
+                            entry.name
+                        ));
+                    }
+                };
+                // As for storage buffers, wgpu lets only a device with
+                // `VERTEX_WRITABLE_STORAGE` write a storage texture in the vertex stage.
+                let visibility = if read_only
+                    || device
+                        .features()
+                        .contains(wgpu::Features::VERTEX_WRITABLE_STORAGE)
+                {
+                    wgpu::ShaderStages::VERTEX_FRAGMENT
+                } else {
+                    wgpu::ShaderStages::FRAGMENT
+                };
+                layout_entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: next_binding,
+                    visibility,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access,
+                        format,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                });
+                compiled_entries.push(CompiledSet1Entry {
+                    binding: next_binding,
+                    kind: entry.kind,
+                    storage_format: Some(format),
                 });
                 next_binding += 1;
             }
@@ -944,6 +1044,12 @@ fn build_set1_layout(
         return Err(format!(
             "set-1 storage/texel buffer count ({storage_count}) exceeds device max_storage_buffers_per_shader_stage ({})",
             limits.max_storage_buffers_per_shader_stage
+        ));
+    }
+    if storage_image_count > limits.max_storage_textures_per_shader_stage {
+        return Err(format!(
+            "set-1 storage image count ({storage_image_count}) exceeds device max_storage_textures_per_shader_stage ({})",
+            limits.max_storage_textures_per_shader_stage
         ));
     }
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2530,6 +2636,19 @@ impl ModPipelines {
                                 }),
                             });
                         }
+                        (
+                            ResolvedSet1Entry::StorageImage { view, format, .. },
+                            BindingKind::StorageImage { .. },
+                        ) => {
+                            if spec.storage_format != Some(*format) {
+                                valid = false;
+                                break;
+                            }
+                            bg_entries.push(wgpu::BindGroupEntry {
+                                binding: spec.binding,
+                                resource: wgpu::BindingResource::TextureView(view),
+                            });
+                        }
                         _ => {
                             valid = false;
                             break;
@@ -2555,11 +2674,18 @@ impl ModPipelines {
                 if !valid {
                     continue;
                 }
+                let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
                 let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("Mod offscreen set-1"),
                     layout: set1_layout,
                     entries: &bg_entries,
                 });
+                if let Some(error) = pollster::block_on(validation.pop()) {
+                    log::warn!(
+                        "Sunrise: a mod offscreen draw's set-1 bindings were refused: {error}"
+                    );
+                    continue;
+                }
                 Some((bg, dynamic_offsets))
             } else {
                 None
@@ -3110,6 +3236,18 @@ impl ModPipelines {
                         }
                         key_resources.push(Set1ResourceKey::Storage(*id, *offset, *size));
                     }
+                    (
+                        ResolvedSet1Entry::StorageImage {
+                            view_id, format, ..
+                        },
+                        BindingKind::StorageImage { .. },
+                    ) => {
+                        if spec.storage_format != Some(*format) {
+                            valid = false;
+                            break;
+                        }
+                        key_resources.push(Set1ResourceKey::StorageImage(*view_id));
+                    }
                     _ => {
                         valid = false;
                         break;
@@ -3222,6 +3360,15 @@ impl ModPipelines {
                                     offset: *offset,
                                     size: wgpu::BufferSize::new(*size),
                                 }),
+                            });
+                        }
+                        (
+                            ResolvedSet1Entry::StorageImage { view, .. },
+                            BindingKind::StorageImage { .. },
+                        ) => {
+                            bg_entries.push(wgpu::BindGroupEntry {
+                                binding: spec.binding,
+                                resource: wgpu::BindingResource::TextureView(view),
                             });
                         }
                         _ => {
@@ -6064,13 +6211,13 @@ void main() {
         // Self-sampling hazard check: binding `rt` while `active_target == Some(rt)` is refused.
         assert_eq!(
             targets
-                .resolve_color(Some("test_mod"), Some(rt), rt, 0, false, false)
+                .resolve_color(Some("test_mod"), Some((rt, 0)), rt, 0, false, false)
                 .map(|(id, _)| id),
             Err(mod_api::PipelineDrawError::TargetReadWriteHazard)
         );
         assert_eq!(
             targets
-                .resolve_depth(Some("test_mod"), Some(rt), rt, false)
+                .resolve_depth(Some("test_mod"), Some((rt, 0)), rt, false)
                 .map(|(id, _)| id),
             Err(mod_api::PipelineDrawError::TargetReadWriteHazard)
         );
@@ -6133,7 +6280,7 @@ void main() {
         };
 
         // Pass 1: clear to black, draw red quad into offscreen target.
-        let resolved_rt = targets.resolve_target(Some("test_mod"), rt).unwrap();
+        let resolved_rt = targets.resolve_target(Some("test_mod"), rt, 0).unwrap();
         let pass1 = mod_api::OffscreenPass::new(rt)
             .clear_color_0([0.0, 0.0, 0.0, 1.0])
             .clear_depth(0.0)
@@ -6250,7 +6397,7 @@ void main() {
             .resolve_color(Some("test_mod"), None, rt, 0, false, false)
             .unwrap();
         assert_ne!(view_id_before, view_id_resized);
-        targets.destroy(Some("test_mod"), rt).unwrap();
+        targets.release(Some("test_mod"), rt).unwrap();
         assert_eq!(
             targets.size(Some("test_mod"), rt),
             Err(mod_api::RenderTargetError::Stale)

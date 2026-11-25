@@ -271,6 +271,34 @@ the device's `max_storage_buffer_binding_size` bytes with its offset a multiple 
 vertex stage needs `VERTEX_WRITABLE_STORAGE`; a device without it refuses such a pipeline. Every
 refusal is a `BufferError` or `PipelineDrawError`, never a panic.
 
+## Mip chains and storage images on render targets
+
+A render target made with `host.create_render_target(&desc)` can carry a mip chain, the way a
+vanilla `GpuTexture` has `getMipLevels()`: `RenderTargetDescriptor::new(size)
+.color_target(RenderTargetFormat::R32Float).mip_levels(n)`, with `n` from 1 to
+`RenderTargetDescriptor::max_mip_levels(size)` (`32 - max(width, height).leading_zeros()`). A chain
+has colour attachments only. `OffscreenPass::new(target).mip_level(k)` renders into level `k` at that
+level's size, and `TextureSource::RenderTargetColorMip(RenderTargetMipView::new(target, attachment,
+base_mip, mip_levels))` samples a range of levels, as vanilla's `GpuTextureView` has `baseMipLevel()`
+and `mipLevels()`. Reading level `k` while rendering level `k + 1` is allowed; the same level, or a
+range holding it, is `PipelineDrawError::TargetReadWriteHazard`.
+
+For a shader that writes a level directly (a depth pyramid, a blur chain), create the target with
+`.storage(StorageImageAccess::WriteOnly)`, declare the image in the layout with
+`BindEntry::new("Next", BindingKind::StorageImage { access: StorageImageAccess::WriteOnly })`, write
+`layout(r32f) writeonly uniform image2D Next;` in GLSL (`rgba8`, `rgba16f` and `r32f` are the
+formats a target can have; the shader's `readonly`/`writeonly` qualifiers must agree with the
+access), and bind one level with `DrawBindings::new().storage_image("Next",
+StorageImageBinding::new(target, 0, level))`. A target can be used as a storage image only in the
+access it was created for (`ReadWrite` covers both others). A format or access the adapter lacks
+is refused when the target is created, with `RenderTargetError::UnsupportedStorage`: ask
+`host.render_capabilities()` first. Write-only and read-only storage work for every format;
+`read_write_storage` lists the formats with read-write storage, and `float32_filterable` says
+whether an `R32Float` target can be sampled with `SamplerFilter::Linear`.
+
+A render target survives a resource reload and a world close, and is freed by
+`target.release(host)` or when its mod unloads.
+
 ## Participating in translated shader packs
 
 When an Iris/OptiFine shader pack is active and owns terrain rendering, a mod pipeline without a

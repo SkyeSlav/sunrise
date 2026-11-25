@@ -908,6 +908,22 @@ fn mod_bindings_from_layout(
                 mod_api::BindingKind::StorageBuffer { read_only } => {
                     sunrise_mod_pipeline::ModBindingKind::StorageBuffer { read_only }
                 }
+                mod_api::BindingKind::StorageImage { access } => {
+                    sunrise_mod_pipeline::ModBindingKind::StorageImage {
+                        access: match access {
+                            mod_api::StorageImageAccess::WriteOnly => {
+                                sunrise_glsl::ImageAccess::WriteOnly
+                            }
+                            mod_api::StorageImageAccess::ReadOnly => {
+                                sunrise_glsl::ImageAccess::ReadOnly
+                            }
+                            mod_api::StorageImageAccess::ReadWrite => {
+                                sunrise_glsl::ImageAccess::ReadWrite
+                            }
+                            _ => return None,
+                        },
+                    }
+                }
                 _ => return None,
             };
             Some(sunrise_mod_pipeline::ModBinding {

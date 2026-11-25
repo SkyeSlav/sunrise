@@ -645,7 +645,6 @@ impl Game<'_> {
             if let Some(renderer) = &game.renderer {
                 renderer.clear_mod_meshes();
                 renderer.clear_mod_uniforms();
-                renderer.clear_mod_render_targets();
             }
             // The new atlas's skin and map slots are blank: players and maps
             // upload into it again instead of naming sprites it does not have.

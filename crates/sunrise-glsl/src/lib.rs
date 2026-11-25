@@ -50,6 +50,10 @@ pub struct Inputs<'a> {
     /// Extra std430 storage buffer blocks by name: `(name, binding, read_only)` in
     /// [`Self::extra_set`]. The block's `readonly` qualifier must agree with `read_only`.
     pub extra_storage_buffers: &'a [(&'a str, u32, bool)],
+    /// Extra `image2D` storage images by name: `(name, binding, access)` in
+    /// [`Self::extra_set`]. The declaration's `readonly`/`writeonly` qualifiers must agree with
+    /// `access`, and its `layout(<format>)` names the texel format.
+    pub extra_storage_images: &'a [(&'a str, u32, ImageAccess)],
     /// Optional binding in [`Self::extra_set`] onto which `layout(push_constant) uniform ...`
     /// blocks are translated as a std140 uniform buffer. `None` refuses `layout(push_constant)`.
     pub push_constant_binding: Option<u32>,
@@ -721,8 +725,56 @@ fn replace_ident(text: &str, from: &str, to: &str) -> String {
     out
 }
 
+/// How a shader uses a storage image, as its `readonly`/`writeonly` qualifiers say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ImageAccess {
+    /// `readonly`.
+    ReadOnly,
+    /// `writeonly`.
+    WriteOnly,
+    /// Neither qualifier.
+    ReadWrite,
+}
+
+impl ImageAccess {
+    /// The access the memory `qualifiers` of an `image2D` declaration say.
+    pub fn of_qualifiers(qualifiers: &[&str]) -> Self {
+        match (
+            qualifiers.contains(&"readonly"),
+            qualifiers.contains(&"writeonly"),
+        ) {
+            (true, false) => Self::ReadOnly,
+            (false, true) => Self::WriteOnly,
+            _ => Self::ReadWrite,
+        }
+    }
+}
+
+/// A `[layout(<format>)] [memory qualifiers] uniform image2D Name;` line: a storage image.
+#[derive(Debug, PartialEq, Eq)]
+pub struct StorageImage<'a> {
+    /// The image's name.
+    pub name: &'a str,
+    /// Its memory qualifiers (`readonly`, `writeonly`, `coherent`, `volatile`, `restrict`).
+    pub qualifiers: Vec<&'a str>,
+    /// What stood inside `layout(...)`: the texel format, e.g. `rgba8`, `r32f`.
+    pub layout: &'a str,
+}
+
+/// The storage image a line declares, if it declares one.
+pub fn storage_image(line: &str) -> Option<StorageImage<'_>> {
+    let decl = declaration(line)?;
+    (decl.storage == "uniform" && decl.ty == "image2D").then_some(StorageImage {
+        name: decl.name,
+        qualifiers: decl.qualifiers,
+        layout: decl.layout,
+    })
+}
+
 /// A global declaration on one line: `layout(...) qualifiers storage type name;`.
 struct Decl<'a> {
+    /// What stood inside `layout(...)`, empty without one.
+    layout: &'a str,
     /// `layout(location = N)`'s N.
     location: Option<u32>,
     qualifiers: Vec<&'a str>,
@@ -734,9 +786,11 @@ struct Decl<'a> {
 fn declaration(line: &str) -> Option<Decl<'_>> {
     let mut rest = line.trim();
     let mut location = None;
+    let mut layout = "";
     if let Some(after) = rest.strip_prefix("layout") {
         let after = after.trim_start().strip_prefix('(')?;
         let close = after.find(')')?;
+        layout = after[..close].trim();
         location = after[..close].split(',').find_map(|q| {
             let (key, value) = q.split_once('=')?;
             (key.trim() == "location").then(|| value.trim().parse().ok())?
@@ -748,15 +802,28 @@ fn declaration(line: &str) -> Option<Decl<'_>> {
     let storage_at = words
         .iter()
         .position(|w| matches!(*w, "in" | "out" | "uniform"))?;
-    let [ty, name] = words[storage_at + 1..] else {
+    // Memory qualifiers may follow the storage word too: `uniform readonly image2D img;`.
+    let mut qualifiers = words[..storage_at].to_vec();
+    let mut tail = &words[storage_at + 1..];
+    while let [word, others @ ..] = tail
+        && matches!(
+            *word,
+            "readonly" | "writeonly" | "coherent" | "volatile" | "restrict"
+        )
+    {
+        qualifiers.push(*word);
+        tail = others;
+    }
+    let [ty, name] = *tail else {
         return None;
     };
     if !name.chars().all(is_ident) || !ty.chars().all(is_ident) {
         return None;
     }
     Some(Decl {
+        layout,
         location,
-        qualifiers: words[..storage_at].to_vec(),
+        qualifiers,
         storage: words[storage_at],
         ty,
         name,
@@ -902,6 +969,12 @@ fn other_binding_base(inputs: &Inputs) -> Result<u32, String> {
             let next = b
                 .checked_add(1)
                 .ok_or_else(|| "storage buffer binding index overflow".to_owned())?;
+            base = base.max(next);
+        }
+        for &(_, b, _) in inputs.extra_storage_images {
+            let next = b
+                .checked_add(1)
+                .ok_or_else(|| "storage image binding index overflow".to_owned())?;
             base = base.max(next);
         }
         if let Some(b) = inputs.push_constant_binding {
@@ -1079,6 +1152,37 @@ fn rewrite(
                         out,
                         "layout(std430, set = {set}, binding = {binding}) readonly buffer hz_buffer_{name} {{ {scalar} hz_data_{name}[]; }};\n\
                          {vector} hz_fetch_{name}(int i) {{ return {vector}(hz_data_{name}[i], 0, 0, 1); }}"
+                    )
+                    .unwrap();
+                }
+                "uniform" if decl.ty == "image2D" => {
+                    let Some(&(_, binding, access)) = inputs
+                        .extra_storage_images
+                        .iter()
+                        .find(|(image, _, _)| *image == decl.name)
+                    else {
+                        return Err(format!(
+                            "storage image {} is not declared on this pipeline",
+                            decl.name
+                        ));
+                    };
+                    if ImageAccess::of_qualifiers(&decl.qualifiers) != access {
+                        return Err(format!(
+                            "storage image {} is declared {access:?} in the layout but its qualifiers say {:?}",
+                            decl.name,
+                            ImageAccess::of_qualifiers(&decl.qualifiers),
+                        ));
+                    }
+                    if decl.layout.is_empty() || decl.layout.contains(['=', ',']) {
+                        return Err(format!(
+                            "storage image {} needs exactly `layout(<texel format>)`, such as `layout(rgba8)`",
+                            decl.name
+                        ));
+                    }
+                    let (set, format, name) = (inputs.extra_set, decl.layout, decl.name);
+                    writeln!(
+                        out,
+                        "layout({format}, set = {set}, binding = {binding}) {qualifiers} uniform image2D {name};"
                     )
                     .unwrap();
                 }
@@ -1371,6 +1475,7 @@ mod tests {
             extra_samplers: &[],
             extra_texel_buffers: &[],
             extra_storage_buffers: &[],
+            extra_storage_images: &[],
             push_constant_binding: None,
             loose: &LOOSE,
             defines,
@@ -1765,6 +1870,29 @@ mod tests {
         assert_eq!(storage_block("uint data[];"), None);
     }
 
+    /// Only an `image2D` declaration names a storage image, with its format and qualifiers in
+    /// either order around `uniform`.
+    #[test]
+    fn storage_images_are_read_from_image2d_declarations_only() {
+        let image = storage_image("layout(rgba16f) writeonly uniform image2D Out;").unwrap();
+        assert_eq!(
+            (image.name, image.layout, image.qualifiers),
+            ("Out", "rgba16f", vec!["writeonly"])
+        );
+        let image = storage_image("layout(r32f) uniform readonly image2D In;").unwrap();
+        assert_eq!(
+            (image.layout, ImageAccess::of_qualifiers(&image.qualifiers)),
+            ("r32f", ImageAccess::ReadOnly)
+        );
+        assert_eq!(
+            ImageAccess::of_qualifiers(&storage_image("uniform image2D Both;").unwrap().qualifiers),
+            ImageAccess::ReadWrite
+        );
+        assert_eq!(storage_image("uniform sampler2D Tex;"), None);
+        assert_eq!(storage_image("uniform image3D Volume;"), None);
+        assert_eq!(storage_image("layout(rgba8) uniform Block {"), None);
+    }
+
     /// An array too large to lay out (#4134) is the shader's error at its line, not a panic.
     #[test]
     fn an_array_too_large_to_lay_out_is_an_error() {
@@ -1982,6 +2110,7 @@ mod tests {
             extra_samplers: &[],
             extra_texel_buffers: &[],
             extra_storage_buffers: &[],
+            extra_storage_images: &[],
             push_constant_binding: None,
             loose: &[],
             defines: &[],
@@ -2122,6 +2251,7 @@ mod tests {
             extra_samplers: &[("ModTex", 1)],
             extra_texel_buffers: &[("ModLut", 3)],
             extra_storage_buffers: &[],
+            extra_storage_images: &[],
             push_constant_binding: Some(4),
             loose: &[],
             defines: &[],

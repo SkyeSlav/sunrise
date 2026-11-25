@@ -23,9 +23,10 @@ pub use client::render_pipeline::{
     RenderPipeline, RenderPipelineError, RenderPipelineRef, RenderSetup, RenderTypeError,
     RenderTypeRef, RenderTypeTexture,
 };
+pub use client::render_pipeline::{RenderCapabilities, StorageImageAccess, StorageImageBinding};
 pub use client::render_pipeline::{
     RenderTargetBackendRef, RenderTargetContext, RenderTargetDepth, RenderTargetDescriptor,
-    RenderTargetError, RenderTargetFormat, RenderTargetRef,
+    RenderTargetError, RenderTargetFormat, RenderTargetMipView, RenderTargetRef,
 };
 pub use client::render_pipeline::{
     RenderTypeTextureSource, SamplerAddress, SamplerFilter, TexelBufferFormat, TextureSource,

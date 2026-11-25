@@ -1,0 +1,17 @@
+ids = [
+    "type:RenderTargetDescriptor",
+    "type:RenderTargetError",
+    "type:RenderTargetMipView",
+    "type:TextureSource",
+    "type:StorageImageAccess",
+    "type:StorageImageBinding",
+    "type:BindingKind",
+    "type:BindingValue",
+    "type:DrawBindings",
+    "type:OffscreenPass",
+    "type:RenderCapabilities",
+    "method:prelude::ClientRenderClientHost::render_capabilities",
+    "method:RenderTargetRef::release",
+]
+why = """Add mip chains and storage images to mod-owned render targets (vanilla's GpuTexture.getMipLevels and GpuTextureView baseMipLevel/mipLevels). RenderTargetDescriptor gains mip_levels (1..=max_mip_levels(size), default 1; a chain has no depth attachment) and storage (the StorageImageAccess the colour attachments are created for; refused with UnsupportedStorage when the adapter lacks it for a format, and with StorageNeedsColorTarget on a depth-only target). RenderTargetMipView { target, attachment, base_mip, mip_levels } with TextureSource::RenderTargetColorMip samples a mip range; BindingKind::StorageImage { access } with BindingValue::StorageImage(StorageImageBinding) and DrawBindings::storage_image binds one level as a GLSL `layout(<format>) [readonly|writeonly] uniform image2D`; OffscreenPass::mip_level renders into one level at its size. Reading level N while rendering or writing level N+1 is allowed; the same level is TargetReadWriteHazard. RenderCapabilities (ClientHost::render_capabilities) reports float32_filterable and the formats with read-write storage. RenderTargetRef::destroy is now release, and a render target survives a resource reload and a world close, freed by release or when its mod unloads."""
+migrate = """Additive, except that RenderTargetRef::destroy is now release and targets are no longer retired by a reload or a world close. Create a pyramid with `RenderTargetDescriptor::new(size).color_target(RenderTargetFormat::R32Float).mip_levels(n).storage(StorageImageAccess::WriteOnly)`, render level k with `OffscreenPass::new(target).mip_level(k)`, sample levels with `TextureSource::RenderTargetColorMip(RenderTargetMipView::new(target, 0, base, count))`, and write level k + 1 from a pipeline that declares `BindingKind::StorageImage { access }` and binds `DrawBindings::storage_image(name, StorageImageBinding::new(target, 0, k + 1))`."""
