@@ -34,7 +34,7 @@ impl Hooks for CounterMod {
 #[ignore = "daily"]
 fn parked_level_attachments_persist_across_tick_and_reopen() {
     let key_slot = Arc::new(Mutex::new(None));
-    let mods = vec![ModEntry::new(
+    let mods: mod_api::Mods = vec![ModEntry::new(
         "level_attach_test",
         Box::new(CounterMod(key_slot.clone())),
     )]
@@ -43,7 +43,11 @@ fn parked_level_attachments_persist_across_tick_and_reopen() {
     let home = tempfile::tempdir().unwrap();
     let world = home.path().join("world");
 
-    mod_platform::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods.clone(), || {
+        // `with_mods` probes registration in a temporary scope and restores `TEST_PARTS`;
+        // `open_game` does not install parts (unlike `with_game`), so install them here so the
+        // registered `AttachmentKey` stays live for this scope.
+        crate::game::api_values::install_parts(&mods).unwrap();
         {
             let mut resources = None;
             let mut game =
