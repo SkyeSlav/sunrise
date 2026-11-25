@@ -461,22 +461,46 @@ mod tests {
         static STEAM: OnceLock<EntryKey<Gas>> = OnceLock::new();
         static OXYGEN: OnceLock<EntryKey<Gas>> = OnceLock::new();
 
-        struct Setup;
-        impl Hooks for Setup {
+        // Each mod registers only in the namespace it owns (the custom registries'
+        // namespace rule): chemlib declares `chemlib:gas`, boiler adds its own entry to it,
+        // and `other` declares and fills `other:fluid`.
+        struct Chemlib;
+        impl Hooks for Chemlib {
             fn subscribed(&self) -> &'static [Option<HookId>] {
                 &[]
             }
             fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
                 r.declare_registry(GASES, RegistryOptions::new());
-                r.declare_registry(OTHER, RegistryOptions::new());
-                let _ = STEAM.set(r.register_entry(GASES, "boiler:steam", Gas));
                 let _ = OXYGEN.set(r.register_entry(GASES, "chemlib:oxygen", Gas));
-                let _ = r.register_entry(OTHER, "other:water", OtherFluid);
                 r.register_data_map(GasHeatMap);
             }
         }
+        struct Boiler;
+        impl Hooks for Boiler {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
+            fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+                let _ = STEAM.set(r.register_entry(GASES, "boiler:steam", Gas));
+            }
+        }
+        struct Other;
+        impl Hooks for Other {
+            fn subscribed(&self) -> &'static [Option<HookId>] {
+                &[]
+            }
+            fn register(&self, r: &mut dyn Registrar, _: &RegistrationContext) {
+                r.declare_registry(OTHER, RegistryOptions::new());
+                let _ = r.register_entry(OTHER, "other:water", OtherFluid);
+            }
+        }
 
-        install_with(vec![ModEntry::new("setup", Box::new(Setup))]).unwrap();
+        install_with(vec![
+            ModEntry::new("chemlib", Box::new(Chemlib)),
+            ModEntry::new("boiler", Box::new(Boiler)),
+            ModEntry::new("other", Box::new(Other)),
+        ])
+        .unwrap();
         let steam = *STEAM.get().unwrap();
         let oxygen = *OXYGEN.get().unwrap();
 
