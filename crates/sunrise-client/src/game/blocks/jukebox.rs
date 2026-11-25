@@ -322,7 +322,9 @@ impl Game<'_> {
         // The entry the server synchronized defines the song; one it sent
         // without data is a built-in the client holds itself.
         let definition = match tag {
-            Some(tag) => Song::decode(&sunrise_client::scoreboard::tag_to_json(tag)).ok(),
+            Some(tag) => Song::decode(&sunrise_client::scoreboard::tag_to_json(tag))
+                .inspect_err(|error| log::warn!("Sunrise: jukebox_song {name}: {error}"))
+                .ok(),
             None => self.items().songs.get(name).cloned(),
         };
         self.play_song(pos, name, definition);
