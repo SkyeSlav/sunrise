@@ -2212,6 +2212,15 @@ pub enum MobEvent {
         amount: f32,
         source: Damage,
     },
+    /// `SulfurCube.applyContactDamage` on a mob: the archetype's damage type
+    /// (resolved against the world's registry) and the cube as the source only
+    /// when `attribute_to_source`, with its id and position.
+    ContactDamageMob {
+        target: u32,
+        amount: f32,
+        kind: &'static str,
+        attacker: Option<(u32, [f64; 3])>,
+    },
     /// An attack that runs post-attack effects when the hit lands.
     AttackMob {
         target: u32,

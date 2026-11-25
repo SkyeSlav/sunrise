@@ -15,6 +15,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use sunrise_core::{geometry::Vec3, random::RandomSource};
 use sunrise_world::attributes::{Modifier, Operation};
+use sunrise_world::worldgen::value_provider::FloatProvider;
 
 // Sulfur cube state (on top of `cube`'s `size`, `counter` jump delay,
 // `flag` aggressive, `flag2` was on ground, `vector[0]` direction):
@@ -33,10 +34,12 @@ pub struct AttributeEntry {
     pub amount: f64,
     pub operation: Operation,
 }
-/// `SulfurCubeArchetype.ContactDamage`: the damage type and its amount (a constant float provider).
-#[derive(Clone, Copy, Debug)]
+/// `SulfurCubeArchetype.ContactDamage`: the damage type, its amount (a float provider sampled
+/// per hit) and whether a hit on a non-player is attributed to the cube.
+#[derive(Clone, Debug)]
 pub struct ContactDamage {
-    pub amount: f32,
+    pub amount: FloatProvider,
+    pub attribute_to_source: bool,
     pub damage_type: &'static str,
 }
 /// One `SulfurCubeArchetype` of the world's registry (the parts Sunrise's physics can use).
@@ -201,37 +204,19 @@ impl Decoded {
                     data.get(name)
                         .ok_or(format!("contact_damage.{name} is required"))
                 };
-                // `FloatProviders.codec(0.0F)`: a constant, bare or typed.
-                let amount = match get("amount")? {
-                    Value::Object(provider)
-                        if provider.get("type").and_then(Value::as_str)
-                            == Some("minecraft:constant")
-                            || provider.get("type").and_then(Value::as_str) == Some("constant") =>
-                    {
-                        number(
-                            provider
-                                .get("value")
-                                .ok_or("contact_damage.amount.value is required")?,
-                            "contact_damage.amount.value",
-                        )?
-                    }
-                    Value::Object(_) => {
-                        return Err(
-                            "contact_damage.amount: only constant float providers are supported"
-                                .into(),
-                        );
-                    }
-                    other => number(other, "contact_damage.amount")?,
-                };
-                if amount < 0.0 {
+                // `FloatProviders.codec(0.0F)`: any provider whose minimum is at least 0.
+                let amount = FloatProvider::from_json(&get("amount")?.to_string())
+                    .map_err(|error| format!("contact_damage.amount: {error}"))?;
+                if amount.bounds()[0] < 0.0 {
                     return Err("contact_damage.amount: must be at least 0".into());
                 }
-                boolean(
+                let attribute_to_source = boolean(
                     get("attribute_to_source")?,
                     "contact_damage.attribute_to_source",
                 )?;
                 Ok(ContactDamage {
-                    amount: amount as f32,
+                    amount,
+                    attribute_to_source,
                     damage_type: intern(&identifier(
                         get("damage_type")?,
                         "contact_damage.damage_type",
@@ -1485,16 +1470,17 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
 /// `SulfurCube.doPush` / `applyContactDamage`, for ordinary mob targets.
 /// Use the same overlap, pushability and team predicate as pushEntities; the
 /// contact still happens when Entity.push produces no impulse at equal centres.
-/// The built-in hot archetype has attribute_to_source=false for nonplayers.
-pub fn mob_contacts(m: &Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
-    let Some(amount) = archetype(m)
-        .and_then(|a| a.contact_damage)
-        .map(|c| c.amount)
-    else {
+/// Each hit samples the archetype's amount from the cube's own random and
+/// carries its damage type; the cube is the source only with `attribute_to_source`.
+pub fn mob_contacts(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    let Some(contact) = archetype(m).and_then(|a| a.contact_damage.clone()) else {
         return;
     };
     let bounds = m.bounds();
     let own_team = w.teams.of(super::Who::Mob(m.id));
+    let attacker = contact
+        .attribute_to_source
+        .then(|| (m.id, [m.position.x, m.position.y, m.position.z]));
     for other in w.others_near(bounds) {
         if other.id != m.id
             && other.alive
@@ -1502,10 +1488,11 @@ pub fn mob_contacts(m: &Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             && other.bounds.intersects(bounds)
             && crate::scoreboard::pushable_by(own_team, w.teams.of(super::Who::Mob(other.id)), true)
         {
-            events.push(MobEvent::DamageMob {
+            events.push(MobEvent::ContactDamageMob {
                 target: other.id,
-                amount,
-                source: Damage::of(DamageKind::SulfurCubeHot),
+                amount: contact.amount.sample(&mut m.random),
+                kind: contact.damage_type,
+                attacker,
             });
         }
     }
@@ -1550,9 +1537,9 @@ fn player_push(m: &mut Mob, p: &super::PlayerView, w: &MobWorld, events: &mut Ve
         events.push(MobEvent::Sound(sound, m.center(), 1.0, 1.0));
     }
     m.velocity = m.velocity.add_vector(push);
-    if let Some(contact) = a.and_then(|a| a.contact_damage) {
+    if let Some(contact) = a.and_then(|a| a.contact_damage.clone()) {
         events.push(w.route_player_event(MobEvent::DamagePlayer {
-            amount: contact.amount,
+            amount: contact.amount.sample(&mut m.random),
             from: [m.position.x, m.position.y, m.position.z],
             kind: contact.damage_type,
             wielder: None,
@@ -2254,21 +2241,80 @@ mod mob_contact_tests {
                     let hits: Vec<_> = events
                         .iter()
                         .filter_map(|event| match event {
-                            MobEvent::DamageMob {
+                            MobEvent::ContactDamageMob {
                                 target,
                                 amount,
-                                source,
-                            } => Some((*target, *amount, source.kind)),
+                                kind,
+                                attacker,
+                            } => Some((*target, *amount, *kind, *attacker)),
                             _ => None,
                         })
                         .collect();
                     if body == Some("minecraft:magma_block") {
-                        assert_eq!(hits, [(2, 1.0, DamageKind::SulfurCubeHot)], "NoAI={no_ai}");
+                        assert_eq!(
+                            hits,
+                            [(2, 1.0, "minecraft:sulfur_cube_hot", None)],
+                            "NoAI={no_ai}"
+                        );
                     } else {
                         assert!(hits.is_empty(), "{body:?}, NoAI={no_ai}: {hits:?}");
                     }
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod contact_decode_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn decode(amount: serde_json::Value, attribute: bool) -> Result<Decoded, String> {
+        Decoded::decode(
+            "test:acid",
+            &json!({
+                "items": ["minecraft:dirt"],
+                "attribute_modifiers": [],
+                "contact_damage": {
+                    "amount": amount,
+                    "attribute_to_source": attribute,
+                    "damage_type": "test:acid",
+                },
+                "knockback_modifiers": {"horizontal_power": 0.33, "vertical_power": 0.06},
+                "sound_settings": {
+                    "hit_sound": {"sound_id": "test:hit"},
+                    "push_sound": {"sound_id": "test:push"},
+                    "push_sound_impulse_threshold": 0.2,
+                    "push_sound_cooldown": 0.5,
+                },
+            }),
+            &|_| true,
+        )
+    }
+
+    #[test]
+    fn a_pack_contact_damage_keeps_its_provider_type_and_attribution() {
+        let uniform =
+            json!({"type": "minecraft:uniform", "min_inclusive": 2.0, "max_exclusive": 4.0});
+        let archetype = decode(uniform, true).unwrap().archetype;
+        let contact = archetype.contact_damage.unwrap();
+        assert!(contact.attribute_to_source);
+        assert_eq!(contact.damage_type, "test:acid");
+        let mut random = sunrise_core::random::LegacyRandom::new(1);
+        for _ in 0..16 {
+            let amount = contact.amount.sample(&mut random);
+            assert!((2.0..4.0).contains(&amount), "{amount}");
+        }
+        let plain = decode(json!(1.5), false).unwrap().archetype;
+        assert!(!plain.contact_damage.unwrap().attribute_to_source);
+    }
+
+    #[test]
+    fn a_contact_amount_with_a_negative_minimum_is_refused() {
+        assert!(decode(json!(-1.0), false).is_err());
+        let uniform =
+            json!({"type": "minecraft:uniform", "min_inclusive": -1.0, "max_exclusive": 4.0});
+        assert!(decode(uniform, false).is_err());
     }
 }

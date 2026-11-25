@@ -73,7 +73,22 @@ impl Game<'_> {
                                 .options
                                 .resources
                                 .join(format!("data/{namespace}/{kind}/{path}.json"));
-                            serde_json::from_slice(&std::fs::read(file).ok()?).ok()?
+                            let read = std::fs::read(&file)
+                                .map_err(|error| error.to_string())
+                                .and_then(|bytes| {
+                                    serde_json::from_slice(&bytes)
+                                        .map_err(|error| error.to_string())
+                                });
+                            match read {
+                                Ok(value) => value,
+                                Err(error) => {
+                                    log::error!(
+                                        "Sunrise: the server's {registry} entry {name} is not readable from {}: {error}",
+                                        file.display()
+                                    );
+                                    return None;
+                                }
+                            }
                         }
                     };
                     Some((name.clone(), value))
@@ -94,7 +109,10 @@ impl Game<'_> {
             self.pack.assets.registry,
         ) {
             Ok(built) => self.res.set_transformers(Arc::new(built)),
-            Err(error) => log::warn!("Sunrise: the server's block transformers: {error}"),
+            Err(error) => {
+                log::error!("Sunrise: the server's block transformers: {error}");
+                self.res.set_transformers(Arc::default());
+            }
         }
         let archetypes = entries("minecraft:sulfur_cube_archetype");
         let tags = self
