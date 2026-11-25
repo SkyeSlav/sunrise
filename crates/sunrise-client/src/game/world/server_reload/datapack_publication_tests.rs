@@ -138,6 +138,15 @@ fn goat_horn_use_plays_the_data_pack_instrument() {
         let mut played = Vec::new();
         with_game(|game| {
             game.load_world(request(root)).unwrap();
+            // `finish_open_world` clears `self.player`; `play_player_bound_sound` looks up the
+            // player entity's state before emitting the bound sound on the server path.
+            game.player = Some(
+                sunrise_client::motion::PlayerMotion::new(
+                    game.motion,
+                    sunrise_core::geometry::Vec3::new(0.5, 200.0, 0.5),
+                )
+                .unwrap(),
+            );
             let mut horn = sunrise_client::items::ItemStack::new("minecraft:goat_horn", 1);
             if let Some(id) = instrument {
                 horn.data_mut()
