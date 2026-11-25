@@ -189,6 +189,7 @@ impl Game<'_> {
                     std::mem::swap(&mut game.offhand, &mut g.offhand);
                     std::mem::swap(&mut game.equipment, &mut g.equipment);
                     std::mem::swap(&mut game.carried, &mut g.carried);
+                    std::mem::swap(&mut game.ender_items, &mut g.ender_items);
                 }),
                 None => {}
             }

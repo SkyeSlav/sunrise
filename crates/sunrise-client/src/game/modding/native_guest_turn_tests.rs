@@ -980,6 +980,70 @@ fn nested_guest_turns_restore_each_equipment_store() {
     });
 }
 
+/// `with_own_record` exposes a guest's own ender chest during both their active
+/// turn and a nested turn where their inventory is loaned to the inner record.
+#[test]
+#[ignore = "daily"]
+fn with_own_record_swaps_ender_items_across_nested_turns() {
+    use sunrise_client::items::ItemStack;
+
+    with_guests(|game| {
+        let host_item = Some(ItemStack::new("minecraft:dirt", 1));
+        let outer_item = Some(ItemStack::new("minecraft:diamond", 2));
+        let inner_item = Some(ItemStack::new("minecraft:emerald", 3));
+        let added_item = Some(ItemStack::new("minecraft:gold_ingot", 4));
+
+        game.ender_items[0] = host_item.clone();
+        for (conn, item) in [(12, outer_item.clone()), (13, inner_item.clone())] {
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .update_guest(conn, |guest| guest.ender_items[0] = item)
+                .unwrap();
+        }
+
+        game.as_guest(12, |game| {
+            let gi12 = game.guest_index(12).unwrap();
+            let active = game.with_own_record(gi12, |host, _, _| {
+                Some(host.hub.guests[gi12].ender_items[0].clone())
+            });
+            assert_eq!(active, Some(outer_item.clone()));
+
+            game.as_guest(13, |game| {
+                let gi12 = game.guest_index(12).unwrap();
+                let gi13 = game.guest_index(13).unwrap();
+                let suspended = game.with_own_record(gi12, |host, _, _| {
+                    let seen = host.hub.guests[gi12].ender_items[0].clone();
+                    host.hub
+                        .guests
+                        .update(gi12, |g| g.ender_items[1] = added_item.clone());
+                    Some(seen)
+                });
+                assert_eq!(suspended, Some(outer_item.clone()));
+
+                let inner = game.with_own_record(gi13, |host, _, _| {
+                    Some(host.hub.guests[gi13].ender_items[0].clone())
+                });
+                assert_eq!(inner, Some(inner_item.clone()));
+            })
+            .unwrap();
+
+            assert_eq!(game.ender_items[0], outer_item);
+            assert_eq!(game.ender_items[1], added_item);
+        })
+        .unwrap();
+
+        assert_eq!(game.ender_items[0], host_item);
+        assert_eq!(game.ender_items[1], None);
+        let host = game.lan.as_ref().unwrap();
+        assert_eq!(host.hub.guest(12).unwrap().ender_items[0], outer_item);
+        assert_eq!(host.hub.guest(12).unwrap().ender_items[1], added_item);
+        assert_eq!(host.hub.guest(13).unwrap().ender_items[0], inner_item);
+        assert_eq!(host.hub.guest(13).unwrap().ender_items[1], None);
+    });
+}
+
 /// A merchant's live session belongs to B even while A is acting.
 #[test]
 #[ignore = "daily"]
