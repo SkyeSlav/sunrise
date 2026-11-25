@@ -2432,6 +2432,9 @@ impl Renderer {
             world_primitives: Some(world_primitives),
             mod_meshes: std::sync::Mutex::new(mod_meshes::ModMeshes::default()),
             mod_uniforms: std::sync::Mutex::new(mod_uniforms::ModUniformBuffers::default()),
+            mod_render_targets: std::sync::Mutex::new(
+                mod_render_targets::ModRenderTargets::default(),
+            ),
             text_polygon_offset_pipeline,
             world_text_pipeline,
             text_mark_pipelines,

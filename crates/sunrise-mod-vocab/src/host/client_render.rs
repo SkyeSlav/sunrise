@@ -186,6 +186,19 @@ pub trait ClientRenderClientHost {
     /// owner-checked generational [`UniformBufferRef`] handle. Retired automatically on mod
     /// disable, world close, resource reload, or [`UniformBufferRef::destroy`].
     fn create_uniform_buffer(&self, bytes: &[u8]) -> Result<UniformBufferRef, BufferError>;
+    /// Side: client.
+    /// Allocate a mod-owned offscreen GPU render target (`RenderTarget` / `TextureTarget`),
+    /// returning an owner-checked generational [`RenderTargetRef`] handle.
+    ///
+    /// Size is validated against `1..=device.limits().max_texture_dimension_2d`, colour
+    /// attachments against `0..=MAX_COLOR_TARGETS` (with at least one colour or depth
+    /// attachment). Contents are retained across frames until cleared by an [`OffscreenPass`] or
+    /// reallocated by [`RenderTargetRef::resize`]. Handles are retired automatically on mod
+    /// disable, world close, resource reload, or [`RenderTargetRef::destroy`].
+    fn create_render_target(
+        &self,
+        desc: &RenderTargetDescriptor,
+    ) -> Result<RenderTargetRef, RenderTargetError>;
 }
 
 /// The retained instance-group and mesh operations behind [`InstanceGroupRef`] and [`MeshRef`].
@@ -253,4 +266,20 @@ pub trait ClientRenderClientBackend {
     /// [`UniformBufferRef::destroy`].
     #[manual_handle]
     fn uniform_buffer_destroy(&self, buffer: UniformBufferRef) -> Result<(), BufferError>;
+    /// Resize a mod-owned offscreen render target (no-op if unchanged); called through
+    /// [`RenderTargetRef::resize`].
+    #[manual_handle]
+    fn render_target_resize(
+        &self,
+        target: RenderTargetRef,
+        size: [u32; 2],
+    ) -> Result<(), RenderTargetError>;
+    /// Query a mod-owned offscreen render target's pixel dimensions; called through
+    /// [`RenderTargetRef::size`].
+    #[manual_handle]
+    fn render_target_size(&self, target: RenderTargetRef) -> Result<[u32; 2], RenderTargetError>;
+    /// Free a mod-owned offscreen render target and retire the handle; called through
+    /// [`RenderTargetRef::destroy`].
+    #[manual_handle]
+    fn render_target_destroy(&self, target: RenderTargetRef) -> Result<(), RenderTargetError>;
 }

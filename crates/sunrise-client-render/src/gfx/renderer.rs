@@ -191,6 +191,8 @@ pub struct Renderer {
     pub(crate) mod_meshes: std::sync::Mutex<mod_meshes::ModMeshes>,
     /// Retained GPU uniform buffers backing [`mod_api::UniformBufferRef`] and cached mod textures.
     pub(crate) mod_uniforms: std::sync::Mutex<mod_uniforms::ModUniformBuffers>,
+    /// Mod-owned offscreen GPU render targets backing [`mod_api::RenderTargetRef`].
+    pub(crate) mod_render_targets: std::sync::Mutex<mod_render_targets::ModRenderTargets>,
     pub(crate) text_polygon_offset_pipeline: wgpu::RenderPipeline,
     pub(crate) world_text_pipeline: wgpu::RenderPipeline,
     pub(crate) text_mark_pipelines: [wgpu::RenderPipeline; 2],

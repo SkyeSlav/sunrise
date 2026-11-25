@@ -1226,6 +1226,23 @@ impl WorldPrimitives {
         self.pipelines
             .draw_excluding(pass, &self.indices, first, last, &self.bound_mod_slots);
     }
+
+    /// Execute one mod-owned offscreen render pass (`OffscreenPass`) into `data.target`.
+    pub fn execute_offscreen_pass(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        data: &super::mod_pipelines::OffscreenPassData<'_>,
+    ) {
+        let upload = Upload::Queue(queue);
+        let needed_quads = self.pipelines.offscreen_needed_quads(data.draws);
+        if needed_quads > 0 {
+            self.reserve_indices(device, upload, needed_quads);
+        }
+        self.pipelines
+            .execute_offscreen_pass(device, queue, encoder, &self.indices, data);
+    }
 }
 
 /// A batch's stage ends made safe to draw from: never decreasing, never past `counts`.

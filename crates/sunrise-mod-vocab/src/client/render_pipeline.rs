@@ -2309,6 +2309,336 @@ pub enum TextureSource<'a> {
     WorldColor,
     /// Vanilla's active 16x16 lightmap texture.
     Lightmap,
+    /// Colour attachment `attachment` (`0..color_targets.len()`) of a mod-owned offscreen
+    /// [`RenderTargetRef`] created via
+    /// [`crate::prelude::ClientRenderClientHost::create_render_target`].
+    RenderTargetColor(RenderTargetRef, u8),
+    /// Depth aspect of a mod-owned offscreen [`RenderTargetRef`] (must be bound to a
+    /// non-filtering [`SamplerFilter::Nearest`] sampler).
+    RenderTargetDepth(RenderTargetRef),
+}
+
+/// Colour attachment format for a mod-owned offscreen [`RenderTargetRef`].
+///
+/// All listed formats are renderable and sampleable across Linux (Vulkan), Windows (DX12/Vulkan),
+/// and Apple-chip macOS (Metal) without optional device extensions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client offscreen render target colour format.
+pub enum RenderTargetFormat {
+    /// 8-bit unsigned normalized RGBA (`Rgba8Unorm`, filterable).
+    Rgba8Unorm,
+    /// 16-bit floating-point RGBA (`Rgba16Float`, filterable).
+    Rgba16Float,
+    /// 32-bit single-channel floating-point (`R32Float`; bind with [`SamplerFilter::Nearest`]
+    /// unless the active adapter supports float32 filtering).
+    R32Float,
+}
+
+/// Depth/stencil attachment format for a mod-owned offscreen [`RenderTargetRef`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client offscreen render target depth format.
+pub enum RenderTargetDepth {
+    /// No depth or stencil attachment.
+    #[default]
+    None,
+    /// 32-bit floating-point depth attachment (`Depth32Float`).
+    Depth32Float,
+    /// 24-bit+ depth with 8-bit stencil attachment (`Depth24PlusStencil8`).
+    Depth24PlusStencil8,
+}
+
+/// Why a mod-owned offscreen [`RenderTargetRef`] operation was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+// no wire: refusal of a local client GPU render target operation.
+pub enum RenderTargetError {
+    /// No GPU renderer is available in this context.
+    Unavailable,
+    /// The handle was destroyed, its owner mod was disabled, the world closed, or resources
+    /// reloaded. Retired handles never become valid again.
+    Stale,
+    /// The calling mod does not own this render target.
+    NotOwned,
+    /// Width or height was zero or exceeded `device.limits().max_texture_dimension_2d`.
+    InvalidSize,
+    /// `color_targets.len()` exceeded [`MAX_COLOR_TARGETS`] (`8`).
+    TooManyColorTargets,
+    /// Both `color_targets` was empty and `depth` was [`RenderTargetDepth::None`].
+    NoAttachments,
+}
+
+impl std::fmt::Display for RenderTargetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unavailable => "GPU renderer is unavailable",
+            Self::Stale => "render target handle is stale or destroyed",
+            Self::NotOwned => "render target handle is owned by another mod",
+            Self::InvalidSize => {
+                "render target size must be >= 1 and <= device max texture dimension"
+            }
+            Self::TooManyColorTargets => "render target exceeds MAX_COLOR_TARGETS (8)",
+            Self::NoAttachments => {
+                "render target must declare at least one colour or depth attachment"
+            }
+        })
+    }
+}
+
+impl std::error::Error for RenderTargetError {}
+
+impl crate::NoBackend for RenderTargetError {
+    fn no_backend() -> Self {
+        Self::Unavailable
+    }
+}
+
+/// Descriptor for allocating a mod-owned offscreen [`RenderTargetRef`] via
+/// [`crate::prelude::ClientRenderClientHost::create_render_target`] (vanilla 26.3
+/// `com.mojang.blaze3d.resource.RenderTargetDescriptor` / `TextureTarget`).
+///
+/// Mod-owned targets always retain their contents across frames until cleared by an
+/// [`OffscreenPass`] or reallocated by [`RenderTargetRef::resize`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+// no wire: local client offscreen render target descriptor.
+pub struct RenderTargetDescriptor {
+    /// Target dimensions `[width, height]` in pixels (`1..=device.limits().max_texture_dimension_2d`).
+    pub size: [u32; 2],
+    /// Colour attachments (`0..=MAX_COLOR_TARGETS`). Depth-only targets leave this empty and set
+    /// [`Self::depth`] to a non-[`RenderTargetDepth::None`] format.
+    pub color_targets: Vec<RenderTargetFormat>,
+    /// Optional depth/stencil attachment.
+    pub depth: RenderTargetDepth,
+}
+
+impl RenderTargetDescriptor {
+    /// Start an empty descriptor for `[width, height]` with no attachments yet.
+    pub fn new(size: [u32; 2]) -> Self {
+        Self {
+            size,
+            color_targets: Vec::new(),
+            depth: RenderTargetDepth::None,
+        }
+    }
+
+    /// Convenience descriptor for a single [`RenderTargetFormat::Rgba8Unorm`] colour attachment
+    /// and the given `depth` format.
+    pub fn rgba8(size: [u32; 2], depth: RenderTargetDepth) -> Self {
+        Self {
+            size,
+            color_targets: vec![RenderTargetFormat::Rgba8Unorm],
+            depth,
+        }
+    }
+
+    /// Append one colour attachment format.
+    pub fn color_target(mut self, format: RenderTargetFormat) -> Self {
+        self.color_targets.push(format);
+        self
+    }
+
+    /// Replace the colour attachments list.
+    pub fn color_targets(mut self, formats: impl IntoIterator<Item = RenderTargetFormat>) -> Self {
+        self.color_targets = formats.into_iter().collect();
+        self
+    }
+
+    /// Set the depth/stencil attachment format.
+    pub fn depth(mut self, depth: RenderTargetDepth) -> Self {
+        self.depth = depth;
+        self
+    }
+
+    /// Validate size, colour attachment count, and non-empty attachments against
+    /// `max_texture_dimension_2d`.
+    pub fn validate(&self, max_texture_dimension_2d: u32) -> Result<(), RenderTargetError> {
+        let [w, h] = self.size;
+        if w == 0 || h == 0 || w > max_texture_dimension_2d || h > max_texture_dimension_2d {
+            return Err(RenderTargetError::InvalidSize);
+        }
+        if self.color_targets.len() > MAX_COLOR_TARGETS {
+            return Err(RenderTargetError::TooManyColorTargets);
+        }
+        if self.color_targets.is_empty() && self.depth == RenderTargetDepth::None {
+            return Err(RenderTargetError::NoAttachments);
+        }
+        Ok(())
+    }
+}
+
+/// A live client context that can operate on mod-owned offscreen [`RenderTargetRef`] handles.
+pub trait RenderTargetContext {
+    /// The scoped engine access used by [`RenderTargetRef`] methods.
+    // hidden: internal trait method opening the render-target backend for RenderTargetRef.
+    #[doc(hidden)]
+    fn render_target_backend(&self) -> Option<RenderTargetBackendRef<'_>> {
+        None
+    }
+}
+
+/// Opaque access to offscreen render-target operations, not to the world or other client services.
+// hidden: only the handle can open the render-target backend.
+// exhaustive: private field; only constructed inside this crate.
+// no wire: scoped backend borrow.
+#[doc(hidden)]
+pub struct RenderTargetBackendRef<'a>(&'a dyn crate::prelude::ClientRenderClientBackend);
+
+impl<H: crate::ClientHost + ?Sized> RenderTargetContext for H {
+    fn render_target_backend(&self) -> Option<RenderTargetBackendRef<'_>> {
+        self.backend()
+            .map(|backend| RenderTargetBackendRef(backend.open()))
+    }
+}
+
+/// Generational handle to a mod-owned offscreen render target, created via
+/// [`crate::prelude::ClientRenderClientHost::create_render_target`].
+///
+/// Targets always retain their contents across frames until cleared or resized. Handles are
+/// owner-checked and retired automatically on mod disable, world close, resource reload, or
+/// [`Self::destroy`].
+// no wire: process-local generational handle to a retained GPU render target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+// exhaustive: only the engine creates handles.
+pub struct RenderTargetRef(pub(crate) u64, pub(crate) u32);
+
+impl RenderTargetRef {
+    pub(crate) fn from_parts(generation: u64, slot: u32) -> Result<Self, &'static str> {
+        if generation == 0 {
+            return Err("unpublished render target generation");
+        }
+        Ok(Self(generation, slot))
+    }
+
+    /// Resize this render target to `size` (`[width, height]`, each `>= 1` and
+    /// `<= device.limits().max_texture_dimension_2d`).
+    ///
+    /// Calling `resize` with the target's current dimensions is a no-op that preserves existing
+    /// attachment contents.
+    pub fn resize(
+        self,
+        host: &(impl RenderTargetContext + ?Sized),
+        size: [u32; 2],
+    ) -> Result<(), RenderTargetError> {
+        host.render_target_backend()
+            .ok_or(RenderTargetError::Unavailable)?
+            .0
+            .render_target_resize(self, size)
+    }
+
+    /// Current `[width, height]` dimensions of this render target in pixels.
+    pub fn size(
+        self,
+        host: &(impl RenderTargetContext + ?Sized),
+    ) -> Result<[u32; 2], RenderTargetError> {
+        host.render_target_backend()
+            .ok_or(RenderTargetError::Unavailable)?
+            .0
+            .render_target_size(self)
+    }
+
+    /// Immediately free this render target's GPU textures and retire the handle
+    /// ([`RenderTargetError::Stale`] thereafter).
+    pub fn destroy(
+        self,
+        host: &(impl RenderTargetContext + ?Sized),
+    ) -> Result<(), RenderTargetError> {
+        host.render_target_backend()
+            .ok_or(RenderTargetError::Unavailable)?
+            .0
+            .render_target_destroy(self)
+    }
+}
+
+impl crate::__private::game::Fields for RenderTargetRef {
+    type Fields<'a> = crate::__private::game::ModelRefFields;
+    fn fields(&self) -> Self::Fields<'_> {
+        crate::__private::game::ModelRefFields {
+            generation: self.0,
+            slot: self.1,
+        }
+    }
+}
+
+/// Configuration for an offscreen render pass targeting a mod-owned [`RenderTargetRef`].
+///
+/// Used by `frame_graph_setup` for world offscreen passes and by picture-in-picture GUI
+/// renderers. Unset clear ops (`None`) preserve the target's existing contents (`LoadOp::Load`).
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+// no wire: local client offscreen render pass configuration.
+pub struct OffscreenPass {
+    /// Destination offscreen render target.
+    pub target: RenderTargetRef,
+    /// Per-colour-attachment clear values (`None` = preserve existing pixels, `Some(rgba)` =
+    /// clear to `rgba`). Entries beyond the target's attachment count are ignored; omitted
+    /// trailing entries preserve existing pixels.
+    pub clear_color: Vec<Option<[f32; 4]>>,
+    /// Depth clear value (`None` = preserve existing depth, `Some(d)` = clear to `d`, e.g.
+    /// `0.0` for reversed-Z).
+    pub clear_depth: Option<f32>,
+    /// Stencil clear value when the target has a stencil aspect (`None` = preserve).
+    pub clear_stencil: Option<u32>,
+    /// Optional column-major 4x4 projection matrix overriding `Projection.ProjMat` for this pass.
+    pub projection: Option<[f32; 16]>,
+    /// Optional column-major 4x4 model-view matrix overriding `DynamicTransforms.ModelViewMat`
+    /// for this pass.
+    pub view: Option<[f32; 16]>,
+}
+
+impl OffscreenPass {
+    /// Start an offscreen pass targeting `target` that preserves all existing attachment contents.
+    pub fn new(target: RenderTargetRef) -> Self {
+        Self {
+            target,
+            clear_color: Vec::new(),
+            clear_depth: None,
+            clear_stencil: None,
+            projection: None,
+            view: None,
+        }
+    }
+
+    /// Set per-attachment colour clear operations.
+    pub fn clear_color(mut self, clears: impl IntoIterator<Item = Option<[f32; 4]>>) -> Self {
+        self.clear_color = clears.into_iter().collect();
+        self
+    }
+
+    /// Clear colour attachment 0 to `rgba`.
+    pub fn clear_color_0(mut self, rgba: [f32; 4]) -> Self {
+        if self.clear_color.is_empty() {
+            self.clear_color.push(Some(rgba));
+        } else {
+            self.clear_color[0] = Some(rgba);
+        }
+        self
+    }
+
+    /// Clear the depth attachment to `depth`.
+    pub fn clear_depth(mut self, depth: f32) -> Self {
+        self.clear_depth = Some(depth);
+        self
+    }
+
+    /// Clear the stencil attachment to `stencil`.
+    pub fn clear_stencil(mut self, stencil: u32) -> Self {
+        self.clear_stencil = Some(stencil);
+        self
+    }
+
+    /// Override `Projection.ProjMat` (column-major 4x4) for draws inside this pass.
+    pub fn projection(mut self, matrix: [f32; 16]) -> Self {
+        self.projection = Some(matrix);
+        self
+    }
+
+    /// Override `DynamicTransforms.ModelViewMat` (column-major 4x4) for draws inside this pass.
+    pub fn view(mut self, matrix: [f32; 16]) -> Self {
+        self.view = Some(matrix);
+        self
+    }
 }
 
 /// Value bound to one set-1 entry in [`DrawBindings`].
@@ -3237,6 +3567,10 @@ pub enum PipelineDrawError {
     InvalidBinding,
     /// A retained [`UniformBufferRef`] in [`DrawBindings`] was stale, not owned, or unavailable.
     Buffer(BufferError),
+    /// A [`TextureSource::RenderTargetColor`] or [`TextureSource::RenderTargetDepth`] in
+    /// [`DrawBindings`] references the same [`RenderTargetRef`] that the active offscreen pass is
+    /// writing to.
+    TargetReadWriteHazard,
 }
 
 impl crate::RegisterRenderPipelinesEvent<'_> {
@@ -4086,5 +4420,131 @@ mod tests {
         buf.write(&host, 0, &[0; 16]).unwrap();
         buf.destroy(&host).unwrap();
         assert_eq!(*host.calls.borrow(), vec!["write", "destroy"]);
+    }
+
+    #[test]
+    fn render_target_descriptor_validates_size_attachments_and_bounds() {
+        assert_eq!(
+            RenderTargetDescriptor::rgba8([0, 64], RenderTargetDepth::None).validate(8192),
+            Err(RenderTargetError::InvalidSize)
+        );
+        assert_eq!(
+            RenderTargetDescriptor::rgba8([64, 0], RenderTargetDepth::None).validate(8192),
+            Err(RenderTargetError::InvalidSize)
+        );
+        assert_eq!(
+            RenderTargetDescriptor::rgba8([8193, 64], RenderTargetDepth::None).validate(8192),
+            Err(RenderTargetError::InvalidSize)
+        );
+        assert_eq!(
+            RenderTargetDescriptor::new([64, 64]).validate(8192),
+            Err(RenderTargetError::NoAttachments)
+        );
+        assert_eq!(
+            RenderTargetDescriptor::new([64, 64])
+                .color_targets([RenderTargetFormat::Rgba8Unorm; MAX_COLOR_TARGETS + 1])
+                .validate(8192),
+            Err(RenderTargetError::TooManyColorTargets)
+        );
+        // Depth-only target is allowed.
+        assert_eq!(
+            RenderTargetDescriptor::new([128, 128])
+                .depth(RenderTargetDepth::Depth32Float)
+                .validate(8192),
+            Ok(())
+        );
+        // Max colour targets + depth+stencil is allowed.
+        assert_eq!(
+            RenderTargetDescriptor::new([8192, 8192])
+                .color_targets([RenderTargetFormat::Rgba16Float; MAX_COLOR_TARGETS])
+                .depth(RenderTargetDepth::Depth24PlusStencil8)
+                .validate(8192),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn render_target_ref_routes_through_backend_and_refuses_without_one() {
+        struct Bare;
+        impl crate::Host for Bare {}
+        crate::impl_host_areas!(Bare);
+        impl crate::ClientHost for Bare {}
+        crate::impl_client_host_areas!(Bare);
+
+        let rt = RenderTargetRef::from_parts(1, 0).unwrap();
+        assert_eq!(
+            rt.resize(&Bare, [64, 64]),
+            Err(RenderTargetError::Unavailable)
+        );
+        assert_eq!(rt.size(&Bare), Err(RenderTargetError::Unavailable));
+        assert_eq!(rt.destroy(&Bare), Err(RenderTargetError::Unavailable));
+
+        struct Recording {
+            calls: std::cell::RefCell<Vec<&'static str>>,
+            size: std::cell::Cell<[u32; 2]>,
+        }
+        impl crate::Host for Recording {
+            fn backend(&self) -> Option<crate::BackendRef<'_>> {
+                Some(crate::BackendRef::of(self))
+            }
+        }
+        crate::impl_host_areas!(Recording);
+        impl crate::ClientHost for Recording {}
+        crate::impl_client_host_areas!(Recording);
+        impl crate::Backend for Recording {}
+        crate::impl_backend_areas!(Recording, except(client_render));
+        impl crate::prelude::ClientRenderClientBackend for Recording {
+            fn render_target_resize(
+                &self,
+                _: RenderTargetRef,
+                size: [u32; 2],
+            ) -> Result<(), RenderTargetError> {
+                self.calls.borrow_mut().push("resize");
+                self.size.set(size);
+                Ok(())
+            }
+            fn render_target_size(
+                &self,
+                _: RenderTargetRef,
+            ) -> Result<[u32; 2], RenderTargetError> {
+                self.calls.borrow_mut().push("size");
+                Ok(self.size.get())
+            }
+            fn render_target_destroy(&self, _: RenderTargetRef) -> Result<(), RenderTargetError> {
+                self.calls.borrow_mut().push("destroy");
+                Ok(())
+            }
+        }
+
+        let host = Recording {
+            calls: std::cell::RefCell::new(Vec::new()),
+            size: std::cell::Cell::new([32, 32]),
+        };
+        assert_eq!(rt.size(&host), Ok([32, 32]));
+        rt.resize(&host, [128, 64]).unwrap();
+        assert_eq!(rt.size(&host), Ok([128, 64]));
+        rt.destroy(&host).unwrap();
+        assert_eq!(
+            *host.calls.borrow(),
+            vec!["size", "resize", "size", "destroy"]
+        );
+
+        let pass = OffscreenPass::new(rt)
+            .clear_color_0([0.1, 0.2, 0.3, 1.0])
+            .clear_depth(0.0)
+            .clear_stencil(0)
+            .projection([1.0; 16])
+            .view([2.0; 16]);
+        assert_eq!(pass.target, rt);
+        assert_eq!(pass.clear_color, vec![Some([0.1, 0.2, 0.3, 1.0])]);
+        assert_eq!(pass.clear_depth, Some(0.0));
+        assert_eq!(pass.clear_stencil, Some(0));
+        assert_eq!(pass.projection, Some([1.0; 16]));
+        assert_eq!(pass.view, Some([2.0; 16]));
+
+        let bindings = DrawBindings::new()
+            .texture("uColor", TextureSource::RenderTargetColor(rt, 0))
+            .texture("uDepth", TextureSource::RenderTargetDepth(rt));
+        assert_eq!(bindings.entries.len(), 2);
     }
 }
