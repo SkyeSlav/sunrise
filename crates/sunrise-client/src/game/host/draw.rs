@@ -616,6 +616,16 @@ impl PrepareRenderBuffersContext for GamePrepareRenderBuffersContext<'_, '_> {
             .mod_pipelines
             .slot(pipeline)
             .map_err(PipelineDrawError::Pipeline)?;
+        let base_topology = self
+            .game
+            .pack
+            .render
+            .mod_pipelines
+            .topology(slot)
+            .unwrap_or(PrimitiveTopology::Quads);
+        if self.surface.effective_topology(base_topology) != PrimitiveTopology::Quads {
+            return Err(PipelineDrawError::TopologyMismatch);
+        }
         if stage.oit_stage().is_some() && !self.game.pack.render.mod_pipelines.is_oit_eligible(slot)
         {
             self.game

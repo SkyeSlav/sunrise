@@ -7,9 +7,10 @@
 //! to the renderer (`gfx::mod_pipelines`). A required pipeline the load cannot build fails the
 //! load; an optional one is logged and left out. A frame reads none of this by name.
 use mod_api::{
-    Identifier, PackGlslInput, PackPassSlot, PackUniformType, PackUniformValue, PipelineBlend,
-    PipelineModifier, PipelineModifierRef, PipelineState, PipelineTexture, PipelineTextureError,
-    RenderPipeline, RenderPipelineError, RenderPipelineRef, WorldDepth,
+    BlendFactor, ColorTargetState, DepthCompare, Identifier, PackGlslInput, PackPassSlot,
+    PackUniformType, PackUniformValue, PipelineBlend, PipelineModifier, PipelineModifierRef,
+    PipelineState, PipelineTexture, PipelineTextureError, PrimitiveTopology, RenderPipeline,
+    RenderPipelineError, RenderPipelineRef,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
@@ -50,6 +51,7 @@ pub enum RegistrationError {
     },
     InvalidPackBinding(String),
     InvalidShaderDefine(String),
+    InvalidPipelineState(String),
     AlreadyPublished,
 }
 
@@ -89,6 +91,7 @@ impl std::fmt::Display for RegistrationError {
             ),
             Self::InvalidPackBinding(reason) => f.write_str(reason),
             Self::InvalidShaderDefine(reason) => f.write_str(reason),
+            Self::InvalidPipelineState(reason) => f.write_str(reason),
             Self::AlreadyPublished => f.write_str("pipeline registrations were already published"),
         }
     }
@@ -158,6 +161,13 @@ pub fn register(
         }
         if let Err(reason) = pipeline.validate_defines() {
             return Err(RegistrationError::InvalidShaderDefine(format!(
+                "mod {}: pipeline {}: {reason}",
+                pipeline.owner(),
+                pipeline.id
+            )));
+        }
+        if let Err(reason) = pipeline.validate_state() {
+            return Err(RegistrationError::InvalidPipelineState(format!(
                 "mod {}: pipeline {}: {reason}",
                 pipeline.owner(),
                 pipeline.id
@@ -383,6 +393,11 @@ pub enum ModifierRegistrationError {
         owner: String,
         id: Identifier,
     },
+    InvalidState {
+        owner: String,
+        id: Identifier,
+        reason: String,
+    },
     AlreadyPublished,
 }
 
@@ -394,6 +409,9 @@ impl std::fmt::Display for ModifierRegistrationError {
                 f,
                 "mod {owner}: pipeline modifier {id} collides with earlier registration from mod {earlier}"
             ),
+            Self::InvalidState { owner, id, reason } => {
+                write!(f, "mod {owner}: pipeline modifier {id}: {reason}")
+            }
             Self::AlreadyPublished => {
                 f.write_str("pipeline modifier registrations were already published")
             }
@@ -412,6 +430,13 @@ pub fn validate_modifiers(modifiers: &[PipelineModifier]) -> Result<(), Modifier
                 earlier: earlier.to_owned(),
                 owner: modifier.owner().to_owned(),
                 id: modifier.id.clone(),
+            });
+        }
+        if let Err(reason) = modifier.validate() {
+            return Err(ModifierRegistrationError::InvalidState {
+                owner: modifier.owner().to_owned(),
+                id: modifier.id.clone(),
+                reason,
             });
         }
     }
@@ -563,6 +588,8 @@ pub struct Built {
     /// Pipeline defines (`NAME` or `NAME value`) applied during translation.
     pub defines: Arc<[String]>,
     pub state: PipelineState,
+    /// Per-target colour blend and write-mask states (`1..=MAX_COLOR_TARGETS`).
+    pub color_targets: Vec<Option<ColorTargetState>>,
     /// Whether the pipeline opted in to OIT (`RenderPipeline::order_independent()`).
     pub order_independent: bool,
     /// Three translated OIT variants (`DepthBounds`, `Transmittance`, `Accumulate`) when
@@ -654,6 +681,7 @@ impl Pipelines {
                 let define_refs: Vec<&str> = defines_owned.iter().map(String::as_str).collect();
                 let loaded = pipeline
                     .validate_defines()
+                    .and_then(|()| pipeline.validate_state())
                     .and_then(|()| {
                         let vertex = read_stage(&vertex_file)?;
                         let fragment = read_stage(&fragment_file)?;
@@ -727,6 +755,7 @@ impl Pipelines {
                         fragment_expanded: Arc::from(built_program.fragment_expanded),
                         defines: Arc::from(defines_owned),
                         state: pipeline.state,
+                        color_targets: pipeline.effective_color_targets(),
                         order_independent: pipeline.order_independent,
                         oit,
                         optional: pipeline.optional,
@@ -758,6 +787,15 @@ impl Pipelines {
             invalid: Default::default(),
             oit_ineligible_logged: Default::default(),
         })
+    }
+
+    /// The registered [`PrimitiveTopology`] of `slot`, or `None` if `slot` is out of range or
+    /// was not built.
+    pub fn topology(&self, slot: u32) -> Option<PrimitiveTopology> {
+        self.built
+            .get(slot as usize)
+            .and_then(|b| b.as_ref())
+            .map(|b| b.state.topology)
     }
 
     /// Whether `slot` may draw at `RenderLevelStage::OitTranslucent`: opted in via
@@ -970,12 +1008,46 @@ fn shader_group_for_slot(slot: PackPassSlot) -> sunrise_shaders::Group {
     }
 }
 
+fn pack_blend_factor(factor: BlendFactor) -> Option<sunrise_shaders::Factor> {
+    use sunrise_shaders::Factor;
+    Some(match factor {
+        BlendFactor::Zero => Factor::Zero,
+        BlendFactor::One => Factor::One,
+        BlendFactor::SrcColor => Factor::SrcColor,
+        BlendFactor::OneMinusSrcColor => Factor::OneMinusSrcColor,
+        BlendFactor::DstColor => Factor::DstColor,
+        BlendFactor::OneMinusDstColor => Factor::OneMinusDstColor,
+        BlendFactor::SrcAlpha => Factor::SrcAlpha,
+        BlendFactor::OneMinusSrcAlpha => Factor::OneMinusSrcAlpha,
+        BlendFactor::DstAlpha => Factor::DstAlpha,
+        BlendFactor::OneMinusDstAlpha => Factor::OneMinusDstAlpha,
+        BlendFactor::SrcAlphaSaturate => Factor::SrcAlphaSaturate,
+        BlendFactor::ConstantColor
+        | BlendFactor::ConstantAlpha
+        | BlendFactor::OneMinusConstantColor
+        | BlendFactor::OneMinusConstantAlpha
+        | _ => return None,
+    })
+}
+
 fn pack_blend_for(blend: PipelineBlend) -> Option<sunrise_shaders::Blend> {
     use sunrise_shaders::Factor;
     match blend {
         PipelineBlend::Opaque => None,
         PipelineBlend::Translucent => Some(sunrise_shaders::TRANSLUCENT_BLEND),
         PipelineBlend::Additive => Some([Factor::SrcAlpha, Factor::One, Factor::Zero, Factor::One]),
+        PipelineBlend::Custom(func) => {
+            if let (Some(sc), Some(dc), Some(sa), Some(da)) = (
+                pack_blend_factor(func.color.src),
+                pack_blend_factor(func.color.dst),
+                pack_blend_factor(func.alpha.src),
+                pack_blend_factor(func.alpha.dst),
+            ) {
+                Some([sc, dc, sa, da])
+            } else {
+                Some(sunrise_shaders::TRANSLUCENT_BLEND)
+            }
+        }
         _ => Some(sunrise_shaders::TRANSLUCENT_BLEND),
     }
 }
@@ -1151,7 +1223,10 @@ pub(crate) fn pack_runtime_specs_of(
                     idx
                 }
             });
-        let depth_test = !matches!(pipeline.state.depth, WorldDepth::ThroughWalls);
+        let depth_test = pipeline
+            .state
+            .depth_stencil
+            .is_some_and(|ds| ds.compare != DepthCompare::Always);
         let depth_write = depth_test
             && (depth_target.is_some()
                 || matches!(
@@ -1211,6 +1286,7 @@ pub(crate) fn lookup_pack_uniform_type_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mod_api::WorldDepth;
 
     const VSH: &str = "\
 #version 330
@@ -1279,8 +1355,11 @@ void main() {
         assert_eq!(set.slot(glow), Ok(0));
         let built = set.built()[0].as_ref().unwrap();
         assert_eq!(
-            (built.state.blend, built.state.depth),
-            (PipelineBlend::Additive, WorldDepth::ThroughWalls)
+            (
+                built.state.blend,
+                built.state.depth_stencil.map(|ds| ds.compare)
+            ),
+            (PipelineBlend::Additive, Some(DepthCompare::Always))
         );
         assert_eq!(
             set.resolve(&id("example:broken")),
@@ -2015,13 +2094,27 @@ void main() {
         // Push order: [outer=0, inner=1]. Inner applies first (depth=Tested, depth_write=true),
         // then outer applies (depth=ThroughWalls, cull=true) — outermost wins on `depth`.
         let applied = stacks.apply(s1, base, &modifiers);
-        assert_eq!(applied.depth, WorldDepth::ThroughWalls);
-        assert!(applied.depth_write);
+        assert_eq!(
+            applied.depth_stencil.map(|ds| (ds.compare, ds.write)),
+            Some((DepthCompare::Always, true))
+        );
         assert!(applied.cull);
         assert_eq!(
             stacks.label(s1, "example:glow", &modifiers),
             "example:glow/transform/mod_b/inner/transform/mod_a/outer"
         );
+
+        // Non-finite depth bias on a modifier fails validation.
+        let bad_bias = collect(vec![ModEntry::new(
+            "bad_mod",
+            Box::new(ModRegistrar(Box::new(|ev| {
+                ev.register(PipelineModifier::new(id("bad_mod:nan")).depth_bias(0, f32::NAN));
+            }))),
+        )]);
+        assert!(matches!(
+            validate_modifiers(&bad_bias),
+            Err(ModifierRegistrationError::InvalidState { .. })
+        ));
 
         // Duplicate modifier ID fails validation naming both mods.
         let dup = collect(vec![
@@ -2043,5 +2136,56 @@ void main() {
             err.contains("first_mod") && err.contains("second_mod"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn build_refuses_invalid_pipeline_state_and_exposes_registered_topology() {
+        let read = |file: &str| match file {
+            "assets/example/shaders/core/tri.vsh" => Ok(Some(VSH.to_owned())),
+            "assets/example/shaders/core/tri.fsh" => Ok(Some(GLOW_FSH.to_owned())),
+            other => Ok(stub_asset(other)),
+        };
+
+        let valid = [RenderPipeline::new(
+            id("example:tri"),
+            id("example:core/tri"),
+            PipelineBlend::Opaque,
+            WorldDepth::Tested,
+        )
+        .topology(PrimitiveTopology::TriangleFan)];
+        let set = Pipelines::build(&valid, 1, read).unwrap();
+        assert_eq!(set.topology(0), Some(PrimitiveTopology::TriangleFan));
+        assert_eq!(set.topology(1), None);
+
+        let bad_bias = [RenderPipeline::new(
+            id("example:nan_bias"),
+            id("example:core/tri"),
+            PipelineBlend::Opaque,
+            WorldDepth::Tested,
+        )
+        .depth_bias(0, f32::NAN)];
+        assert!(Pipelines::build(&bad_bias, 2, read).is_err());
+
+        let bad_target = [RenderPipeline::new(
+            id("example:bad_target"),
+            id("example:core/tri"),
+            PipelineBlend::Opaque,
+            WorldDepth::Tested,
+        )
+        .color_target(mod_api::MAX_COLOR_TARGETS, Some(ColorTargetState::DEFAULT))];
+        assert!(Pipelines::build(&bad_target, 3, read).is_err());
+
+        let mixed_mrt = [RenderPipeline::new(
+            id("example:mixed_mrt"),
+            id("example:core/tri"),
+            PipelineBlend::Translucent,
+            WorldDepth::Tested,
+        )
+        .color_target(
+            0,
+            Some(ColorTargetState::blended(PipelineBlend::Translucent)),
+        )
+        .color_target(1, Some(ColorTargetState::blended(PipelineBlend::Additive)))];
+        assert!(Pipelines::build(&mixed_mrt, 4, read).is_err());
     }
 }

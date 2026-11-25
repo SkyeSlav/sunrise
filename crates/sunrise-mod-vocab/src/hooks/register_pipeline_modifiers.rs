@@ -3,17 +3,18 @@
 pub trait Hooks {
     /// Register pipeline modifiers once at client startup (NeoForge's
     /// `RegisterPipelineModifiersEvent`): call `event.register(modifier)` with each
-    /// [`PipelineModifier`]. Modifiers are plain data state overrides (blend, depth, depth write,
-    /// face culling, colour write mask, polygon mode) applied during world drawing via
-    /// [`WorldDrawContext::with_pipeline_modifier`]. Duplicate modifier IDs fail startup naming
-    /// both mods.
+    /// [`PipelineModifier`]. Modifiers are plain data state overrides (blend, depth compare,
+    /// depth write, depth bias, face culling, colour write mask, polygon mode, primitive
+    /// topology) applied during world drawing via [`WorldDrawContext::with_pipeline_modifier`].
+    /// Duplicate modifier IDs and non-finite depth-bias slope scales fail startup.
     #[notes = r#"## Pipeline modifiers
 
 `Hooks::register_pipeline_modifiers` is the client registration-phase counterpart of NeoForge's
 `RegisterPipelineModifiersEvent`. A modifier is plain data (`PipelineModifier`): each field is an
-optional override of `PipelineState` (`blend`, `depth`, `depth_write`, `cull`, `color_write`,
-`polygon`). Because modifiers are data rather than closures, applying them is idempotent by
-construction and the renderer caches each `(pipeline, modifier stack)` variant lazily.
+optional override of `PipelineState` (`blend`, `depth_compare`, `depth_write`, `depth_bias`,
+`cull`, `color_write`, `polygon`, `topology`). Because modifiers are data rather than closures,
+applying them is idempotent by construction and the renderer caches each `(pipeline, modifier
+stack)` variant lazily.
 
 ```rust,ignore
 fn register_pipeline_modifiers(

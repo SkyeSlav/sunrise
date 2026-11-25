@@ -1,0 +1,17 @@
+ids = [
+    "type:PipelineState",
+    "type:DepthState",
+    "type:DepthCompare",
+    "type:PipelineBlend",
+    "type:BlendFunction",
+    "type:BlendEquation",
+    "type:BlendFactor",
+    "type:BlendOp",
+    "type:ColorTargetState",
+    "type:PrimitiveTopology",
+    "type:PipelineModifier",
+    "type:PipelineDrawError",
+    "type:RenderPipeline",
+]
+why = "Complete vanilla/NeoForge 26.3 PipelineState on RenderPipeline and PipelineModifier: DepthState with DepthCompare and depth bias (Option<DepthState> for depthless passes), PipelineBlend::Custom(BlendFunction) with BlendFunction.java presets, multi-target ColorTargetState up to MAX_COLOR_TARGETS = 8, and vanilla PrimitiveTopology (Lines, DebugLines, DebugLineStrip, Points, Triangles, TriangleStrip, TriangleFan, Quads) with PipelineDrawError::TopologyMismatch."
+migrate = "Read depth state from PipelineState.depth_stencil (Option<DepthState> with .compare, .write, .depth_bias_constant, .depth_bias_slope_scale) instead of PipelineState.depth / .depth_write, and from PipelineModifier.depth_compare instead of PipelineModifier.depth. Builder methods .depth(WorldDepth) and .depth_write(bool) remain on both RenderPipeline and PipelineModifier, alongside .depth_compare, .depth_bias, .depth_stencil, .color_target, and .topology."
