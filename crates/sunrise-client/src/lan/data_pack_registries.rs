@@ -531,13 +531,16 @@ fn decode_definition(
         }
         "minecraft:painting_variant" => {
             let painting_variant = crate::entities::PaintingVariant::decode(id, &value)?;
-            let painting = painting_variant.clone();
+            let painting = &painting_variant;
             let mut fields = Compound::from([
                 ("asset_id".into(), asset_id(&painting.asset)),
                 ("width".into(), Tag::Int(painting.width)),
                 ("height".into(), Tag::Int(painting.height)),
             ]);
-            for (field, text) in [("title", painting.title), ("author", painting.author)] {
+            for (field, text) in [
+                ("title", painting.title.clone()),
+                ("author", painting.author.clone()),
+            ] {
                 if let Some(text) = text.filter(|value| !value.is_null()) {
                     fields.insert(field.into(), json_to_nbt(&decode_text(field, &text)?));
                 }

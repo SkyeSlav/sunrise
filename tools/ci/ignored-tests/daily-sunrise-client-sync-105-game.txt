@@ -24,7 +24,6 @@ sunrise-client game::creatures::rabbit_colour_tests::a_baby_rabbit_takes_a_paren
 sunrise-client game::dragon::thorns_tests::a_still_guardian_spikes_the_player_who_hit_it lib daily resources
 sunrise-client game::entity_die_tests::painting_falling_off_the_wall_posts_no_entity_die lib daily resources
 sunrise-client game::entity_die_tests::unknown_painting_variant_keeps_the_default_one lib daily resources
-sunrise-client game::entity_die_tests::a_data_packs_placeable_painting_variant_is_placed lib daily resources
 sunrise-client game::experience_points_tests::a_point_lost_above_level_zero_only_takes_that_point lib daily resources
 sunrise-client game::experience_points_tests::a_point_lost_at_level_zero_zeroes_the_total lib daily resources
 sunrise-client game::explosion::explosion_mob_source_tests::a_creeper_blast_primes_tnt_with_the_creeper_as_its_owner lib daily resources
