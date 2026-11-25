@@ -1455,7 +1455,7 @@ impl Game<'_> {
                 let name = name.unwrap_or_default();
                 self.get_pack(&name, true, &selected)?;
                 let vanilla_disabled = name != "vanilla" && self.cmds.vanilla_disabled;
-                if name != "vanilla" {
+                {
                     let existing = match ctx.get("existing") {
                         Some(Arg::Str(e)) => Some(e.clone()),
                         _ => None,
@@ -1466,10 +1466,14 @@ impl Game<'_> {
                     let position = if ctx.has("first") {
                         0
                     } else if let Some(e) = &existing {
-                        let Some(i) = enabled.iter().position(|p| p == e) else {
-                            return Err(err("commands.datapack.unknown", &[e]));
-                        };
-                        if ctx.has("before") { i } else { i + 1 }
+                        // `l.indexOf(existing)` over the selected list, which
+                        // starts with vanilla; `enabled` does not hold it.
+                        let i = selected
+                            .iter()
+                            .position(|p| p == e)
+                            .expect("get_pack checked that existing is selected");
+                        let i = if ctx.has("before") { i } else { i + 1 };
+                        i - (selected.len() - enabled.len())
                     } else if !ctx.has("last")
                         && self
                             .fns
@@ -1485,7 +1489,9 @@ impl Game<'_> {
                     } else {
                         enabled.len()
                     };
-                    enabled.insert(position, name.clone());
+                    if name != "vanilla" {
+                        enabled.insert(position, name.clone());
+                    }
                 }
                 self.feedback(Text::translate(
                     "commands.datapack.modify.enable",
@@ -2754,6 +2760,34 @@ mod tests {
             open_datapack_world(game, &root);
             assert!(game.cmds.vanilla_disabled);
             assert!(!game.selected_packs().contains(&"vanilla".to_owned()));
+        });
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn datapack_enable_next_to_vanilla_and_the_existing_pack_is_checked_for_vanilla() {
+        use crate::game::native_entity_refs::tests::with_game;
+        let root = datapack_world("datapack-vanilla-neighbour", &["a", "b"]);
+        std::fs::write(
+            root.join("datapacks.json"),
+            r#"{"enabled":["file/a"],"disabled":["file/b"]}"#,
+        )
+        .unwrap();
+        with_game(|game| {
+            open_datapack_world(game, &root);
+            assert!(game.run_command("datapack enable \"file/b\" after \"vanilla\""));
+            assert_eq!(game.fns.enabled, ["file/b", "file/a"]);
+            assert!(game.run_command("datapack disable \"file/b\""));
+            assert!(game.run_command("datapack enable \"file/b\" before \"vanilla\""));
+            assert_eq!(game.fns.enabled, ["file/b", "file/a"]);
+            // `getPack(existing, false)` runs whatever the name is.
+            assert!(game.run_command("datapack disable vanilla"));
+            assert!(!game.run_command("datapack enable vanilla after \"nosuchpack\""));
+            assert!(game.cmds.vanilla_disabled);
+            assert!(!game.run_command("datapack enable vanilla after \"vanilla\""));
+            assert!(game.run_command("datapack enable vanilla after \"file/a\""));
+            assert!(!game.cmds.vanilla_disabled);
         });
         let _ = std::fs::remove_dir_all(root);
     }
