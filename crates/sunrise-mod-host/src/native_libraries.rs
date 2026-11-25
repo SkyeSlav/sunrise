@@ -2,7 +2,7 @@
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{ffi::CStr, path::Path};
-use sunrise_mod_package::index::registry::builds::LibraryIdentity;
+use sunrise_mod_package::library_identity::LibraryIdentity;
 
 /// Commit used for the pinned SDK ABI; `dev` for a build that names none.
 pub const GAME_BUILD_ID: &str = env!("SUNRISE_GAME_BUILD_ID");
@@ -25,12 +25,11 @@ struct Library {
 /// The shared libraries an image needs: the dynamic section's `DT_NEEDED` entries on ELF, the
 /// imported libraries on Mach-O and PE.
 fn needed_libraries(bytes: &[u8]) -> Result<Vec<String>, String> {
-    use object::{
-        Object,
-        read::elf::{Dyn, ElfFile64},
-    };
+    use object::Object;
     let file = object::File::parse(bytes).map_err(|e| e.to_string())?;
+    #[cfg(all(unix, not(target_os = "macos")))]
     if let object::File::Elf64(_) = &file {
+        use object::read::elf::{Dyn, ElfFile64};
         let elf = ElfFile64::<object::Endianness>::parse(bytes).map_err(|e| e.to_string())?;
         let endian = elf.endian();
         let Some((entries, link)) = elf

@@ -183,15 +183,18 @@ struct DefendTrusted {
 }
 impl Goal for DefendTrusted {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "DefendTrustedTargetGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         TARGET
     }
     /// `DefendTrustedTargetGoal.canUse`: the first trusted entity the level
     /// still knows decides, as vanilla returns from inside its loop, and only
     /// a new hurt of it starts the goal.
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // `NearestAttackableTargetGoal`'s random interval.
         if m.random.next_int_bound(reduced(10)).unwrap_or(1) != 0 {
@@ -209,10 +212,12 @@ impl Goal for DefendTrusted {
         }
         false
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // `TargetGoal.canContinueToUse`.
         target_continue(&mut self.st, false, m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.set_ai_target(cx.w, self.attacker);
         self.timestamp = self.hurt_at;
@@ -227,6 +232,7 @@ impl Goal for DefendTrusted {
         // `TargetGoal.start`: the unseen and reach caches start over.
         self.st = TargetState::default();
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.set_ai_target(cx.w, None);
         self.attacker = None;
@@ -859,18 +865,22 @@ impl Sleep {
 }
 impl Goal for Sleep {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK | JUMP
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.ai.xxa == 0.0
             && m.ai.yya == 0.0
             && m.ai.zza == 0.0
             && (self.can_sleep(m, cx.w) || flag(m, SLEEPING))
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.can_sleep(m, cx.w)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         set_flag(m, SITTING | CROUCHING | INTERESTED, false);
         m.ai.jumping = false;
@@ -879,6 +889,7 @@ impl Goal for Sleep {
         let p = m.position;
         m.ai.mov.set_wanted(p.x, p.y, p.z, 0.0);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         self.countdown = m.random.next_int_bound(reduced(140)).unwrap_or(0);
         clear_states(m);
@@ -906,13 +917,16 @@ fn section_of(p: [i32; 3]) -> [i32; 3] {
 }
 impl Goal for StrollThroughVillage {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "FoxStrollThroughVillage"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
     /// `StrollThroughVillageGoal.canUse`, then `canFoxMove`.
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let w = cx.w;
         if riders::mob_controlled(m, w) {
@@ -938,12 +952,14 @@ impl Goal for StrollThroughVillage {
         self.wanted.is_some() && can_fox_move(m)
     }
     /// `StrollThroughVillageGoal.canContinueToUse`, then `canFoxMove`.
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         self.wanted.is_some()
             && !m.ai.nav.is_done()
             && m.ai.nav.target_pos == self.wanted
             && can_fox_move(m)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _cx: &mut Cx) {
         clear_states(m);
     }
@@ -951,6 +967,7 @@ impl Goal for StrollThroughVillage {
     /// spot past 10 blocks, a step of 10 toward a point 0.4 of the way back
     /// from it, on the `MOTION_BLOCKING_NO_LEAVES` surface; `moveRandomly`
     /// when there is no path there.
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(wanted) = self.wanted else {
             return;
@@ -1017,33 +1034,42 @@ impl<G: Goal + Clone + 'static> Wrap<G> {
 }
 impl<G: Goal + Clone + 'static> Goal for Wrap<G> {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.goal.flags()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.when.is_none_or(|f| f(m)) && self.goal.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         (!self.both || self.when.is_none_or(|f| f(m))) && self.goal.can_continue(m, cx)
     }
+    #[inline]
     fn interruptable(&self) -> bool {
         self.goal.interruptable()
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(f) = self.on_start {
             f(m);
         }
         self.goal.start(m, cx);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.goal.stop(m, cx);
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         self.goal.every_tick()
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.goal.tick(m, cx);
     }
+    #[inline]
     fn name(&self) -> &'static str {
         self.goal.name()
     }
@@ -1098,21 +1124,27 @@ struct Faceplant {
 }
 impl Goal for Faceplant {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK | JUMP
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         flag(m, FACEPLANTED)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         flag(m, FACEPLANTED) && self.countdown > 0
     }
+    #[inline]
     fn start(&mut self, _: &mut Mob, _: &mut Cx) {
         self.countdown = reduced(40);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         set_flag(m, FACEPLANTED, false);
     }
+    #[inline]
     fn tick(&mut self, _: &mut Mob, _: &mut Cx) {
         self.countdown -= 1;
     }
@@ -1130,9 +1162,11 @@ impl StalkPrey {
 }
 impl Goal for StalkPrey {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if flag(m, SLEEPING) {
             return false;
@@ -1153,9 +1187,11 @@ impl Goal for StalkPrey {
             && !flag(m, CROUCHING | INTERESTED)
             && !m.ai.jumping
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         set_flag(m, SITTING | FACEPLANTED, false);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         match m.target_info(cx.w) {
             Some(t) if path_clear(m, cx.w, t.position) => {
@@ -1166,6 +1202,7 @@ impl Goal for StalkPrey {
             _ => set_flag(m, INTERESTED | CROUCHING, false),
         }
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(t) = m.target_info(cx.w) else { return };
         Self::look(m, [t.position.x, t.eye_y, t.position.z]);
@@ -1186,9 +1223,11 @@ impl Goal for StalkPrey {
 struct Pounce;
 impl Goal for Pounce {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | JUMP
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !fully_crouched(m) {
             return false;
@@ -1202,6 +1241,7 @@ impl Goal for Pounce {
         }
         clear
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !m.target_info(cx.w).is_some_and(|t| t.alive) {
             return false;
@@ -1210,9 +1250,11 @@ impl Goal for Pounce {
         (yd * yd >= f64::from(0.05f32) || m.head_pitch.abs() >= 15.0 || !m.ground.on_ground)
             && !flag(m, FACEPLANTED)
     }
+    #[inline]
     fn interruptable(&self) -> bool {
         false
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.ai.jumping = true;
         set_flag(m, POUNCING, true);
@@ -1224,11 +1266,13 @@ impl Goal for Pounce {
         }
         m.nav_stop();
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         set_flag(m, CROUCHING | INTERESTED | POUNCING, false);
         m.anim.v[CROUCH_AMOUNT] = 0.0;
         m.anim.vo[CROUCH_AMOUNT] = 0.0;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let target = m.target_info(cx.w);
         if let Some(t) = &target {
@@ -1294,9 +1338,11 @@ impl SeekShelter {
 }
 impl Goal for SeekShelter {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if flag(m, SLEEPING) || m.ai.target.is_some() {
             return false;
@@ -1322,9 +1368,11 @@ impl Goal for SeekShelter {
                 && self.set_wanted_pos(m, cx.w)
         }
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         !m.ai.nav.is_done()
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         clear_states(m);
         m.nav_move_to(cx.w, self.wanted, self.speed);
@@ -1348,9 +1396,11 @@ impl Perch {
 }
 impl Goal for Perch {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.ai.last_hurt_by.is_none()
             && m.random.next_float() < 0.02
@@ -1360,18 +1410,22 @@ impl Goal for Perch {
             && !alertable(m, cx.w)
             && !flag(m, POUNCING | CROUCHING)
     }
+    #[inline]
     fn can_continue(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
         self.looks_remaining > 0
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         self.reset_look(m);
         self.looks_remaining = 2 + m.random.next_int_bound(3).unwrap_or(0);
         set_flag(m, SITTING, true);
         m.nav_stop();
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         set_flag(m, SITTING, false);
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
         self.look_time -= 1;
         if self.look_time <= 0 {
@@ -1479,9 +1533,11 @@ impl EatBerries {
 }
 impl Goal for EatBerries {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | JUMP
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if flag(m, SLEEPING) {
             return false;
@@ -1495,17 +1551,21 @@ impl Goal for EatBerries {
         let next = reduced(200 + m.random.next_int_bound(200).unwrap_or(0));
         self.block.can_use(m, cx.w, next, has_berries)
     }
+    #[inline]
     fn can_continue(&mut self, _: &mut Mob, cx: &mut Cx) -> bool {
         self.block.can_continue(cx.w, has_berries)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.waited = 0;
         set_flag(m, SITTING, false);
         self.block.start(m, cx.w);
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if self.block.reached {
             if self.waited >= 40 {
@@ -1629,9 +1689,11 @@ pub fn took_item(m: &mut Mob) {
 struct SearchForItems;
 impl Goal for SearchForItems {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
         if m.extra.main_hand_id().is_some() {
             return false;
@@ -1647,11 +1709,13 @@ impl Goal for SearchForItems {
         }
         m.extra.point.is_some() && m.extra.main_hand_id().is_none()
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(at) = m.extra.point {
             m.nav_move_to_entity(cx.w, at, 0, f64::from(1.2_f32));
         }
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if m.extra.main_hand_id().is_none()
             && let Some(at) = m.extra.point

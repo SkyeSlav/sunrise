@@ -12,6 +12,8 @@ ids = [
     "behaviour:level_ray_trace_entities",
     "behaviour:level_ray_trace_nearest_entity",
     "behaviour:entity_lookup_accessible_sections",
+    "hook:entity_join_level.entity",
+    "type:EntityJoinLevelEvent.entity",
 ]
 why = """
 Vanilla 26.3 `FallingBlockEntity.fall` replaces the source with its legacy fluid

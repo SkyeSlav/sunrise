@@ -330,15 +330,19 @@ fn drowned_throw(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
 struct DrownedTridentAttack(super::witch::RangedAttack);
 impl Goal for DrownedTridentAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "DrownedTridentAttackGoal"
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_use(m, cx) && m.extra.main_hand_id() == Some("minecraft:trident")
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // `RangedAttackGoal.canContinueToUse` asks `canUse()` again: the
         // trident test is re-checked, and the goal only falls back to a target
@@ -346,17 +350,21 @@ impl Goal for DrownedTridentAttack {
         self.0.can_use(m, cx)
             && (m.extra.main_hand_id() == Some("minecraft:trident") || !m.ai.nav.is_done())
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx);
         m.ai.aggressive = true;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx);
         m.ai.aggressive = false;
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         self.0.every_tick()
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx)
     }
@@ -366,27 +374,35 @@ impl Goal for DrownedTridentAttack {
 struct DrownedAttack(MeleeAttack);
 impl Goal for DrownedAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "DrownedAttackGoal"
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_use(m, cx) && drowned_ok_target(m, cx.w)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(m, cx) && drowned_ok_target(m, cx.w)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx)
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         self.0.every_tick()
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx)
     }
@@ -407,15 +423,19 @@ fn beach_target(w: &super::MobWorld, p: [i32; 3]) -> bool {
 }
 impl Goal for DrownedGoToBeach {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | super::goals::JUMP
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "DrownedGoToBeachGoal"
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // MoveToBlockGoal.canUse, then the drowned's conditions.
         if self.0.next_start > 0 {
@@ -428,13 +448,16 @@ impl Goal for DrownedGoToBeach {
             && m.fluids.in_water
             && m.position.y >= f64::from(cx.w.sea_level - 3)
     }
+    #[inline]
     fn can_continue(&mut self, _m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(cx.w, beach_target)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.extra.flag2 = false;
         self.0.start(m, cx.w);
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.tick(m, cx.w);
     }
@@ -446,25 +469,32 @@ struct DrownedSwimUp {
 }
 impl Goal for DrownedSwimUp {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "DrownedSwimUpGoal"
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !cx.w.daylight && m.fluids.in_water && m.position.y < f64::from(cx.w.sea_level - 2)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.can_use(m, cx) && !self.stuck
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _cx: &mut Cx) {
         m.extra.flag2 = true;
         self.stuck = false;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         m.extra.flag2 = false;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let sea = f64::from(cx.w.sea_level);
         if m.position.y < sea - 1.0 && (m.ai.nav.is_done() || drowned_close_to_next_pos(m)) {
@@ -696,9 +726,11 @@ impl SkeletonWeapon {
 }
 impl Goal for SkeletonWeapon {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn name(&self) -> &'static str {
         if self.use_bow {
             "BowAttack"
@@ -706,6 +738,7 @@ impl Goal for SkeletonWeapon {
             "AbstractSkeleton$1"
         }
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         if self.use_bow {
             self.bow.every_tick()
@@ -713,6 +746,7 @@ impl Goal for SkeletonWeapon {
             self.melee.every_tick()
         }
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // The goal registered for the weapon in hand.
         self.use_bow = holding_bow(m);
@@ -734,6 +768,7 @@ impl Goal for SkeletonWeapon {
             self.melee.can_use(m, cx)
         }
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // Changing weapons removes the running goal.
         if self.use_bow != holding_bow(m) {
@@ -745,6 +780,7 @@ impl Goal for SkeletonWeapon {
             self.melee.can_continue(m, cx)
         }
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         if self.use_bow {
             self.bow.start(m, cx)
@@ -752,6 +788,7 @@ impl Goal for SkeletonWeapon {
             self.melee.start(m, cx)
         }
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         if self.use_bow {
             self.bow.stop(m, cx)
@@ -759,6 +796,7 @@ impl Goal for SkeletonWeapon {
             self.melee.stop(m, cx)
         }
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if self.use_bow {
             self.bow.tick(m, cx)
@@ -800,27 +838,34 @@ fn holding_bow(m: &Mob) -> bool {
 }
 impl Goal for BowAttack {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | LOOK
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         m.ai.target.is_some() && holding_bow(m)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         (self.can_use(m, cx) || !m.ai.nav.is_done()) && holding_bow(m)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.ai.aggressive = true;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.ai.aggressive = false;
         self.see_time = 0;
         self.attack_time = -1;
         m.extra.using_item = 0;
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let Some(who) = m.ai.target else { return };
         let Some(t) = cx.w.target_info(who) else {
@@ -1034,10 +1079,12 @@ pub struct DrownedGoToWater {
 }
 impl Goal for DrownedGoToWater {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
     /// `Drowned.DrownedGoToWaterGoal.canUse`.
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !cx.w.daylight || m.fluids.in_water {
             return false;
@@ -1066,9 +1113,11 @@ impl Goal for DrownedGoToWater {
         }
         false
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         !m.ai.nav.is_done()
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.nav_move_to(cx.w, self.wanted, 1.0);
     }
@@ -1107,10 +1156,12 @@ impl MoveThroughVillage {
 }
 impl Goal for MoveThroughVillage {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE
     }
     /// `MoveThroughVillageGoal.canUse`.
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !can_navigate_ground(m) {
             return false;
@@ -1192,6 +1243,7 @@ impl Goal for MoveThroughVillage {
         self.path.is_some()
     }
     /// `MoveThroughVillageGoal.canContinueToUse`.
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         !m.ai.nav.is_done()
             && !closer_to_center(
@@ -1201,11 +1253,13 @@ impl Goal for MoveThroughVillage {
             )
     }
     /// `MoveThroughVillageGoal.start`.
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.nav_move_to_path(cx.w, self.path.clone(), self.speed);
     }
     /// `MoveThroughVillageGoal.stop`: a point reached (or the walk ended) is
     /// visited.
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         if m.ai.nav.is_done() || closer_to_center(self.poi, m.position, f64::from(self.distance)) {
             self.visited.push(self.poi);
@@ -1238,13 +1292,16 @@ fn turtle_egg_target(w: &super::MobWorld, mob: u32, p: [i32; 3]) -> bool {
 }
 impl Goal for AttackTurtleEgg {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         MOVE | super::goals::JUMP
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
     /// RemoveBlockGoal.canUse
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !cx.w.can_grief(m.id) {
             return false;
@@ -1270,18 +1327,22 @@ impl Goal for AttackTurtleEgg {
             super::goals::reduced(200 + m.random.next_int_bound(200).unwrap_or(0));
         false
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let id = m.id;
         self.base
             .can_continue(cx.w, |w, p| turtle_egg_target(w, id, p))
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.base.start(m, cx.w);
         self.since_reached = 0;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
         m.fall_distance = 1.0;
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.base.tick_within(m, cx.w, 1.14);
         let at = [

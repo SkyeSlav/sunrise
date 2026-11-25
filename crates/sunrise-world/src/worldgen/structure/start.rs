@@ -578,12 +578,12 @@ impl StructureRegistry {
         self.origin
     }
     /// The origin the generator reports for this dimension.
-    pub fn set_dimension_origin(&mut self, origin: ChunkPos) {
+    pub(crate) fn set_dimension_origin(&mut self, origin: ChunkPos) {
         self.origin = origin;
     }
     /// Whether a set is placed by the dimension's origin chunk alone, so the
     /// generator has to work out where its origin is.
-    pub fn needs_dimension_origin(&self) -> bool {
+    pub(crate) fn needs_dimension_origin(&self) -> bool {
         self.sets
             .iter()
             .any(|set| matches!(set.placement, Placement::DimensionOrigin))
@@ -591,7 +591,7 @@ impl StructureRegistry {
     /// ChunkGeneratorStructureState.generatePositions: the ring positions of
     /// each concentric-ring set among `possible_sets` before their biome
     /// searches (set index, searches in order).
-    pub fn ring_searches(
+    pub(crate) fn ring_searches(
         &self,
         possible_sets: &[usize],
         seed: i64,
@@ -615,7 +615,7 @@ impl StructureRegistry {
     /// How far from a chunk, in chunks, deciding its starts can look at
     /// other sets' start chunks through exclusion zones: every set's zones
     /// summed, a bound on any chain of them.
-    pub fn zone_reach(&self) -> i32 {
+    pub(crate) fn zone_reach(&self) -> i32 {
         self.sets
             .iter()
             .map(|s| {
@@ -625,7 +625,7 @@ impl StructureRegistry {
             .sum()
     }
     /// The preferred biomes of a concentric-ring set (empty for others).
-    pub fn ring_biomes(&self, set: usize) -> &BTreeSet<BiomeId> {
+    pub(crate) fn ring_biomes(&self, set: usize) -> &BTreeSet<BiomeId> {
         static NONE: BTreeSet<BiomeId> = BTreeSet::new();
         match &self.sets[set].placement {
             Placement::ConcentricRings { preferred, .. } => preferred,
@@ -635,7 +635,12 @@ impl StructureRegistry {
     /// RandomSpreadStructurePlacement.getPotentialStructureChunk et al.
     /// RandomSpreadStructurePlacement.getPotentialStructureChunk for the
     /// sector holding chunk (`x`, `z`); `None` for other placements.
-    pub fn potential_chunk(set: &StructureSet, seed: i64, x: i32, z: i32) -> Option<ChunkPos> {
+    pub(crate) fn potential_chunk(
+        set: &StructureSet,
+        seed: i64,
+        x: i32,
+        z: i32,
+    ) -> Option<ChunkPos> {
         let Placement::RandomSpread {
             spacing,
             separation,
@@ -662,7 +667,7 @@ impl StructureRegistry {
             gz.wrapping_mul(spacing).wrapping_add(sz),
         ))
     }
-    pub fn is_structure_chunk(
+    pub(crate) fn is_structure_chunk(
         &self,
         set: &StructureSet,
         seed: i64,
@@ -783,7 +788,7 @@ impl StructureSet {
     }
     /// StructurePlacement.getLocatePos: the chunk's corner at y 0, moved by
     /// the set's `locate_offset`.
-    pub fn locate_pos(&self, chunk: ChunkPos) -> [i32; 3] {
+    pub(crate) fn locate_pos(&self, chunk: ChunkPos) -> [i32; 3] {
         let o = self.locate_offset;
         [
             chunk.x.wrapping_mul(16).wrapping_add(o[0]),
@@ -1019,7 +1024,7 @@ pub trait StartContext: JigsawContext {
 }
 
 /// ChunkGenerator.createStructures for one chunk: the starts it owns.
-pub fn create_starts(
+pub(crate) fn create_starts(
     registry: &StructureRegistry,
     resources: &StructureResources,
     bindings: &FeatureBlockBindings<'_>,

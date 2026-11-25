@@ -60,9 +60,7 @@ ids = [
     "hook:render_view_transform.transform",
     "type:RenderViewTransformEvent.partial",
     "type:RenderViewTransformEvent.transform",
-    "type:Camera",
     "type:Camera.roll",
-    "type:ClientGuiOptions",
     "type:ClientGuiOptions.screen_effect_scale",
 ]
 why = """

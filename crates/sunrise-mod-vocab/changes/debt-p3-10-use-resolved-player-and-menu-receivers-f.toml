@@ -14,10 +14,6 @@ ids = [
     "handle:MenuRef::probe_slot_gives",
     "type:OpenMenuError.Stack",
     "type:MenuItemsRefusal.Unavailable",
-    "handle:MenuRef::slot_backing",
-    "handle:MenuRef::slot_holds",
-    "handle:MenuRef::slot_gives",
-    "hook:menu_slot_rules",
 ]
 why = "Vanilla 26.3 (ServerPlayer.openMenu/closeContainer, Player.containerMenu, AbstractContainerMenu.doClick/sendAllDataToRemote, CraftingMenu.slotChangedCraftingGrid/quickMoveStack, and Slot.mayPlace/mayPickup/getMaxStackSize) operates on the player's current menu. The replacement handles retain that identity through a player's own turn, including cursor return and full sync. Slot asks lend the live container and linked slots, using a prepared crafting result only with the grid it belongs to. MenuRef::slot_backing and ItemPlace::MenuSlot follow bound linked storage and return None for unbound linked slots. Following NeoForge ArmorSlot.mayPlace and ResourceHandlerSlot.mayPlace/getMaxStackSize/mayPickup, armour asks the item about the resolved player; MenuRef::slot_holds and MenuRef::slot_gives remain read-only on &dyn Host (returning None for enabled MenuSlotBacking::Place slots), while MenuRef::probe_slot_holds and MenuRef::probe_slot_gives on &mut dyn ServerHost probe the live handler (capacity_int capped at i32::MAX and simulated 1-item extraction rolled back in a transaction) and handler-backed clicks enforce probe_slot_gives. Existing menu_quick_move v6 settles only the admitted live source, with listener-owned crafting inputs and a retained remainder."
 migrate = '''

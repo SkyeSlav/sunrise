@@ -194,7 +194,7 @@ pub fn wanted(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
 /// emulates multi-draw (Metal, past `MIN_SECTIONS`), on Intel Gen11/Gen12's Vulkan
 /// driver, on Qualcomm's Adreno under DirectX 12, or with `SUNRISE_FLAT_DRAWS=1`.
 /// Elsewhere per-section draws stay.
-pub fn for_vanilla(info: &wgpu::AdapterInfo) -> bool {
+pub(crate) fn for_vanilla(info: &wgpu::AdapterInfo) -> bool {
     std::env::var("SUNRISE_FLAT_DRAWS").as_deref() == Ok("1")
         || info.backend == wgpu::Backend::Metal
         || is_broken_intel_vulkan(info)
@@ -206,7 +206,7 @@ pub fn for_vanilla(info: &wgpu::AdapterInfo) -> bool {
 /// less GPU time a frame at render distance 12 and 3-13% less at 32 (perf_bench's four
 /// scenes, held still), from 389 sections in view up, the same picture. DXGI names
 /// Qualcomm `QCOM` (0x4D4F4351); Vulkan, 0x5143.
-pub fn is_adreno_dx12(info: &wgpu::AdapterInfo) -> bool {
+pub(crate) fn is_adreno_dx12(info: &wgpu::AdapterInfo) -> bool {
     info.backend == wgpu::Backend::Dx12 && matches!(info.vendor, 0x4d4f_4351 | 0x5143)
 }
 
@@ -238,7 +238,7 @@ fn parse_mesa_version(driver_info: &str) -> Option<(u32, u32, u32)> {
 /// PR #15007 tested Raptor Lake (RPL-U, 0xa7a1) on Mesa 26.0.8 without terrain
 /// flicker. Allow indirect multi-draw and GPU culling for Raptor Lake from that
 /// release; earlier or unidentified drivers keep the workaround.
-pub fn is_broken_intel_vulkan(info: &wgpu::AdapterInfo) -> bool {
+pub(crate) fn is_broken_intel_vulkan(info: &wgpu::AdapterInfo) -> bool {
     if info.backend != wgpu::Backend::Vulkan || info.vendor != 0x8086 {
         return false;
     }
@@ -287,7 +287,7 @@ fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
 /// terrain programs then read their quad's corners from them in per-section draws too
 /// (`pack_atlas::TerrainDraws::Pages`), by set 3's three storage buffers (`pack_post::block_ids`),
 /// which flat draws' set 1 (`draw_layout`) matches in count.
-pub fn pages_readable(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
+pub(crate) fn pages_readable(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
     adapter
         .get_downlevel_capabilities()
         .flags
@@ -705,7 +705,7 @@ impl Flat {
     }
     /// The most vertices a page of the translucent arena holds: its block tables' size.
     /// Tables made before keep theirs, so this goes with `clear`.
-    pub fn set_translucent_page_vertices(&mut self, vertices: u64) {
+    pub(crate) fn set_translucent_page_vertices(&mut self, vertices: u64) {
         self.translucent_blocks_per_page = vertices.div_ceil(GRAIN);
     }
     pub fn remove(&mut self, id: u32) {
@@ -721,7 +721,7 @@ impl Flat {
     /// Takes over `from`'s block tables and section ids, with the arenas they describe
     /// (`Renderer::take_world`). Their bind groups name `from`'s origins: `bind_pages` makes
     /// them again.
-    pub fn take_tables(&mut self, from: &mut Self) {
+    pub(crate) fn take_tables(&mut self, from: &mut Self) {
         self.clear();
         self.pages = std::mem::take(&mut from.pages);
         for table in self.pages.iter_mut().flatten() {
@@ -1017,7 +1017,7 @@ impl Flat {
     /// a page of the section arena, that page (`arena`, by page) for the solid draws to read.
     /// Before each frame's draws, flat or not: the per-section solid draws bind the groups too
     /// (`page_group`), and a page that grew is another buffer.
-    pub fn bind_pages<'a>(
+    pub(crate) fn bind_pages<'a>(
         &mut self,
         device: &wgpu::Device,
         arena: impl Fn(u32) -> Option<&'a wgpu::Buffer>,
@@ -1055,11 +1055,11 @@ impl Flat {
     }
     /// The bind group of the section arena's page `page` (`bind_pages`), which the solid
     /// draws read their vertices through.
-    pub fn page_group(&self, page: u32) -> Option<&wgpu::BindGroup> {
+    pub(crate) fn page_group(&self, page: u32) -> Option<&wgpu::BindGroup> {
         self.pages.get(page as usize)?.as_ref()?.group.as_ref()
     }
     /// After occlusion culling's test: copies the phase 2 draws it saw.
-    pub fn flatten_phase2(
+    pub(crate) fn flatten_phase2(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         timing: Option<&mut super::pack_timing::PassTiming>,
@@ -1078,15 +1078,15 @@ impl Flat {
     }
 
     /// The camera's translucent calls.
-    pub fn translucent_calls(&self) -> &[Call] {
+    pub(crate) fn translucent_calls(&self) -> &[Call] {
         &self.calls[self.solid_calls..self.shadow_calls[0]]
     }
     /// The shadow camera's translucent calls.
-    pub fn shadow_translucent_calls(&self) -> &[Call] {
+    pub(crate) fn shadow_translucent_calls(&self) -> &[Call] {
         &self.calls[self.shadow_calls[1]..self.marks[2]]
     }
     /// World view `k`'s solid and translucent calls.
-    pub fn view_calls(&self, k: usize) -> [&[Call]; 2] {
+    pub(crate) fn view_calls(&self, k: usize) -> [&[Call]; 2] {
         let end = self.marks.get(4 + 2 * k).map_or(self.calls.len(), |&m| m);
         let [solid, translucent] = [self.marks[2 + 2 * k], self.marks[3 + 2 * k]];
         [
@@ -1164,7 +1164,7 @@ impl Flat {
     /// Draws `calls` without their index buffer, `instances` times: a shader pack's geometry
     /// stage reads the indices itself (`hz_indices`) and stands for one emitted triangle per
     /// instance.
-    pub fn draw_geometry<'a>(
+    pub(crate) fn draw_geometry<'a>(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         calls: &[Call],
@@ -1180,7 +1180,7 @@ impl Flat {
     }
     /// Draws phase 2's `calls` (`calls[phase1_calls..solid_calls]` counted from 0), as
     /// `flatten_phase2` left them.
-    pub fn draw_phase2<'a>(
+    pub(crate) fn draw_phase2<'a>(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         calls: std::ops::Range<usize>,

@@ -30,7 +30,7 @@ const ROTATE_SPEED: usize = 5;
 
 /// `Squid.spawnInk`: the squirt sound and 30 ink particles shot from under
 /// the squid, turned by its body rotation.
-pub fn spawn_ink(m: &mut Mob) {
+pub(crate) fn spawn_ink(m: &mut Mob) {
     let sound = if m.species() == Species::GlowSquid {
         "entity.glow_squid.squirt"
     } else {
@@ -239,14 +239,14 @@ pub fn tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
 }
 /// Pufferfish.getScale by puff state (the dimensions scale with it).
 /// `Salmon.Variant.boundingBoxScale`: SMALL 0.5, MEDIUM 1.0, LARGE 1.5.
-pub fn salmon_scale(variant: u8) -> f32 {
+pub(crate) fn salmon_scale(variant: u8) -> f32 {
     match variant {
         0 => 0.5,
         2 => 1.5,
         _ => 1.0,
     }
 }
-pub fn puff_scale(state: i32) -> f64 {
+pub(crate) fn puff_scale(state: i32) -> f64 {
     match state {
         0 => 0.5,
         1 => 0.7,
@@ -401,7 +401,7 @@ pub(super) fn dolphin_hop(m: &mut Mob) {
 
 /// `EntityTypeTags.NOT_SCARY_FOR_PUFFERFISH`: the mobs a pufferfish leaves
 /// alone, its own kind and the water mobs it shares a tank with.
-pub fn not_scary_for_pufferfish(s: Species) -> bool {
+pub(crate) fn not_scary_for_pufferfish(s: Species) -> bool {
     matches!(
         s,
         Species::Cod
@@ -450,7 +450,7 @@ pub(super) fn sting_touching_mobs(m: &mut Mob, w: &MobWorld, events: &mut Vec<Mo
 }
 
 /// Squid.aiStep: tentacle cycle, propulsion and body rotation.
-pub fn squid_ai_step(m: &mut Mob) {
+pub(crate) fn squid_ai_step(m: &mut Mob) {
     squid_step(m, false);
 }
 
@@ -636,7 +636,7 @@ pub(super) fn travel_in_water(
     })
 }
 /// FishMoveControl.tick (fish use it instead of the default move control).
-pub fn fish_move_control(m: &mut Mob) {
+pub(crate) fn fish_move_control(m: &mut Mob) {
     if !matches!(
         m.species(),
         Species::Cod | Species::Salmon | Species::TropicalFish | Species::Pufferfish
@@ -670,12 +670,15 @@ pub fn fish_move_control(m: &mut Mob) {
 pub struct SquidRandomMovement;
 impl Goal for SquidRandomMovement {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
         if m.ai.no_action_time > 100 {
             m.extra.vector = [0.0; 3];
@@ -704,21 +707,26 @@ pub struct SquidFlee {
 }
 impl Goal for SquidFlee {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let Some(by) = m.ai.last_hurt_by.and_then(|w| cx.w.target_info(w)) else {
             return false;
         };
         m.fluids.in_water && m.distance_sqr(by.position) < 100.0
     }
+    #[inline]
     fn start(&mut self, _: &mut Mob, _: &mut Cx) {
         self.ticks = 0;
     }
+    #[inline]
     fn every_tick(&self) -> bool {
         true
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.ticks += 1;
         let Some(by) = m.ai.last_hurt_by.and_then(|w| cx.w.target_info(w)) else {
@@ -756,7 +764,7 @@ impl Goal for SquidFlee {
 /// `AbstractFish.removeWhenFarAway` and `Axolotl.removeWhenFarAway`: a fish or
 /// an axolotl with a custom name is never removed for distance, and one let out
 /// of a bucket is persistent before it (`isPersistenceRequired`).
-pub fn named_keeps_it(m: &Mob) -> bool {
+pub(crate) fn named_keeps_it(m: &Mob) -> bool {
     m.custom_name.is_some()
         && matches!(
             m.species(),
@@ -787,7 +795,7 @@ fn can_be_followed(s: Species, followers: i32) -> bool {
 }
 /// `startFollowing` on a recruit, applied after the recruiter's tick. A fish
 /// another leader took this tick (its snapshot was older) stays with it.
-pub fn start_following(mobs: &mut JoinList<Mob>, fish: u32, leader: u32) {
+pub(crate) fn start_following(mobs: &mut JoinList<Mob>, fish: u32, leader: u32) {
     let alive = |mobs: &[Mob], id: u32| mobs.iter().any(|m| m.id == id && m.alive() && !m.removed);
     let Some(current) = mobs.iter().find(|m| m.id == fish).map(|m| m.extra.leader) else {
         return;
@@ -804,7 +812,7 @@ pub fn start_following(mobs: &mut JoinList<Mob>, fish: u32, leader: u32) {
 }
 /// `AbstractSchoolingFish.tick`: a leader with no fish of its kind within 8
 /// forgets its school, checked once in 200 ticks on the level's random.
-pub fn school_tick(m: &mut Mob, w: &MobWorld, level_random: &mut impl RandomSource) {
+pub(crate) fn school_tick(m: &mut Mob, w: &MobWorld, level_random: &mut impl RandomSource) {
     if !schooling(m.species()) || m.extra.followers <= 0 {
         return;
     }
@@ -828,24 +836,30 @@ pub fn school_tick(m: &mut Mob, w: &MobWorld, level_random: &mut impl RandomSour
 pub struct FishSwim(Stroll);
 impl Goal for FishSwim {
     goal_clone!();
+    #[inline]
     fn name(&self) -> &'static str {
         "FishSwimGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if schooling(m.species()) && follows(cx.w, m.extra.leader) {
             return false;
         }
         self.0.can_use(m, cx)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(m, cx)
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx);
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.stop(m, cx);
     }
@@ -873,15 +887,19 @@ impl FollowFlockLeader {
 }
 impl Goal for FollowFlockLeader {
     goal_clone!();
+    #[inline]
     fn set_start_delay(&mut self, ticks: i32) {
         self.next_start = ticks;
     }
+    #[inline]
     fn name(&self) -> &'static str {
         "FollowFlockLeaderGoal"
     }
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if m.extra.followers > 0 {
             return false;
@@ -939,20 +957,24 @@ impl Goal for FollowFlockLeader {
         }
         follows(cx.w, m.extra.leader)
     }
+    #[inline]
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         m.extra
             .leader
             .and_then(|l| cx.w.seen(l))
             .is_some_and(|l| l.alive && m.distance_sqr(l.position) <= 121.0)
     }
+    #[inline]
     fn start(&mut self, _: &mut Mob, _: &mut Cx) {
         self.recalc = 0;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(leader) = m.extra.leader.take() {
             cx.events.push(MobEvent::SchoolSize { leader, by: -1 });
         }
     }
+    #[inline]
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.recalc -= 1;
         if self.recalc > 0 {
@@ -976,9 +998,11 @@ impl Goal for FollowFlockLeader {
 pub struct PufferfishPuff;
 impl Goal for PufferfishPuff {
     goal_clone!();
+    #[inline]
     fn flags(&self) -> u8 {
         0
     }
+    #[inline]
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         let area = m.bounds().inflate(Vec3::new(2.0, 2.0, 2.0));
         let player = cx
@@ -994,10 +1018,12 @@ impl Goal for PufferfishPuff {
         });
         player || mob
     }
+    #[inline]
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.extra.counter = 1;
         m.extra.counter2 = 0;
     }
+    #[inline]
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         m.extra.counter = 0;
     }

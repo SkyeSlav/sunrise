@@ -128,7 +128,7 @@ pub enum Activity {
 pub fn activity(m: &Mob, day_time: i64) -> Activity {
     activity_at(m.is_baby(), day_time)
 }
-pub fn activity_at(baby: bool, day_time: i64) -> Activity {
+pub(crate) fn activity_at(baby: bool, day_time: i64) -> Activity {
     let t = day_time.rem_euclid(24000);
     if baby {
         match t {
@@ -435,11 +435,11 @@ pub fn raid_status(m: &Mob) -> u8 {
     ext(m).map_or(RAID_NONE, |e| e.raid)
 }
 /// `ServerLevel.getRaidAt(blockPosition)` is a raid.
-pub fn raid_nearby(m: &Mob) -> bool {
+pub(crate) fn raid_nearby(m: &Mob) -> bool {
     ext(m).is_some_and(|e| e.raid != RAID_NONE)
 }
 /// `ResetRaidStatus`: no raid, a stopped one or a lost one.
-pub fn raid_over_or_lost(m: &Mob) -> bool {
+pub(crate) fn raid_over_or_lost(m: &Mob) -> bool {
     matches!(raid_status(m), RAID_NONE | RAID_LOSS)
 }
 /// `SetRaidStatus`: `Some(true)` while a wave is on
@@ -496,7 +496,7 @@ pub fn crop(w: &MobWorld, p: [i32; 3]) -> bool {
         .has_class("CropBlock")
 }
 /// `CropBlock.isMaxAge` for the block at `p`.
-pub fn ripe_crop(w: &MobWorld, p: [i32; 3]) -> bool {
+pub(crate) fn ripe_crop(w: &MobWorld, p: [i32; 3]) -> bool {
     let facts = w.facts.get(w.world.block(p[0], p[1], p[2]));
     if !facts.has_class("CropBlock") {
         return false;
@@ -517,7 +517,7 @@ pub fn ripe_crop(w: &MobWorld, p: [i32; 3]) -> bool {
 
 /// The gift loot table of a villager (`GiveGiftToHero.getLootTableToThrow`),
 /// from `neoforge:raid_hero_gifts` where a pack gives it.
-pub fn gift_table(m: &Mob, maps: &crate::neoforge_mob_maps::NeoForgeMobMaps) -> String {
+pub(crate) fn gift_table(m: &Mob, maps: &crate::neoforge_mob_maps::NeoForgeMobMaps) -> String {
     if m.is_baby() {
         return "minecraft:gameplay/hero_of_the_village/baby_gift".into();
     }
@@ -537,7 +537,7 @@ pub fn gift_table(m: &Mob, maps: &crate::neoforge_mob_maps::NeoForgeMobMaps) -> 
 /// `VillagerFood` nutrition (`DataComponents.VILLAGER_FOOD`).
 ///
 /// Reads the stack's effective component, including overrides and removals.
-pub fn food_points(items: &Items, stack: &ItemStack) -> i32 {
+pub(crate) fn food_points(items: &Items, stack: &ItemStack) -> i32 {
     stack.villager_food(items.get(&stack.item)).unwrap_or(0)
 }
 /// A villager's `requestedItems` by profession.
@@ -547,7 +547,7 @@ pub fn requested_items<'a>(m: &Mob, table: &'a ResolvedProfessions) -> &'a [Stri
         .and_then(|i| table.entry(i))
         .map_or(&[], |p| p.requested.as_slice())
 }
-pub fn is_farmer(m: &Mob) -> bool {
+pub(crate) fn is_farmer(m: &Mob) -> bool {
     profession(m.extra.profession.index().unwrap_or(0))
         .id
         .as_str()
@@ -601,16 +601,16 @@ pub(crate) fn load_container(
 
 impl Ext {
     /// `countFoodPointsInInventory`, by the food values of `items`.
-    pub fn food_in_inventory(&self, items: &Items) -> i32 {
+    pub(crate) fn food_in_inventory(&self, items: &Items) -> i32 {
         self.inventory.iter().fold(0i32, |total, stack| {
             total.wrapping_add(food_points(items, stack).wrapping_mul(stack.count as i32))
         })
     }
     /// `hasExcessFood` and `wantsMoreFood`.
-    pub fn has_excess_food(&self, items: &Items) -> bool {
+    pub(crate) fn has_excess_food(&self, items: &Items) -> bool {
         self.food_in_inventory(items) >= 24
     }
-    pub fn wants_more_food(&self, items: &Items) -> bool {
+    pub(crate) fn wants_more_food(&self, items: &Items) -> bool {
         self.food_in_inventory(items) < 12
     }
     fn hungry(&self) -> bool {
@@ -678,7 +678,7 @@ impl Ext {
     }
     /// `TradeWithVillager.throwHalfStack`: the half of a big matching stack
     /// (or whatever is over 24) leaves the inventory.
-    pub fn take_half_stack(
+    pub(crate) fn take_half_stack(
         &mut self,
         wanted: impl Fn(&ItemStack) -> bool,
         max_stack: impl Fn(&str) -> u32,
@@ -706,11 +706,11 @@ impl Ext {
     }
     /// `Villager.wantsToSpawnGolem`: slept within the last day and no golem
     /// seen lately.
-    pub fn wants_golem(&self, now: i64) -> bool {
+    pub(crate) fn wants_golem(&self, now: i64) -> bool {
         self.last_slept.is_some_and(|t| now - t < 24000) && now >= self.golem_until
     }
     /// `maybeDecayGossip`: once a day.
-    pub fn maybe_decay(&mut self, now: i64) {
+    pub(crate) fn maybe_decay(&mut self, now: i64) {
         if self.last_gossip_decay == 0 {
             self.last_gossip_decay = now;
         } else if now >= self.last_gossip_decay + 24000 {
@@ -719,7 +719,7 @@ impl Ext {
         }
     }
     /// `Villager.gossip` timing: hearing again waits 1200 ticks.
-    pub fn can_gossip(&self, now: i64) -> bool {
+    pub(crate) fn can_gossip(&self, now: i64) -> bool {
         now < self.last_gossip_time || now >= self.last_gossip_time + 1200
     }
 }
@@ -767,11 +767,12 @@ impl Seen {
         if value < 0.0 { 0.0 } else { value.min(10.0) }
     }
     /// `Villager.wantsToSpawnGolem`.
-    pub fn wants_golem(&self, now: i64) -> bool {
+    pub(crate) fn wants_golem(&self, now: i64) -> bool {
         self.last_slept.is_some_and(|t| now - t < 24000) && !self.golem_detected
     }
     /// `Villager.wantsMoreFood`.
-    pub fn wants_more_food(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn wants_more_food(&self) -> bool {
         self.food_points < 12
     }
 }
@@ -1016,7 +1017,7 @@ pub fn finalize_summoned_golem(m: &mut Mob, random: &mut impl RandomSource) {
 }
 /// `Villager.canBreed`: enough food (by the values of `items`), awake and an
 /// adult.
-pub fn can_breed(m: &Mob, items: &Items) -> bool {
+pub(crate) fn can_breed(m: &Mob, items: &Items) -> bool {
     m.species() == Species::Villager
         && m.extra.age == 0
         && !sleeping(m)
@@ -1024,12 +1025,12 @@ pub fn can_breed(m: &Mob, items: &Items) -> bool {
 }
 /// [`can_breed`] by the registry of `w`: a world without item data counts no
 /// food, so its villagers never breed.
-pub fn can_breed_in(m: &Mob, w: &MobWorld) -> bool {
+pub(crate) fn can_breed_in(m: &Mob, w: &MobWorld) -> bool {
     w.items.is_some_and(|items| can_breed(m, items))
 }
 /// [`Ext::eat_and_digest`] by the registry of `w`, for a parent of
 /// `VillagerMakeLove`: breeding needs that registry ([`can_breed_in`]).
-pub fn eat_and_digest_in(m: &mut Mob, w: &MobWorld) {
+pub(crate) fn eat_and_digest_in(m: &mut Mob, w: &MobWorld) {
     if let Some(items) = w.items {
         ext_mut(m).eat_and_digest(items);
     }
@@ -1236,7 +1237,7 @@ pub fn read_nbt(m: &mut Mob, tag: &sunrise_core::nbt::Tag) {
 }
 
 /// `Villager.customServerAiStep`'s brain tick, on the level's random.
-pub fn tick_brain(
+pub(crate) fn tick_brain(
     m: &mut Mob,
     w: &MobWorld,
     level_random: &mut crate::health::DamageLevel<'_>,

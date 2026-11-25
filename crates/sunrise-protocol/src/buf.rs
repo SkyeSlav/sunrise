@@ -312,10 +312,12 @@ pub trait Codec<T> {
     fn read(r: &mut Reader) -> Result<T>;
     fn write(v: &T, w: &mut Writer);
     /// Validate a value before allocating its encoded body.
+    #[inline]
     fn validate(_v: &T) -> Result<()> {
         Ok(())
     }
     /// Validate using this connection's frozen custom-payload codecs.
+    #[inline]
     fn validate_with_payload_codecs(
         v: &T,
         _codecs: &crate::packets::custom_payload::PayloadCodecs,
@@ -327,9 +329,11 @@ macro_rules! primitive {
     ($name:ident, $ty:ty, $read:ident, $write:ident) => {
         pub struct $name;
         impl Codec<$ty> for $name {
+            #[inline]
             fn read(r: &mut Reader) -> Result<$ty> {
                 r.$read()
             }
+            #[inline]
             fn write(v: &$ty, w: &mut Writer) {
                 w.$write(*v)
             }
@@ -845,18 +849,22 @@ macro_rules! packet {
             $(pub $field: $ty),*
         }
         impl $crate::retained::OwnedHeap for $name {
+            #[inline]
             fn owned_heap_bytes(&self) -> usize { 0usize $(.saturating_add($crate::retained::OwnedHeap::owned_heap_bytes(&self.$field)))* }
         }
         impl $crate::buf::Codec<$name> for $name {
+            #[inline]
             #[allow(unused_variables)]
             fn read(r: &mut $crate::buf::Reader) -> $crate::Result<$name> {
                 Ok($name { $($field: <$codec as $crate::buf::Codec<$ty>>::read(r)?),* })
             }
+            #[inline]
             #[allow(unused_variables)]
             fn validate(v: &$name) -> $crate::Result<()> {
                 $(<$codec as $crate::buf::Codec<$ty>>::validate(&v.$field)?;)*
                 Ok(())
             }
+            #[inline]
             #[allow(unused_variables)]
             fn validate_with_payload_codecs(
                 v: &$name,
@@ -865,6 +873,7 @@ macro_rules! packet {
                 $(<$codec as $crate::buf::Codec<$ty>>::validate_with_payload_codecs(&v.$field, codecs)?;)*
                 Ok(())
             }
+            #[inline]
             #[allow(unused_variables)]
             fn write(v: &$name, w: &mut ::sunrise_core::vanilla_bytes::Writer) {
                 $(<$codec as $crate::buf::Codec<$ty>>::write(&v.$field, w);)*

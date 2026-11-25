@@ -1,10 +1,12 @@
 ids = [
     "hook:modify_custom_spawners",
-    "method:Hooks::modify_custom_spawners",
-    "type:ModifyCustomSpawnersEvent",
     "type:CustomSpawners",
     "type:CustomSpawnersEditor",
     "type:SpawnerEntry",
+    "hook:modify_custom_spawners.dimension",
+    "hook:modify_custom_spawners.spawners",
+    "type:ModifyCustomSpawnersEvent.dimension",
+    "type:ModifyCustomSpawnersEvent.spawners",
 ]
 why = """
 NeoForge's `ModifyCustomSpawnersEvent` hands the listener the level and its mutable ordered spawner list. The event gave a dimension string and a list that could only remove built-ins and append mod instances, and it let safe code empty the live list or take an earlier instance out, which a later panic could not restore. It now lends the level (`LevelRef`) and a `CustomSpawnersEditor` over the ordered list: every entry, built-in or a mod's, can be inspected, inserted before, removed, or moved. The editor does not own the live list. Edits are staged, a listener that panics has its edits undone, and the staged order is applied after every listener ran, so an earlier mod's stateful instance survives a later listener's removal and failure. The owned `CustomSpawners` list and its take and put-back operations are no longer part of the event.

@@ -13311,6 +13311,17 @@ impl Game<'_> {
                     let elapsed = now.duration_since(self.previous);
                     self.frame_ticks = elapsed.as_secs_f32() * 20.0;
                     self.previous = now;
+                    // `elapsed` is the interval that just ended: the wall time of the iteration
+                    // before this one, booked now with the work it left, its own.
+                    let booked = self.profile.unbooked.take();
+                    if let Some(frame) = &booked {
+                        self.record_perf_frame(
+                            elapsed.as_secs_f32() * 1000.0,
+                            frame.cpu_ms,
+                            frame.gpu_ms,
+                            &frame.spans,
+                        );
+                    }
                     self.upload_pace.frame(elapsed);
                     self.studio_fly(elapsed);
                     // Arrow-key camera controls belong to gameplay; chat and
@@ -13376,13 +13387,18 @@ impl Game<'_> {
                         sunrise_client::spans::FrameRecording::block_entity_work,
                     );
                     drop(flight_spans);
-                    let mut perf_times = None;
+                    let mut own_work = None;
                     if let Some(r) = self.renderer.as_mut() {
                         let cpu = now.elapsed().saturating_sub(r.last_wait);
                         sunrise_threads::work::tick_end(cpu.as_nanos() as u64);
+                        let ms = |d: Duration| d.as_secs_f32() * 1000.0;
+                        let gpu = if rendered {
+                            r.gpu_times.last().copied()
+                        } else {
+                            None
+                        };
+                        own_work = Some((ms(cpu), gpu));
                         if rendered {
-                            let ms = |d: Duration| d.as_secs_f32() * 1000.0;
-                            perf_times = Some((ms(cpu), r.gpu_times.last().copied()));
                             let g = &self.settings.sunrise;
                             // The scale while Dynamic Resolution moves it on its own.
                             let dynamic_scale = g
@@ -13483,16 +13499,16 @@ impl Game<'_> {
                         log::warn!("Sunrise: couldn't save the world icon: {error}");
                     }
                     self.record_streaming_work(rendered, block_entity_work, &frame_spans);
+                    if let Some((cpu_ms, gpu_ms)) = own_work {
+                        // The next iteration books this one with the interval it ends in.
+                        self.profile.unbooked = Some(profile_capture::UnbookedFrame {
+                            cpu_ms,
+                            gpu_ms,
+                            spans: frame_spans,
+                        });
+                    }
                     if rendered {
                         self.frame_stats.record(elapsed.as_secs_f32() * 1000.0);
-                        if let Some((cpu, gpu)) = perf_times {
-                            self.record_perf_frame(
-                                elapsed.as_secs_f32() * 1000.0,
-                                cpu,
-                                gpu,
-                                &frame_spans,
-                            );
-                        }
                         if sunrise_threads::alloc_count::ON {
                             self.record_frame_allocs();
                         }
@@ -13511,8 +13527,11 @@ impl Game<'_> {
                             && self.screen == Screen::Playing
                             && self.player.is_some()
                         {
-                            self.perf
-                                .frame(elapsed.as_secs_f32() * 1000.0, &frame_spans);
+                            // The interval is the last iteration's, and so are its spans.
+                            self.perf.frame(
+                                elapsed.as_secs_f32() * 1000.0,
+                                booked.as_ref().map_or(&[], |frame| frame.spans.as_slice()),
+                            );
                             if startup::filling() {
                                 let mut fill: Vec<(&'static str, usize)> =
                                     self.streaming.stages().to_vec();

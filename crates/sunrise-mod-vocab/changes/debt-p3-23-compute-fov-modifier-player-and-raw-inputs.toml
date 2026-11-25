@@ -2,6 +2,10 @@ ids = [
     "hook:compute_fov_modifier",
     "method:Hooks::compute_fov_modifier",
     "type:ComputeFovModifierEvent",
+    "hook:compute_fov_modifier.base",
+    "hook:compute_fov_modifier.player",
+    "type:ComputeFovModifierEvent.base",
+    "type:ComputeFovModifierEvent.player",
 ]
 why = """
 NeoForge's `ComputeFovModifierEvent` carries the player, the raw `getFieldOfViewModifier` product and the effect scale, and starts its result as `Mth.lerp(effectScale, 1, raw)`. The event gave a snapshot with no player identity, and its interpolated base lost the raw value at effect scale zero. It now carries the effective camera player's handle (the local player or the spectated one), the raw modifier and the scale, with `modifier` initialized to the interpolation. The spyglass early return stays before the event.

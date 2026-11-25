@@ -26,6 +26,7 @@ macro_rules! packet_enum {
             Unknown(i32, Vec<u8>),
         }
         impl $crate::retained::OwnedHeap for $name {
+            #[inline]
             fn owned_heap_bytes(&self) -> usize { match self {
                 $(Self::$variant(value) => $crate::retained::OwnedHeap::owned_heap_bytes(value),)*
                 Self::Unknown(_, bytes) => bytes.capacity(),

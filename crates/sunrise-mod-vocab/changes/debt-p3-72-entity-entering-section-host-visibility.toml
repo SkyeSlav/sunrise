@@ -1,6 +1,5 @@
 ids = [
     "hook:entity_entering_section",
-    "method:Hooks::entity_entering_section",
 ]
 why = """
 `entity_entering_section` listeners now get the owning Host for a crossing queued by a nested write

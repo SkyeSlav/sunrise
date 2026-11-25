@@ -256,7 +256,7 @@ impl ProjectileKind {
         matches!(self, Self::SmallFireball | Self::LargeFireball { .. })
     }
     /// `ThrowableItemProjectile.getDefaultItem` for throwable kinds, else `None`.
-    pub fn default_thrown_item(&self) -> Option<&'static str> {
+    pub(crate) fn default_thrown_item(&self) -> Option<&'static str> {
         match self {
             Self::Snowball => Some("minecraft:snowball"),
             Self::Egg => Some("minecraft:egg"),
@@ -464,7 +464,7 @@ pub struct Projectile {
 }
 /// A new projectile's own random (`Entity.random`) and the UUID its first two
 /// draws make (`Mth.createInsecureUUID`).
-pub fn new_own_random() -> (sunrise_core::random::LegacyRandom, [i32; 4]) {
+pub(crate) fn new_own_random() -> (sunrise_core::random::LegacyRandom, [i32; 4]) {
     let mut random = crate::random_source::entity();
     let uuid = crate::save::insecure_uuid(&mut random);
     (random, uuid)
@@ -737,7 +737,7 @@ impl crate::entity_rules::EntityRules for Projectile {
 }
 /// `AbstractHurtingProjectile.applyInertia` / `ThrowableProjectile.applyInertia`:
 /// four bubble particles at `position - movement * 0.25`, moving with `movement`.
-pub fn water_bubble_at(position: [f64; 3], movement: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+pub(crate) fn water_bubble_at(position: [f64; 3], movement: [f64; 3]) -> ([f64; 3], [f64; 3]) {
     (
         [
             position[0] - movement[0] * 0.25,
@@ -751,7 +751,7 @@ pub fn water_bubble_at(position: [f64; 3], movement: [f64; 3]) -> ([f64; 3], [f6
 /// `minecraft:chicken/variant` component, else its item's default (egg
 /// temperate, blue egg cold, brown egg warm). An explicit removal
 /// (`!minecraft:chicken/variant`) leaves the hatchling its temperate default.
-pub fn egg_chicken_variant(stack: &crate::items::ItemStack) -> u8 {
+pub(crate) fn egg_chicken_variant(stack: &crate::items::ItemStack) -> u8 {
     let named = stack
         .extra
         .as_ref()
@@ -799,7 +799,7 @@ impl Projectile {
         crate::pose::SizeAnswer::sized_box(self.size_answer, self.kind.dimensions(), p, vanilla)
     }
     /// The collision target of the owner, independent of living damage credit.
-    pub fn collision_owner(&self) -> Option<Who> {
+    pub(crate) fn collision_owner(&self) -> Option<Who> {
         self.owner_vehicle.map(Who::Mob).or(self.owner)
     }
     pub fn new(kind: ProjectileKind, position: Vec3, owner: Option<Who>) -> Self {
@@ -884,7 +884,7 @@ impl Projectile {
         &mut self.random.0
     }
     /// `AbstractHurtingProjectile`: the kinds with an acceleration power.
-    pub fn is_hurting(&self) -> bool {
+    pub(crate) fn is_hurting(&self) -> bool {
         matches!(
             self.kind,
             ProjectileKind::LargeFireball { .. }
@@ -955,7 +955,7 @@ impl Projectile {
     /// The shooter's bow enchantments; Piercing sets its pierce level. Flame's
     /// `projectile_spawned` ignite runs once the arrow is in the level
     /// (`Projectile.applyOnProjectileSpawned`).
-    pub fn set_bonus(&mut self, bonus: crate::mobs::gear::ArrowBonus) {
+    pub(crate) fn set_bonus(&mut self, bonus: crate::mobs::gear::ArrowBonus) {
         if let Some(a) = self.arrow.as_mut() {
             a.pierce = bonus.pierce.min(127) as u8;
         }
@@ -971,7 +971,8 @@ impl Projectile {
         }
     }
     /// `AbstractArrow.tick`: critical streaks and submerged bubble trails.
-    pub fn arrow_trail(
+    #[cfg(test)]
+    pub(crate) fn arrow_trail(
         &self,
         water: bool,
     ) -> Vec<(crate::particles::ParticleType, [f64; 3], [f64; 3])> {
@@ -1312,13 +1313,13 @@ impl Projectile {
         p
     }
     /// `AbstractHurtingProjectile(EntityType, LivingEntity, Vec3, Level)`'s `setRot(owner.getYRot(), owner.getXRot())`.
-    pub fn facing_shooter(mut self, yaw: f32, pitch: f32) -> Self {
+    pub(crate) fn facing_shooter(mut self, yaw: f32, pitch: f32) -> Self {
         self.yaw = yaw;
         self.pitch = pitch;
         self
     }
     /// `ThrowableItemProjectile.getItem`: typed stack at count 1 for throwables, else `None`.
-    pub fn thrown_item_stack(&self) -> Option<crate::items::ItemStack> {
+    pub(crate) fn thrown_item_stack(&self) -> Option<crate::items::ItemStack> {
         let mut stack = match &self.kind {
             ProjectileKind::Potion(stack, _) => (**stack).clone(),
             _ => {
@@ -1794,7 +1795,7 @@ impl Projectile {
         )
     }
     /// AbstractHurtingProjectile.applyInertia, on both server and client.
-    pub fn apply_hurting_inertia(&mut self, water: bool) {
+    pub(crate) fn apply_hurting_inertia(&mut self, water: bool) {
         // WitherSkull.getInertia: 0.73 for dangerous skulls.
         // Vanilla returns float inertia and widens it before scaling double motion.
         let inertia = f64::from(match self.kind {

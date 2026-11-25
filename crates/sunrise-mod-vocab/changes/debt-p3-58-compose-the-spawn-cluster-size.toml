@@ -2,7 +2,6 @@ ids = [
     "hook:spawn_cluster_size",
     "hook:spawn_cluster_size.vanilla",
     "hook:spawn_cluster_size.size",
-    "hook:spawn_cluster_size.limit",
     "type:SpawnClusterSizeEvent",
     "method:EntityPart::spawn_cluster_size",
 ]

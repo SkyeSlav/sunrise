@@ -1594,40 +1594,49 @@ impl GameMobInsideAccess<'_, '_> {
 }
 
 impl mod_api::InsideEntityAccess for GameMobInsideAccess<'_, '_> {
+    #[inline]
     fn id(&self) -> u32 {
         self.mob_id
     }
 
+    #[inline]
     fn kind(&self) -> &str {
         self.mob().map_or("", |m| m.kind.id.as_str())
     }
 
+    #[inline]
     fn is_alive(&self) -> bool {
         self.mob().is_some_and(Mob::alive)
     }
 
+    #[inline]
     fn position(&self) -> [f64; 3] {
         self.mob()
             .map_or([0.0; 3], |m| [m.position.x, m.position.y, m.position.z])
     }
 
+    #[inline]
     fn velocity(&self) -> [f64; 3] {
         self.mob()
             .map_or([0.0; 3], |m| [m.velocity.x, m.velocity.y, m.velocity.z])
     }
 
+    #[inline]
     fn fire_ticks(&self) -> i32 {
         self.mob().map_or(0, |m| m.fire_ticks)
     }
 
+    #[inline]
     fn is_on_fire(&self) -> bool {
         self.mob().is_some_and(Mob::is_on_fire)
     }
 
+    #[inline]
     fn fall_distance(&self) -> f64 {
         self.mob().map_or(0.0, |m| m.fall_distance)
     }
 
+    #[inline]
     fn block_state(&self, pos: [i32; 3]) -> Option<mod_api::BlockState> {
         use crate::game::api_values::TryIntoApi as _;
         let level = self.game.level(self.game.dim.id())?;
@@ -1636,6 +1645,7 @@ impl mod_api::InsideEntityAccess for GameMobInsideAccess<'_, '_> {
             .and_then(|id| id.try_into_api().ok())
     }
 
+    #[inline]
     fn push(&mut self, delta: [f64; 3]) -> bool {
         if !delta.iter().all(|v| v.is_finite()) {
             return false;
@@ -1649,6 +1659,7 @@ impl mod_api::InsideEntityAccess for GameMobInsideAccess<'_, '_> {
         true
     }
 
+    #[inline]
     fn set_velocity(&mut self, velocity: [f64; 3]) -> bool {
         if !velocity.iter().all(|v| v.is_finite()) {
             return false;
@@ -1660,6 +1671,7 @@ impl mod_api::InsideEntityAccess for GameMobInsideAccess<'_, '_> {
         true
     }
 
+    #[inline]
     fn make_stuck_in_block(&mut self, speed_multiplier: [f64; 3]) -> bool {
         if !speed_multiplier.iter().all(|v| v.is_finite()) {
             return false;
@@ -1676,18 +1688,21 @@ impl mod_api::InsideEntityAccess for GameMobInsideAccess<'_, '_> {
         true
     }
 
+    #[inline]
     fn reset_fall_distance(&mut self) {
         if let Some(m) = self.mob_mut() {
             m.fall_distance = 0.0;
         }
     }
 
+    #[inline]
     fn set_remaining_fire_ticks(&mut self, ticks: i32) {
         if let Some(m) = self.mob_mut() {
             m.fire_ticks = ticks;
         }
     }
 
+    #[inline]
     fn add_effect(&mut self, effect: mod_api::EffectKey, duration: i32, amplifier: u8) -> bool {
         let Some(def) = mod_api::__private::effect_index(effect)
             .and_then(sunrise_client_core::potions::effect_by_index)
@@ -1699,6 +1714,7 @@ impl mod_api::InsideEntityAccess for GameMobInsideAccess<'_, '_> {
         self.game.add_mob_effect(self.mob_id, instance, None)
     }
 
+    #[inline]
     fn hurt_with_source(
         &mut self,
         damage_type: &str,
@@ -1730,6 +1746,7 @@ impl mod_api::InsideEntityAccess for GameMobInsideAccess<'_, '_> {
         )
     }
 
+    #[inline]
     fn set_block(&mut self, pos: [i32; 3], state: mod_api::BlockState) -> bool {
         use crate::game::api_values::TryIntoEngine as _;
         let Some(level) = self.game.level(self.game.dim.id()) else {
@@ -1744,6 +1761,7 @@ impl mod_api::InsideEntityAccess for GameMobInsideAccess<'_, '_> {
             .unwrap_or(false)
     }
 
+    #[inline]
     fn destroy_block(&mut self, pos: [i32; 3], drop: bool) -> bool {
         let Some(level) = self.game.level(self.game.dim.id()) else {
             return false;
@@ -1753,6 +1771,7 @@ impl mod_api::InsideEntityAccess for GameMobInsideAccess<'_, '_> {
             .is_some()
     }
 
+    #[inline]
     fn apply_effect(&mut self, effect: mod_api::InsideEffect) {
         match effect {
             mod_api::InsideEffect::Freeze => {
@@ -1790,6 +1809,7 @@ impl mod_api::InsideEntityAccess for GameMobInsideAccess<'_, '_> {
         }
     }
 
+    #[inline]
     fn apply_builtin(&mut self, action: mod_api::__private::BuiltinInsideAction) {
         match action {
             mod_api::__private::BuiltinInsideAction::PowderSnowMelt(pos) => {

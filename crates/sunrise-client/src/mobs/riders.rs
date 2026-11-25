@@ -908,18 +908,23 @@ mod tests {
         #[derive(Debug, Clone)]
         struct UnwindGoal(Arc<AtomicUsize>, Arc<i32>);
         impl Goal for UnwindGoal {
+            #[inline]
             fn flags(&self) -> u8 {
                 0
             }
+            #[inline]
             fn can_use(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
                 true
             }
+            #[inline]
             fn every_tick(&self) -> bool {
                 true
             }
+            #[inline]
             fn box_clone(&self) -> Box<dyn Goal> {
                 Box::new(self.clone())
             }
+            #[inline]
             fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 assert_eq!(

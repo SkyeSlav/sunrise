@@ -561,7 +561,7 @@ pub(super) fn game_forwarders(root: &Path) -> Result<String, String> {
                         let sig = entry.sig.to_token_stream();
                         let args = signature_args(&entry.sig, name)?;
                         code.push_str(&format!(
-                            "{sig} {{ mod_api::__private::{}({args}) }}\n",
+                            "#[inline]\n{sig} {{ mod_api::__private::{}({args}) }}\n",
                             read.to_token_stream()
                         ));
                         continue;
@@ -678,7 +678,7 @@ pub(super) fn game_forwarders(root: &Path) -> Result<String, String> {
                             "mod_api::__private::game::CallbackOwner::call_host(move || {{ {call} }})"
                         ),
                     };
-                    code.push_str(&format!("{sig} {{ {setup} {call} }}\n"));
+                    code.push_str(&format!("#[inline]\n{sig} {{ {setup} {call} }}\n"));
                 }
                 code.push_str("}\n");
             }
@@ -1314,12 +1314,12 @@ fn goal_view(
         };
         impls.add(
             area.trait_name(*tier),
-            format!("{} {{ {body} }}\n", sig.to_token_stream()),
+            format!("#[inline]\n{} {{ {body} }}\n", sig.to_token_stream()),
         );
     }
     code.push_str(&impls.take());
     code.push_str(
-        "/// The same view as a host: the entity lookups answer the tick's own rules\n/// (the ticking mob, the player it sees, the snapshot, else None), the mutable\n/// methods stay out of reach of the shared host the view holds, and everything\n/// else - the level, its blocks, tags, recipes and settings - forwards to the\n/// game host the view carries.\nimpl Host for super::GoalCx<'_, '_> {\n#[doc(hidden)]\nfn backend(&self) -> Option<BackendRef<'_>> { Some(mod_api::__private::backend_ref(self)) }\n}\n",
+        "/// The same view as a host: the entity lookups answer the tick's own rules\n/// (the ticking mob, the player it sees, the snapshot, else None), the mutable\n/// methods stay out of reach of the shared host the view holds, and everything\n/// else - the level, its blocks, tags, recipes and settings - forwards to the\n/// game host the view carries.\nimpl Host for super::GoalCx<'_, '_> {\n#[doc(hidden)]\n#[inline]\nfn backend(&self) -> Option<BackendRef<'_>> { Some(mod_api::__private::backend_ref(self)) }\n}\n",
     );
     // An area whose host methods all write has nothing to forward, but the view still implements it.
     for area in areas
@@ -1346,7 +1346,7 @@ fn goal_view(
         };
         impls.add(
             area.trait_name(Tier::Host),
-            format!("{} {{ {body} }}\n", sig.to_token_stream()),
+            format!("#[inline]\n{} {{ {body} }}\n", sig.to_token_stream()),
         );
     }
     code.push_str(&impls.take());

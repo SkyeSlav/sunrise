@@ -4116,18 +4116,23 @@ mod selector_restore_tests {
         }
     }
     impl Goal for TrackedGoal {
+        #[inline]
         fn flags(&self) -> u8 {
             0
         }
+        #[inline]
         fn can_use(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
             false
         }
+        #[inline]
         fn box_clone(&self) -> Box<dyn Goal> {
             panic!("selectors must not clone goals")
         }
+        #[inline]
         fn set_start_delay(&mut self, ticks: i32) {
             self.progress = ticks;
         }
+        #[inline]
         fn name(&self) -> &'static str {
             if self.progress == 7 {
                 "progress"
@@ -4152,18 +4157,23 @@ mod selector_restore_tests {
             ticks: u32,
         }
         impl Goal for Probe {
+            #[inline]
             fn flags(&self) -> u8 {
                 0
             }
+            #[inline]
             fn can_use(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
                 true
             }
+            #[inline]
             fn every_tick(&self) -> bool {
                 true
             }
+            #[inline]
             fn box_clone(&self) -> Box<dyn Goal> {
                 panic!("live goals must not clone")
             }
+            #[inline]
             fn tick(&mut self, _: &mut Mob, _: &mut Cx) {
                 self.ticks += 1;
                 self.calls

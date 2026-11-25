@@ -17,7 +17,7 @@ pub mod custom_book;
 pub mod entity_data;
 pub mod frame;
 pub mod general_entity;
-pub mod hash_ops;
+pub(crate) mod hash_ops;
 pub mod ids;
 pub mod item;
 pub mod menu_extra;

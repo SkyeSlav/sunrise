@@ -260,7 +260,7 @@ impl LiveFeatures {
     }
     /// Raw JSON of a configured feature (for configuration values such as a
     /// trunk placer's base height).
-    pub fn configured_json(&self, name: &str) -> Option<Value> {
+    pub(crate) fn configured_json(&self, name: &str) -> Option<Value> {
         let resources = self.data.feature_resources.as_ref()?;
         serde_json::from_str(resources.features.get(name)?).ok()
     }
@@ -306,7 +306,7 @@ impl LiveFeatures {
     }
     /// `ConfiguredFeature.place`. Unknown or unsupported features and
     /// execution errors report failure.
-    pub fn place_configured<W: FeatureWorld + PlacementContext>(
+    pub(crate) fn place_configured<W: FeatureWorld + PlacementContext>(
         &self,
         name: &str,
         world: &mut W,
@@ -324,7 +324,7 @@ impl LiveFeatures {
     /// An inline feature value (`ResourceOrHolderArgument`), decoded by the
     /// same codec as a named feature; it is not cached. `None` when it does
     /// not decode.
-    pub fn configured_inline(&self, json: &str) -> Option<FeatureDefinition> {
+    pub(crate) fn configured_inline(&self, json: &str) -> Option<FeatureDefinition> {
         match self.decode_inline(json) {
             Ok(feature) => Some(feature),
             Err(e) => {
@@ -344,7 +344,7 @@ impl LiveFeatures {
     }
     /// `Feature.place` for a decoded feature; `label` names it in errors.
     /// Execution errors report failure.
-    pub fn place_definition<W: FeatureWorld + PlacementContext>(
+    pub(crate) fn place_definition<W: FeatureWorld + PlacementContext>(
         &self,
         feature: &FeatureDefinition,
         label: &str,
@@ -366,7 +366,7 @@ impl LiveFeatures {
     /// `PlacedFeature.place` (placement modifiers, then the feature).
     /// A reached biome filter without a top feature is returned distinctly; other
     /// execution errors retain the live placement failure result.
-    pub fn place_placed<W: FeatureWorld + PlacementContext>(
+    pub(crate) fn place_placed<W: FeatureWorld + PlacementContext>(
         &self,
         name: &str,
         world: &mut W,
@@ -394,7 +394,7 @@ impl LiveFeatures {
     /// A structure piece's feature: [`Self::place_configured`] or
     /// [`Self::place_placed`]. An unknown id, and any placement error,
     /// report failure.
-    pub fn place_for_piece<W: FeatureWorld + PlacementContext>(
+    pub(crate) fn place_for_piece<W: FeatureWorld + PlacementContext>(
         &self,
         feature: super::structure::jigsaw::FeatureKey<'_>,
         world: &mut W,
@@ -427,11 +427,11 @@ impl LiveFeatures {
             .is_some_and(|members| members.iter().any(|m| m == biome))
     }
     /// A block tag's members in registry tag order (for `getRandomElementOf`).
-    pub fn block_tag_entries(&self, tag: &str) -> &[String] {
+    pub(crate) fn block_tag_entries(&self, tag: &str) -> &[String] {
         self.data.block_tags.get(tag).map_or(&[], Vec::as_slice)
     }
     /// `BiomeGenerationSettings.getBoneMealFeatures` of a biome.
-    pub fn bone_meal_features(&self, biome: BiomeId) -> &[String] {
+    pub(crate) fn bone_meal_features(&self, biome: BiomeId) -> &[String] {
         self.bone_meal
             .get(biome.0 as usize)
             .map_or(&[], Vec::as_slice)

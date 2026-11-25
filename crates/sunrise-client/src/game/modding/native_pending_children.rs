@@ -55,36 +55,44 @@ pub(super) struct PendingMob {
 }
 
 impl UnspawnedMobRead for PendingMob {
+    #[inline]
     fn kind(&self) -> Result<Identifier, UnspawnedMobError> {
         native_unspawned_mob::read_mob_kind(&self.mob)
     }
 
+    #[inline]
     fn position(&self) -> Result<[f64; 3], UnspawnedMobError> {
         native_unspawned_mob::read_mob_position(&self.mob)
     }
 
+    #[inline]
     fn equipment(&self, slot: EquipmentSlot) -> Result<Option<ItemStack>, UnspawnedMobError> {
         native_unspawned_mob::read_mob_equipment(&self.mob, slot)
     }
 
+    #[inline]
     fn attribute_base(&self, attribute: &Identifier) -> Result<f64, UnspawnedMobError> {
         native_unspawned_mob::read_mob_attribute_base(&self.mob, &self.attributes, attribute)
     }
 
+    #[inline]
     fn attribute_value(&self, attribute: &Identifier) -> Result<f64, UnspawnedMobError> {
         native_unspawned_mob::read_mob_attribute_value(&self.mob, &self.attributes, attribute)
     }
 
+    #[inline]
     fn tags(&self) -> Result<Vec<String>, UnspawnedMobError> {
         native_unspawned_mob::read_mob_tags(&self.mob)
     }
 
+    #[inline]
     fn custom_name(&self) -> Result<Option<mod_api::Text>, UnspawnedMobError> {
         native_unspawned_mob::read_mob_custom_name(&self.mob)
     }
 }
 
 impl UnspawnedMobWrite for PendingMob {
+    #[inline]
     fn set_equipment(
         &mut self,
         slot: EquipmentSlot,
@@ -99,6 +107,7 @@ impl UnspawnedMobWrite for PendingMob {
         )
     }
 
+    #[inline]
     fn set_attribute_base(
         &mut self,
         attribute: &Identifier,
@@ -113,6 +122,7 @@ impl UnspawnedMobWrite for PendingMob {
         )
     }
 
+    #[inline]
     fn add_attribute_modifier(
         &mut self,
         attribute: &Identifier,
@@ -127,6 +137,7 @@ impl UnspawnedMobWrite for PendingMob {
         )
     }
 
+    #[inline]
     fn remove_attribute_modifier(
         &mut self,
         attribute: &Identifier,
@@ -141,20 +152,24 @@ impl UnspawnedMobWrite for PendingMob {
         )
     }
 
+    #[inline]
     fn add_tag(&mut self, tag: &str) -> Result<bool, UnspawnedMobError> {
         native_unspawned_mob::write_mob_add_tag(&mut self.mob, tag)
     }
 
+    #[inline]
     fn remove_tag(&mut self, tag: &str) -> Result<bool, UnspawnedMobError> {
         native_unspawned_mob::write_mob_remove_tag(&mut self.mob, tag)
     }
 
+    #[inline]
     fn set_custom_name(&mut self, name: Option<mod_api::Text>) -> Result<(), UnspawnedMobError> {
         native_unspawned_mob::write_mob_set_custom_name(&mut self.mob, name)
     }
 }
 
 impl PendingChildWrite for PendingMob {
+    #[inline]
     fn set_position(&mut self, position: [f64; 3]) -> Result<(), UnspawnedMobError> {
         if !super::native_mobs::spawnable(position) {
             return Err(UnspawnedMobError::Invalid);
@@ -164,6 +179,7 @@ impl PendingChildWrite for PendingMob {
         Ok(())
     }
 
+    #[inline]
     fn set_yaw(&mut self, yaw: f32) -> Result<(), UnspawnedMobError> {
         if !yaw.is_finite() {
             return Err(UnspawnedMobError::Invalid);
@@ -177,6 +193,7 @@ impl PendingChildWrite for PendingMob {
         Ok(())
     }
 
+    #[inline]
     fn set_baby(&mut self, baby: bool) -> Result<(), UnspawnedMobError> {
         if baby && !finalize::supports_baby(self.mob.species()) {
             return Err(UnspawnedMobError::Invalid);
@@ -185,6 +202,7 @@ impl PendingChildWrite for PendingMob {
         Ok(())
     }
 
+    #[inline]
     fn set_size(&mut self, size: u32) -> Result<(), UnspawnedMobError> {
         if !size_ok(self.mob.species(), Some(size)) {
             return Err(UnspawnedMobError::Invalid);
@@ -193,6 +211,7 @@ impl PendingChildWrite for PendingMob {
         Ok(())
     }
 
+    #[inline]
     fn as_any(self: Box<Self>) -> Box<dyn std::any::Any> {
         self
     }

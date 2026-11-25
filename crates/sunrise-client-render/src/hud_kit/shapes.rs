@@ -10,28 +10,6 @@
 //! Angles are radians from straight up, clockwise, as a stick and the dial's slots go: 0 is up,
 //! `FRAC_PI_2` right. Positions and radii are GUI px. Radii are snapped to whole GUI px, so a
 //! ring's edge lands on the same pixels at every GUI scale.
-//!
-//! ```
-//! use sunrise_client_render::hud::{HudAtlas, HudBatch, rgba};
-//! use sunrise_client_render::hud_kit::shapes::{self, Stop};
-//! use std::f32::consts::{FRAC_PI_8, TAU};
-//!
-//! let source = sunrise_client_render::resource_source::ResourceSource::directory("/nonexistent".into());
-//! let atlas = HudAtlas::build(&source).unwrap();
-//! let mut batch = HudBatch::scratch([854, 480]);
-//! let centre = [213.0, 120.0];
-//! // A dark disc fading out, a faint ring, then the top 45 degree sector lit.
-//! let dark = rgba(13, 14, 19, 180);
-//! batch.fill_disc_gradient(&atlas, centre, 90.0, &[Stop(0.0, dark), Stop(1.0, dark & 0x00FF_FFFF)]);
-//! batch.fill_arc(&atlas, centre, [40.0, 70.0], [0.0, TAU], rgba(13, 14, 19, 115));
-//! let start = batch.vertices.len();
-//! batch.fill_arc(&atlas, centre, [40.0, 70.0], [-FRAC_PI_8, FRAC_PI_8], rgba(118, 86, 250, 140));
-//! // Fade the sector in and slide it: only what was drawn since `start` changes.
-//! batch.alpha_since(start, 0.5);
-//! batch.translate_since(start, 0.0, 2.0);
-//! assert_eq!(batch.vertices.len() % 6, 0);
-//! assert_eq!(shapes::arc_segments(TAU, 70.0), 110);
-//! ```
 use crate::hud::{HudAtlas, HudBatch, HudVertex};
 
 /// How long, in GUI px along its outer edge, one segment of an arc is at most: short enough that
@@ -47,7 +25,7 @@ pub struct Stop(pub f32, pub u32);
 
 /// How many segments an arc spanning `span` radians at `radius` GUI px is cut into: one per
 /// `ARC_STEP` of its outer edge, at least 1 and at most `MAX_SEGMENTS`.
-pub fn arc_segments(span: f32, radius: f32) -> usize {
+pub(crate) fn arc_segments(span: f32, radius: f32) -> usize {
     let length = span.abs() * radius.max(0.0);
     ((length / ARC_STEP).ceil() as usize).clamp(1, MAX_SEGMENTS)
 }
@@ -58,7 +36,7 @@ pub fn snap(radius: f32) -> f32 {
 }
 
 /// The point `radius` GUI px from `centre` at `angle` (radians from up, clockwise).
-pub fn on_circle([cx, cy]: [f32; 2], radius: f32, angle: f32) -> [f32; 2] {
+pub(crate) fn on_circle([cx, cy]: [f32; 2], radius: f32, angle: f32) -> [f32; 2] {
     [cx + radius * angle.sin(), cy - radius * angle.cos()]
 }
 
@@ -109,7 +87,7 @@ impl HudBatch {
     /// An annular sector in one colour: between radii `r0` and `r1` (GUI px, snapped to whole
     /// px) from `angles[0]` to `angles[1]` (radians from up, clockwise), cut into
     /// [`arc_segments`]. With `r0` 0 it is a pie slice; a span of `TAU` is a whole ring.
-    pub fn fill_arc(
+    pub(crate) fn fill_arc(
         &mut self,
         atlas: &HudAtlas,
         centre: [f32; 2],
@@ -154,7 +132,13 @@ impl HudBatch {
     }
 
     /// A disc of radius `radius` GUI px (snapped) in one colour.
-    pub fn fill_disc(&mut self, atlas: &HudAtlas, centre: [f32; 2], radius: f32, color: u32) {
+    pub(crate) fn fill_disc(
+        &mut self,
+        atlas: &HudAtlas,
+        centre: [f32; 2],
+        radius: f32,
+        color: u32,
+    ) {
         self.fill_arc(
             atlas,
             centre,
@@ -168,7 +152,7 @@ impl HudBatch {
     /// centre out, blending linearly between them: a dark disc fading to nothing at its rim is
     /// `[Stop(0.0, dark), Stop(1.0, dark with alpha 0)]`. Stops are in order of their fraction;
     /// before the first and after the last the colour holds.
-    pub fn fill_disc_gradient(
+    pub(crate) fn fill_disc_gradient(
         &mut self,
         atlas: &HudAtlas,
         centre: [f32; 2],
@@ -201,7 +185,7 @@ impl HudBatch {
 
     /// Multiplies the alpha of every vertex added since `start` by `factor` (0 to 1): a fade over
     /// what one piece drew, its text included.
-    pub fn alpha_since(&mut self, start: usize, factor: f32) {
+    pub(crate) fn alpha_since(&mut self, start: usize, factor: f32) {
         if factor >= 1.0 {
             return;
         }
@@ -211,7 +195,7 @@ impl HudBatch {
     }
 
     /// Moves every vertex added since `start` by `(dx, dy)` GUI px.
-    pub fn translate_since(&mut self, start: usize, dx: f32, dy: f32) {
+    pub(crate) fn translate_since(&mut self, start: usize, dx: f32, dy: f32) {
         if dx == 0.0 && dy == 0.0 {
             return;
         }
@@ -473,5 +457,40 @@ mod tests {
         assert_eq!(b.vertices[start].pos, [13.0, 8.0]);
         // The colour itself stays.
         assert_eq!(b.vertices[start].color & 0x00FF_FFFF, 0x00FF_FFFF);
+    }
+
+    #[test]
+    fn the_dial_layers_draw_whole_units() {
+        let atlas = atlas();
+        let mut batch = batch();
+        let centre = [213.0, 120.0];
+        // A dark disc fading out, a faint ring, then the top 45 degree sector lit.
+        let dark = rgba(13, 14, 19, 180);
+        batch.fill_disc_gradient(
+            &atlas,
+            centre,
+            90.0,
+            &[Stop(0.0, dark), Stop(1.0, dark & 0x00FF_FFFF)],
+        );
+        batch.fill_arc(
+            &atlas,
+            centre,
+            [40.0, 70.0],
+            [0.0, TAU],
+            rgba(13, 14, 19, 115),
+        );
+        let start = batch.vertices.len();
+        batch.fill_arc(
+            &atlas,
+            centre,
+            [40.0, 70.0],
+            [-std::f32::consts::FRAC_PI_8, std::f32::consts::FRAC_PI_8],
+            rgba(118, 86, 250, 140),
+        );
+        // Fade the sector in and slide it: only what was drawn since `start` changes.
+        batch.alpha_since(start, 0.5);
+        batch.translate_since(start, 0.0, 2.0);
+        assert_eq!(batch.vertices.len() % 6, 0);
+        assert_eq!(arc_segments(TAU, 70.0), 110);
     }
 }

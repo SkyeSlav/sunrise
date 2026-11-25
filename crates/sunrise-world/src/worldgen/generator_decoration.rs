@@ -828,6 +828,7 @@ impl World<'_> {
 }
 impl DecorationWorld for World<'_> {
     type Error = RegionError;
+    #[inline]
     fn min_section_y(&mut self) -> Result<i32, RegionError> {
         Ok(self
             .region
@@ -837,6 +838,7 @@ impl DecorationWorld for World<'_> {
     }
     /// `BiomeRegion::present_in_chunk`: the distinct ids, ascending, from a
     /// bitset instead of sorting every quart of the column.
+    #[inline]
     fn chunk_biomes(&mut self, chunk: ChunkPos) -> Result<Vec<BiomeId>, RegionError> {
         let biomes = self.biomes.chunk(chunk).map_err(RegionError::Biome)?;
         // Ordinary registry ids fit in the stack array. Keep a spill for
@@ -880,6 +882,7 @@ impl DecorationWorld for World<'_> {
         }
         Ok(out)
     }
+    #[inline]
     fn set_currently_generating(&mut self, _: Option<FeatureIdentity>) -> Result<(), RegionError> {
         Ok(())
     }
@@ -999,6 +1002,7 @@ impl FeatureWorld for World<'_> {
     fn block(&mut self, position: [i32; 3]) -> Result<BlockStateId, RegionError> {
         self.read_block(position)
     }
+    #[inline]
     fn scan_column(
         &mut self,
         position: [i32; 3],
@@ -1023,6 +1027,7 @@ impl FeatureWorld for World<'_> {
         }
         Ok(p[1])
     }
+    #[inline]
     fn set_block(
         &mut self,
         position: [i32; 3],
@@ -1138,9 +1143,11 @@ impl<'a> World<'a> {
 /// Proto chunks hold no block entities, so dynamic shapes resolve to absent.
 impl DynamicSupportWorld for World<'_> {
     type Error = PlacementQueryError;
+    #[inline]
     fn shulker_is_closed(&mut self, _: [i32; 3]) -> Result<Option<bool>, PlacementQueryError> {
         Ok(None)
     }
+    #[inline]
     fn moving_piston_shape(
         &mut self,
         _: [i32; 3],
@@ -1149,6 +1156,7 @@ impl DynamicSupportWorld for World<'_> {
     }
 }
 impl DynamicCollisionWorld for World<'_> {
+    #[inline]
     fn shulker_collision_state(
         &mut self,
         _: [i32; 3],
@@ -1157,24 +1165,30 @@ impl DynamicCollisionWorld for World<'_> {
     }
 }
 impl SurvivalWorld for World<'_> {
+    #[inline]
     fn fluid_state(&mut self, position: [i32; 3]) -> Result<FluidState, PlacementQueryError> {
         self.read_fluid_state(position)
     }
     /// Unlit generation chunks report no sky or block light.
+    #[inline]
     fn raw_brightness(&mut self, _: [i32; 3], _: i32) -> Result<i32, PlacementQueryError> {
         Ok(0)
     }
+    #[inline]
     fn block_state(&mut self, position: [i32; 3]) -> Result<BlockStateId, PlacementQueryError> {
         self.read_block(position).map_err(Into::into)
     }
 }
 impl PlacementContext for World<'_> {
+    #[inline]
     fn block_registry(&self) -> Option<&'static crate::registry::BlockRegistry> {
         Some(self.decoration.bindings.registry())
     }
+    #[inline]
     fn full_chunk_at(&mut self, position: [i32; 3]) -> Result<bool, PlacementQueryError> {
         Ok(self.is_full_chunk(position))
     }
+    #[inline]
     fn state_collision_empty(
         &mut self,
         state: BlockStateId,
@@ -1188,6 +1202,7 @@ impl PlacementContext for World<'_> {
     }
     /// RandomizableContainer.setBlockEntityLootTable: only a container block that
     /// is actually there takes the table, and then it draws the loot seed.
+    #[inline]
     fn set_block_entity_loot_table(
         &mut self,
         position: [i32; 3],
@@ -1204,6 +1219,7 @@ impl PlacementContext for World<'_> {
     }
     /// BeehiveDecorator: `getBlockEntity(pos, BEEHIVE)` then
     /// `storeBee(Occupant.create(ticks))` for each bee.
+    #[inline]
     fn store_beehive_occupants(
         &mut self,
         position: [i32; 3],
@@ -1221,6 +1237,7 @@ impl PlacementContext for World<'_> {
         self.set_block_entity(position, super::tree::beehive_occupants(ticks_in_hive))
     }
     /// SpawnerBlockEntity.setEntityId: the next spawn data and no potentials.
+    #[inline]
     fn configure_spawner(
         &mut self,
         position: [i32; 3],
@@ -1234,6 +1251,7 @@ impl PlacementContext for World<'_> {
         }
         self.set_block_entity(position, super::cave::dungeon_spawner_nbt(entity))
     }
+    #[inline]
     fn attachment_at(
         &mut self,
         position: [i32; 3],
@@ -1245,15 +1263,19 @@ impl PlacementContext for World<'_> {
             .can_attach_to(self, position, direction)
             .map_err(query)
     }
+    #[inline]
     fn next_world_boolean(&mut self) -> Result<bool, PlacementQueryError> {
         Ok(self.level_random.boolean())
     }
+    #[inline]
     fn next_world_float(&mut self) -> Result<f32, PlacementQueryError> {
         Ok(self.level_random.float())
     }
+    #[inline]
     fn next_world_int(&mut self, bound: i32) -> Result<i32, PlacementQueryError> {
         Ok(self.level_random.int(bound))
     }
+    #[inline]
     fn block_survives(
         &mut self,
         state: BlockStateId,
@@ -1274,6 +1296,7 @@ impl PlacementContext for World<'_> {
             .can_survive(self, state, position)
             .map_err(query)
     }
+    #[inline]
     fn face_sturdy(
         &mut self,
         position: [i32; 3],
@@ -1282,6 +1305,7 @@ impl PlacementContext for World<'_> {
         let state = self.read_block(position)?;
         self.state_face_sturdy(state, position, direction)
     }
+    #[inline]
     fn state_face_sturdy(
         &mut self,
         state: BlockStateId,
@@ -1298,6 +1322,7 @@ impl PlacementContext for World<'_> {
             .is_face_sturdy(self, state, position, direction, SupportType::Full)
             .map_err(query)
     }
+    #[inline]
     fn center_sturdy(
         &mut self,
         position: [i32; 3],
@@ -1312,6 +1337,7 @@ impl PlacementContext for World<'_> {
             .is_face_sturdy(self, state, position, direction, SupportType::Center)
             .map_err(query)
     }
+    #[inline]
     fn can_occlude(&mut self, state: BlockStateId) -> Result<bool, PlacementQueryError> {
         if let Some(behaviours) = self.behaviours {
             return Ok(behaviours.has_flag(state, crate::level::data::state_flags::CAN_OCCLUDE));
@@ -1325,6 +1351,7 @@ impl PlacementContext for World<'_> {
             .clone();
         Ok(properties.definition(&name).is_some_and(|d| d.can_occlude))
     }
+    #[inline]
     fn collision_full_block(
         &mut self,
         state: BlockStateId,
@@ -1343,6 +1370,7 @@ impl PlacementContext for World<'_> {
                 (0..ny).all(|y| (0..nz).all(|z| shape.is_full(x as i32, y as i32, z as i32)))
             }))
     }
+    #[inline]
     fn add_entity(
         &mut self,
         mut nbt: sunrise_core::nbt::Compound,
@@ -1372,6 +1400,7 @@ impl PlacementContext for World<'_> {
     }
     /// SpikeFeature.placeSpike: the crystal is a fresh entity of the region,
     /// saved with the chunk.
+    #[inline]
     fn spawn_end_crystal(
         &mut self,
         position: [f64; 3],
@@ -1397,6 +1426,7 @@ impl PlacementContext for World<'_> {
         }
         self.add_entity(nbt)
     }
+    #[inline]
     fn set_block_entity(
         &mut self,
         position: [i32; 3],
@@ -1408,6 +1438,7 @@ impl PlacementContext for World<'_> {
     }
     /// WorldGenRegion.getBlockEntity creates the gateway's block entity when the
     /// block is an End gateway; TheEndGatewayBlockEntity.setExitPosition.
+    #[inline]
     fn configure_end_gateway(
         &mut self,
         position: [i32; 3],
@@ -1430,9 +1461,11 @@ impl PlacementContext for World<'_> {
         }
         self.set_block_entity(position, nbt)
     }
+    #[inline]
     fn world_seed(&mut self) -> Result<i64, PlacementQueryError> {
         self.region.world_seed()
     }
+    #[inline]
     fn update_shape_at_face(
         &mut self,
         position: [i32; 3],
@@ -1474,6 +1507,7 @@ impl PlacementContext for World<'_> {
         }
         Ok(())
     }
+    #[inline]
     fn update_from_neighbour_shapes(
         &mut self,
         position: [i32; 3],
@@ -1512,11 +1546,13 @@ impl PlacementContext for World<'_> {
         }
         Ok(())
     }
+    #[inline]
     fn ensure_can_write(&mut self, position: [i32; 3]) -> Result<bool, PlacementQueryError> {
         self.can_write(position).map_err(Into::into)
     }
     /// ProtoChunk.setBlockState: the section and the stage's heightmaps
     /// (nothing on a full chunk: ImposterProtoChunk(chunk, false)).
+    #[inline]
     fn set_chunk_block(
         &mut self,
         position: [i32; 3],
@@ -1532,6 +1568,7 @@ impl PlacementContext for World<'_> {
         Ok(())
     }
     /// BulkSectionAccess write: section storage only, no heightmap updates.
+    #[inline]
     fn set_section_block(
         &mut self,
         [x, y, z]: [i32; 3],
@@ -1544,9 +1581,11 @@ impl PlacementContext for World<'_> {
         Ok(())
     }
     /// Generation regions contain no entities.
+    #[inline]
     fn unobstructed_block(&mut self, _: [i32; 3]) -> Result<bool, PlacementQueryError> {
         Ok(true)
     }
+    #[inline]
     fn destroy_block_without_entity(
         &mut self,
         position: [i32; 3],
@@ -1559,6 +1598,7 @@ impl PlacementContext for World<'_> {
         let air = self.region.air();
         self.set_block(position, air, 3).map_err(query)
     }
+    #[inline]
     fn biome_should_freeze(
         &mut self,
         biome: BiomeId,
@@ -1579,6 +1619,7 @@ impl PlacementContext for World<'_> {
         self.temperatures[biome.0 as usize] = temperature;
         result
     }
+    #[inline]
     fn biome_should_snow(
         &mut self,
         biome: BiomeId,
@@ -1599,15 +1640,19 @@ impl PlacementContext for World<'_> {
         result
     }
     /// Lighting has not run during FEATURES; block light reads zero.
+    #[inline]
     fn block_brightness(&mut self, _: [i32; 3]) -> Result<i32, PlacementQueryError> {
         Ok(0)
     }
+    #[inline]
     fn fluid_state(&mut self, position: [i32; 3]) -> Result<FluidState, PlacementQueryError> {
         self.read_fluid_state(position)
     }
+    #[inline]
     fn sea_level(&mut self) -> Result<i32, PlacementQueryError> {
         self.region.sea_level()
     }
+    #[inline]
     fn schedule_fluid_tick(
         &mut self,
         position: [i32; 3],
@@ -1616,9 +1661,11 @@ impl PlacementContext for World<'_> {
     ) -> Result<(), PlacementQueryError> {
         self.region.schedule_fluid_tick(position, fluid, delay)
     }
+    #[inline]
     fn mark_postprocessing(&mut self, position: [i32; 3]) -> Result<(), PlacementQueryError> {
         self.region.mark_postprocessing(position)
     }
+    #[inline]
     fn water_at(&mut self, position: [i32; 3]) -> Result<bool, PlacementQueryError> {
         let chunk = ChunkPos::new(position[0] >> 4, position[2] >> 4);
         if self.zone.contains_chunk(chunk) {
@@ -1631,6 +1678,7 @@ impl PlacementContext for World<'_> {
             .fluids
             .state_matches_tag(state, "minecraft:water"))
     }
+    #[inline]
     fn schedule_block_tick(
         &mut self,
         position: [i32; 3],
@@ -1639,6 +1687,7 @@ impl PlacementContext for World<'_> {
     ) -> Result<(), PlacementQueryError> {
         self.region.schedule_block_tick(position, block, delay)
     }
+    #[inline]
     fn biome_identity(&mut self, position: [i32; 3]) -> Result<BiomeId, PlacementQueryError> {
         if let Some(biome) = self.uniform_biome(position) {
             return Ok(biome);
@@ -1657,6 +1706,7 @@ impl PlacementContext for World<'_> {
             .copied()
             .map_err(Into::into)
     }
+    #[inline]
     fn biome_key(&mut self, position: [i32; 3]) -> Result<mod_api::BiomeKey, PlacementQueryError> {
         let biome = self.biome_identity(position)?;
         self.biome_names
@@ -1669,6 +1719,7 @@ impl PlacementContext for World<'_> {
             })
             .ok_or(PlacementQueryError::Unavailable)
     }
+    #[inline]
     fn biome_allows_feature(
         &mut self,
         position: [i32; 3],
@@ -1681,12 +1732,14 @@ impl PlacementContext for World<'_> {
             .get(word)
             .is_some_and(|w| w >> (feature.0 % 64) & 1 != 0))
     }
+    #[inline]
     fn block_state(&mut self, position: [i32; 3]) -> Result<BlockStateId, PlacementQueryError> {
         self.read_block(position).map_err(Into::into)
     }
     /// TerrainRegion::block_matches_tag (the region holds the same tag
     /// table), with the last tag's states kept: predicates ask one tag for
     /// many positions (environment scans), and the table is keyed by name.
+    #[inline]
     fn block_matches_tag(
         &mut self,
         position: [i32; 3],
@@ -1695,6 +1748,7 @@ impl PlacementContext for World<'_> {
         let state = self.read_block(position)?;
         self.state_matches_tag(state, tag)
     }
+    #[inline]
     fn state_matches_tag(
         &mut self,
         state: BlockStateId,
@@ -1714,9 +1768,11 @@ impl PlacementContext for World<'_> {
             .and_then(|(_, states)| states.as_ref());
         Ok(states.is_some_and(|states| states.contains(&state)))
     }
+    #[inline]
     fn max_y(&mut self) -> Result<i32, PlacementQueryError> {
         self.region.max_y()
     }
+    #[inline]
     fn layer_block(&mut self, position: [i32; 3]) -> Result<LayerBlock, PlacementQueryError> {
         let chunk = ChunkPos::new(position[0] >> 4, position[2] >> 4);
         if self.zone.contains_chunk(chunk) {
@@ -1742,12 +1798,15 @@ impl PlacementContext for World<'_> {
             },
         )
     }
+    #[inline]
     fn generation(&self) -> WorldGenerationContext {
         self.region.generation()
     }
+    #[inline]
     fn min_y(&mut self) -> Result<i32, PlacementQueryError> {
         self.region.min_y()
     }
+    #[inline]
     fn height(&mut self, kind: HeightmapType, x: i32, z: i32) -> Result<i32, PlacementQueryError> {
         let chunk = ChunkPos::new(x >> 4, z >> 4);
         if self.zone.contains_chunk(chunk) {
@@ -1767,6 +1826,7 @@ impl PlacementContext for World<'_> {
     }
     /// OreFeature's search for a column under its blob, without a trait call
     /// per column. Defers to `height` when a heightmap still has to be primed.
+    #[inline]
     fn any_height_at_least(
         &mut self,
         kind: HeightmapType,

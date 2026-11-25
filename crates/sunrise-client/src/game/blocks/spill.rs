@@ -312,10 +312,12 @@ struct EnginePreparedDrops<'a> {
 }
 
 impl mod_api::PreparedBlockDropsAccess for EnginePreparedDrops<'_> {
+    #[inline]
     fn len(&self) -> usize {
         self.items.len()
     }
 
+    #[inline]
     fn stack_metadata(
         &self,
         index: usize,
@@ -323,6 +325,7 @@ impl mod_api::PreparedBlockDropsAccess for EnginePreparedDrops<'_> {
         crate::game::api_values::stack_read_metadata(&self.items.get(index)?.stack).ok()
     }
 
+    #[inline]
     fn project_stack(
         &self,
         index: usize,
@@ -331,34 +334,42 @@ impl mod_api::PreparedBlockDropsAccess for EnginePreparedDrops<'_> {
         crate::game::api_values::project_stack(&self.items.get(index)?.stack, metadata).ok()
     }
 
+    #[inline]
     fn position(&self, index: usize) -> Option<[f64; 3]> {
         self.items.get(index).map(|item| item.position)
     }
 
+    #[inline]
     fn velocity(&self, index: usize) -> Option<[f64; 3]> {
         self.items.get(index).map(|item| item.velocity)
     }
 
+    #[inline]
     fn pickup_delay(&self, index: usize) -> Option<i32> {
         self.items.get(index).map(|item| item.pickup_delay)
     }
 
+    #[inline]
     fn thrower(&self, index: usize) -> Option<Option<u128>> {
         self.items.get(index).map(|item| item.state.thrower)
     }
 
+    #[inline]
     fn target(&self, index: usize) -> Option<Option<u128>> {
         self.items.get(index).map(|item| item.state.target)
     }
 
+    #[inline]
     fn no_gravity(&self, index: usize) -> Option<bool> {
         self.items.get(index).map(|item| item.state.no_gravity)
     }
 
+    #[inline]
     fn age(&self, index: usize) -> Option<i32> {
         self.items.get(index).map(|item| item.state.age)
     }
 
+    #[inline]
     fn set_stack(
         &mut self,
         index: usize,
@@ -372,6 +383,7 @@ impl mod_api::PreparedBlockDropsAccess for EnginePreparedDrops<'_> {
         Ok(true)
     }
 
+    #[inline]
     fn set_position(&mut self, index: usize, position: [f64; 3]) -> bool {
         let Some(item) = self.items.get_mut(index) else {
             return false;
@@ -380,6 +392,7 @@ impl mod_api::PreparedBlockDropsAccess for EnginePreparedDrops<'_> {
         true
     }
 
+    #[inline]
     fn set_velocity(&mut self, index: usize, velocity: [f64; 3]) -> bool {
         let Some(item) = self.items.get_mut(index) else {
             return false;
@@ -388,6 +401,7 @@ impl mod_api::PreparedBlockDropsAccess for EnginePreparedDrops<'_> {
         true
     }
 
+    #[inline]
     fn set_pickup_delay(&mut self, index: usize, pickup_delay: i32) -> bool {
         let Some(item) = self.items.get_mut(index) else {
             return false;
@@ -396,6 +410,7 @@ impl mod_api::PreparedBlockDropsAccess for EnginePreparedDrops<'_> {
         true
     }
 
+    #[inline]
     fn set_thrower(&mut self, index: usize, thrower: Option<u128>) -> bool {
         let Some(item) = self.items.get_mut(index) else {
             return false;
@@ -404,6 +419,7 @@ impl mod_api::PreparedBlockDropsAccess for EnginePreparedDrops<'_> {
         true
     }
 
+    #[inline]
     fn set_target(&mut self, index: usize, target: Option<u128>) -> bool {
         let Some(item) = self.items.get_mut(index) else {
             return false;
@@ -412,6 +428,7 @@ impl mod_api::PreparedBlockDropsAccess for EnginePreparedDrops<'_> {
         true
     }
 
+    #[inline]
     fn set_no_gravity(&mut self, index: usize, no_gravity: bool) -> bool {
         let Some(item) = self.items.get_mut(index) else {
             return false;
@@ -420,6 +437,7 @@ impl mod_api::PreparedBlockDropsAccess for EnginePreparedDrops<'_> {
         true
     }
 
+    #[inline]
     fn set_age(&mut self, index: usize, age: i32) -> bool {
         let Some(item) = self.items.get_mut(index) else {
             return false;
@@ -428,11 +446,13 @@ impl mod_api::PreparedBlockDropsAccess for EnginePreparedDrops<'_> {
         true
     }
 
+    #[inline]
     fn push(&mut self, drop: mod_api::ItemDrop) -> Result<(), mod_api::StackWriteError> {
         self.items.push(drop.try_into_engine(self.items_registry)?);
         Ok(())
     }
 
+    #[inline]
     fn insert(
         &mut self,
         index: usize,
@@ -446,6 +466,7 @@ impl mod_api::PreparedBlockDropsAccess for EnginePreparedDrops<'_> {
         Ok(true)
     }
 
+    #[inline]
     fn replace(
         &mut self,
         index: usize,
@@ -458,6 +479,7 @@ impl mod_api::PreparedBlockDropsAccess for EnginePreparedDrops<'_> {
         Ok(true)
     }
 
+    #[inline]
     fn remove(&mut self, index: usize) -> bool {
         if index >= self.items.len() {
             return false;
@@ -466,14 +488,17 @@ impl mod_api::PreparedBlockDropsAccess for EnginePreparedDrops<'_> {
         true
     }
 
+    #[inline]
     fn clear(&mut self) {
         self.items.clear();
     }
 
+    #[inline]
     fn truncate(&mut self, len: usize) {
         self.items.truncate(len);
     }
 
+    #[inline]
     fn swap(&mut self, a: usize, b: usize) -> bool {
         if a >= self.items.len() || b >= self.items.len() {
             return false;
