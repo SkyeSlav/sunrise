@@ -36,7 +36,6 @@ ids = [
     "hook:hurt_enemy",
     "hook:hurt_enemy.stack",
     "type:HurtEnemyEvent.stack",
-    "hook:living_incoming_damage",
     "hook:living_incoming_damage.weapon",
     "type:LivingIncomingDamageEvent.weapon",
     "hook:living_incoming_damage.causing_weapon",

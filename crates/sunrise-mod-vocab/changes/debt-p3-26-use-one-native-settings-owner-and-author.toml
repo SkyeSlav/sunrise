@@ -14,6 +14,10 @@ ids = [
     "method:ReloadContext::setting",
     "method:ClientReloadListenerContext::setting",
     "method:ChunkDiskHost::setting",
+    "method:prelude::ConfigClientHost::setting_bool",
+    "method:prelude::ConfigClientHost::setting_choice",
+    "method:prelude::ConfigClientHost::setting_color",
+    "method:prelude::ConfigClientHost::setting_f64",
 ]
 why = """
 Replace the TLS owner guess (`own_setting`), stale process cache (`READ`), and raw mod-id bypass

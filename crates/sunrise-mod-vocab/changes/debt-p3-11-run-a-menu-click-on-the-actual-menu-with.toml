@@ -3,7 +3,6 @@ ids = [
     "hook:menu_still_valid",
     "handle:PlayerRef::open_mod_menu",
     "handle:PlayerRef::open_chest_menu",
-    "handle:MenuRef::close_container",
 ]
 why = """`menu_clicked` now runs on the receiving menu without a click-wide transaction or inventory snapshot. Vanilla 26.3 `ServerGamePacketListenerImpl.handleContainerClick`, `ChestMenu.stillValid`, and `Container.stillValidBlockEntity` check whether that menu still belongs to the player and can be used. Sunrise rechecks the live receiver after mod callbacks, then runs `AbstractContainerMenu.clicked`/`doClick` and the ordinary `Slot` operations only if the click has not been handled, failed, or become invalid. As in `AbstractContainerMenu.clicked`, a failure does not continue into a second click; Sunrise reports it, corrects the still-live menu and cursor, and keeps changes that already committed. Menu replacement and return of the carried stack follow vanilla `ServerPlayer.openMenu`, `doCloseContainer`, and `AbstractContainerMenu.removed`, in the addressed player's level. NeoForge's `ServerPlayer.openMenu` overload keeps the choice of sending a client close, and `PlayerContainerEvent.Close` follows removal. A mod's explicit storage transaction publishes those lifecycle effects only at outermost commit, so rollback never writes a cursor into a different menu. The writable open veto runs after block replay, preserving the old holder's `LevelChunk.setBlockState` removal and `BlockEntity.preRemoveSideEffects` inventory drop before the veto can place a new holder."""
 migrate = """

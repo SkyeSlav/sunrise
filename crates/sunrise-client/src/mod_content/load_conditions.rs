@@ -25,12 +25,20 @@ pub(super) struct TagLayers<'a> {
 pub(super) fn merge_tag(
     text: Option<&str>,
     layers: &[TagLayers<'_>],
+    replaced: bool,
     what: &str,
     _conditions: &sunrise_world::conditions::LoadConditions,
 ) -> Result<String> {
     let mut doc = match text {
         Some(t) => serde_json::from_str(t).map_err(|e| format!("{what}: {e}"))?,
-        None => J::Obj(vec![("values".into(), J::Arr(Vec::new()))]),
+        None => {
+            let mut fields = Vec::new();
+            if replaced {
+                fields.push(("replace".into(), J::Bool(true)));
+            }
+            fields.push(("values".into(), J::Arr(Vec::new())));
+            J::Obj(fields)
+        }
     };
     // Tags do not evaluate load conditions.
     doc.remove("neoforge:conditions");
@@ -361,7 +369,14 @@ pub fn build_with_conditions(
             .filter(|_| !merge.replaced);
         overlay.write(
             file,
-            merge_tag(vanilla.as_deref(), &merge.layers(), file, conditions)?.as_bytes(),
+            merge_tag(
+                vanilla.as_deref(),
+                &merge.layers(),
+                merge.replaced,
+                file,
+                conditions,
+            )?
+            .as_bytes(),
         )?;
         // data/<ns>/tags/block/<path>.json is the block tag <ns>:<path>.
         let Some((ns, path)) = file
@@ -377,7 +392,13 @@ pub fn build_with_conditions(
                 Some(J::Str(t)) if !merge.replaced => Some(t.clone()),
                 _ => None,
             };
-            let merged = merge_tag(text.as_deref(), &merge.layers(), name, conditions)?;
+            let merged = merge_tag(
+                text.as_deref(),
+                &merge.layers(),
+                merge.replaced,
+                name,
+                conditions,
+            )?;
             doc.set(&id, J::Str(merged));
         }
     }
@@ -402,7 +423,13 @@ pub fn build_with_conditions(
                 Some(J::Str(t)) if !merge.replaced => Some(t.clone()),
                 _ => None,
             };
-            let merged = merge_tag(text.as_deref(), &merge.layers(), BIOME_TAGS, conditions)?;
+            let merged = merge_tag(
+                text.as_deref(),
+                &merge.layers(),
+                merge.replaced,
+                BIOME_TAGS,
+                conditions,
+            )?;
             doc.set(&id, J::Str(merged));
         }
         overlay.write(BIOME_TAGS, &serde_json::to_vec(&doc)?)?;

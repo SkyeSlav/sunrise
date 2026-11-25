@@ -46,7 +46,7 @@ impl ItemKey {
     /// Whether this item is in `tag` (`ItemStack.is(TagKey)`), over `tags`'s current
     /// authoritative snapshot. An unknown tag is `Some(false)`; unavailable tags or mappings
     /// return `None`.
-    pub fn is_in_tag(self, tags: &dyn Tags, tag: TagKey) -> Option<bool> {
+    pub fn is_in_tag(self, tags: &dyn Tags, tag: TagKey<ItemKey>) -> Option<bool> {
         tags.is_in_tag(self, tag)
     }
     /// The fluid a filled bucket the game registers holds (`BucketItem.content`), the inverse of

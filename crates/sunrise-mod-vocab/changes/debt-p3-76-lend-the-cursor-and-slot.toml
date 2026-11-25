@@ -1,11 +1,11 @@
 ids = [
     "hook:item_stacked_on_other",
     "type:StackedOnOther",
-    "method:StackedOnOther::carried",
-    "method:StackedOnOther::set_carried",
-    "method:StackedOnOther::clicked",
-    "method:StackedOnOther::set_clicked",
-    "method:StackedOnOther::take_clicked",
+    "handle:StackedOnOther::carried",
+    "handle:StackedOnOther::set_carried",
+    "handle:StackedOnOther::clicked",
+    "handle:StackedOnOther::set_clicked",
+    "handle:StackedOnOther::take_clicked",
     "type:StackedOnOther.action",
     "type:StackedOnOther.handled",
     "type:StackedOnOther.primary",
@@ -15,6 +15,15 @@ ids = [
     "type:ClickedStackResult",
     "type:ClickAction",
     "type:StackedOnOtherDirection",
+    "handle:StackedOnOther::new",
+    "handle:StackedOnOther::with_direction",
+    "hook:item_stacked_on_other.event",
+    "hook:item_stacked_on_other.result",
+    "method:Hooks::item_stacked_on_other",
+    "method:ItemPart::item_stacked_on_other",
+    "type:ItemStackedOnOtherEvent",
+    "type:ItemStackedOnOtherEvent.event",
+    "type:ItemStackedOnOtherEvent.result",
 ]
 why = """`item_stacked_on_other` (version 7) lends the click's cursor and clicked slot, as NeoForge's `ItemStackedOnOtherEvent` gives `getCarriedSlotAccess` and `getSlot`, instead of cloned stacks and a separate answer.
 

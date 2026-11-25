@@ -23,7 +23,7 @@ impl BlockState {
     /// Whether this state's block is in `tag` (`BlockBehaviour.BlockStateBase.is(TagKey)`),
     /// delegating through [`Self::block`]. An unknown tag is `Some(false)`; unavailable tags
     /// or mappings return `None`.
-    pub fn is_in_tag(self, tags: &dyn Tags, tag: TagKey) -> Option<bool> {
+    pub fn is_in_tag(self, tags: &dyn Tags, tag: TagKey<BlockKey>) -> Option<bool> {
         self.block().is_in_tag(tags, tag)
     }
     /// Borrow this state's outline boxes (`BlockBehaviour.BlockStateBase.getShape` with

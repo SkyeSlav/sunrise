@@ -19,6 +19,7 @@ super::native_tags::impl_tags!(
     ReadLevel<'_, '_>,
     level,
     level.game.native_tag_items(),
+    level.game.loaded_biome_keys(),
     Some(level.game)
 );
 

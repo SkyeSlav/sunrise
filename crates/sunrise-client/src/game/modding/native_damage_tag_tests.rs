@@ -34,7 +34,7 @@ impl Hooks for Probe {
     ) -> Flow {
         let tags = level.tags();
         // Keys first made here, after the world bound its tags.
-        let key = |name: &str| tags.key(&Identifier::parse(name).unwrap()).unwrap();
+        let key = |name: &str| tags.key(&Identifier::parse(name).unwrap()).unwrap().typed();
         let mut reads = self.0.lock().unwrap();
         let damage_type = event.source.damage_type;
         let members = reads

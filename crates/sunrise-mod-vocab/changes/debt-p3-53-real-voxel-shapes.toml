@@ -5,7 +5,6 @@ ids = [
     "method:LevelHost::collision_shape",
     "hook:collision_shape",
     "hook:collision_shape.shape",
-    "behaviour:hook_dispatch_panic_containment",
     "type:CollisionShapeEvent.shape",
     "handle:LevelRef::visit_block_collisions",
     "type:CollisionExclusionsError",

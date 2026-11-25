@@ -55,13 +55,11 @@ ids = [
     "hook:remove_block",
     "hook:screenshot",
     "hook:state_at_viewpoint",
-    "hook:state_for_placement",
     "hook:tab_complete",
     "hook:tab_complete.suggestions",
     "method:Hooks::tab_complete",
     "type:TabCompleteEvent",
     "type:TabCompleteEvent.suggestions",
-    "hook:toast_add",
     "hook:tool_modified_state",
     "hook:tooltip",
     "hook:tooltip.lines",
@@ -80,6 +78,10 @@ ids = [
     "handle:HookList::push",
     "handle:HookList::remove",
     "handle:HookList::clear",
+    "hook:item_destroyed.drops",
+    "method:ItemPart::item_destroyed",
+    "type:ItemDestroyedEvent",
+    "type:ItemDestroyedEvent.drops",
 ]
 why = "NeoForge BlockEvent.BlockToolModificationEvent.setFinalState and getFinalState separate the proposed state from cancellation. PotionBrewEvent.Pre.setItem publishes per-slot edits when EventHooks.onPotionAttemptBrew cancels vanilla brewing. Vanilla BoneMealItem.growCrop calls BonemealableBlock.performBonemeal only on its growth path. Native conversion-routed hooks now admit independent replies without rolling back unrelated edits or a veto. The paired hand swap, atomic contact batches and resident menu transactions keep their domain contracts."
 migrate = '''
