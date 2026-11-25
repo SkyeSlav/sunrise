@@ -714,6 +714,8 @@ impl Game<'_> {
     /// A mod's general entity rows (#792), as the tracker reads them. Their type key is no
     /// entity type a client knows, so pairing introduces them on `sunrise:general_entity`
     /// (`lan/entity.rs`), to Sunrise clients only; their own data are their synced attachments.
+    /// Their custom name and its visibility go as vanilla's `Entity.DATA_CUSTOM_NAME` and
+    /// `DATA_CUSTOM_NAME_VISIBLE` (entries 2 and 3 of the base `Entity` block), never in that payload.
     /// Only these states are marked general: a quarantined record, which keeps its type's key,
     /// is no row and is tracked as an unknown kind (never paired).
     fn lan_general_states(&self, out: &mut States, after: u32) {
@@ -732,6 +734,23 @@ impl Game<'_> {
             [e.yaw, e.pitch] = row.rotation;
             e.head_yaw = row.rotation[0];
             e.general = Some(catalog.tracking(row.type_slot));
+            if let Some(name) = &row.custom_name {
+                e.meta.push((
+                    2,
+                    serializer::OPTIONAL_COMPONENT,
+                    Value::OptText(Some(sunrise_client::scoreboard::json_to_tag(
+                        &name.component(),
+                    ))),
+                ));
+            }
+            if row.custom_name_visible {
+                e.meta.push((3, serializer::BOOLEAN, Value::Bool(true)));
+            }
+            // A name taken away or hidden again is sent as none / false.
+            e.defaults
+                .push((2, serializer::OPTIONAL_COMPONENT, Value::OptText(None)));
+            e.defaults
+                .push((3, serializer::BOOLEAN, Value::Bool(false)));
         }
     }
 

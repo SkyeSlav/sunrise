@@ -283,6 +283,8 @@ fn record_at(type_key: &str, uuid: [i32; 4], at: [f64; 3], riders: Vec<Tag>) -> 
         velocity: [0.0; 3],
         rotation: [0.0, 90.0],
         owner: None,
+        custom_name: None,
+        custom_name_visible: false,
         uuid,
         envelope: GeneralTypeEnvelope {
             type_key: type_key.to_owned(),

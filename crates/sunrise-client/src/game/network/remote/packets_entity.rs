@@ -10,6 +10,9 @@ impl Game<'_> {
         if let Some(t) = r.entities.get(&id) {
             return Some(t.kind.clone());
         }
+        if let Some(row) = r.general.rows.get(&id) {
+            return Some(row.kind().to_owned());
+        }
         self.mobs
             .iter()
             .find(|m| m.id == id as u32)
@@ -82,6 +85,16 @@ impl Game<'_> {
                 }
                 if let Some(t) = r.entities.get_mut(&id) {
                     t.silent = *silent;
+                }
+            }
+            // Entity.DATA_CUSTOM_NAME and DATA_CUSTOM_NAME_VISIBLE of a general row.
+            if let Some(row) = r.general.rows.get_mut(&id) {
+                match (index, value) {
+                    (2, Value::OptText(name)) => {
+                        row.custom_name = name.as_ref().map(sunrise_client::entity_nbt::name_text);
+                    }
+                    (3, Value::Bool(visible)) => row.custom_name_visible = *visible,
+                    _ => {}
                 }
             }
         }

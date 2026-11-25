@@ -19,6 +19,7 @@ use std::collections::HashSet;
 use sunrise_client::entity_rules::EntityRules;
 use sunrise_client::impl_joined;
 use sunrise_client::join_seq::{JoinList, JoinSeq};
+use sunrise_client::text::Text;
 use sunrise_core::fast_hash::{FxHashMap, FxHashSet};
 use sunrise_core::geometry::{Aabb, Vec3};
 use sunrise_core::nbt::Tag;
@@ -40,6 +41,10 @@ pub struct GeneralEntityRecord {
     /// The UUID of the entity that fired it (`Owner`, as `TraceableEntity`s and
     /// projectiles save it), when a spawn named one.
     pub owner: Option<[i32; 4]>,
+    /// `Entity.getCustomName`, saved as `CustomName`; absent means none.
+    pub custom_name: Option<Text>,
+    /// `Entity.isCustomNameVisible`, saved as `CustomNameVisible`; absent means false.
+    pub custom_name_visible: bool,
     /// The type envelope: which registered type owns the payload, at which
     /// schema version, with which bounded payload bytes.
     pub envelope: GeneralTypeEnvelope,
@@ -225,6 +230,10 @@ mod format {
     pub const UUID: &str = "UUID";
     /// `Owner`: the firing entity's UUID, four ints (`Projectile.addAdditionalSaveData`'s key).
     pub const OWNER: &str = "Owner";
+    /// `CustomName`: the entity's name as a text component (`Entity.saveWithoutId`).
+    pub const CUSTOM_NAME: &str = "CustomName";
+    /// `CustomNameVisible`: written only when set (`Entity.saveWithoutId`).
+    pub const CUSTOM_NAME_VISIBLE: &str = "CustomNameVisible";
     /// The payload's schema version, a short.
     pub const PAYLOAD_VERSION: &str = "PayloadVersion";
     /// The payload bytes, a byte array.
@@ -280,6 +289,15 @@ impl GeneralEntityRecord {
         map.insert(format::UUID.into(), Tag::IntArray(self.uuid.to_vec()));
         if let Some(owner) = self.owner {
             map.insert(format::OWNER.into(), Tag::IntArray(owner.to_vec()));
+        }
+        if let Some(name) = &self.custom_name {
+            map.insert(
+                format::CUSTOM_NAME.into(),
+                sunrise_client::scoreboard::component_tag(&name.component()),
+            );
+        }
+        if self.custom_name_visible {
+            map.insert(format::CUSTOM_NAME_VISIBLE.into(), Tag::Byte(1));
         }
         map.insert(
             format::PAYLOAD_VERSION.into(),
@@ -426,6 +444,11 @@ fn read_general_record(
             });
         }
     };
+    // `Entity.load`: a `CustomName` that fails the component codec reads as none.
+    let custom_name = tag
+        .get(format::CUSTOM_NAME)
+        .and_then(sunrise_client::entity_nbt::decode_custom_name_text);
+    let custom_name_visible = sunrise_client::entity_nbt::flag(tag, format::CUSTOM_NAME_VISIBLE);
     let payload_version = match tag.get(format::PAYLOAD_VERSION) {
         None => 0,
         Some(Tag::Short(version)) => u16::from_ne_bytes(version.to_ne_bytes()),
@@ -465,6 +488,8 @@ fn read_general_record(
         rotation,
         uuid,
         owner,
+        custom_name,
+        custom_name_visible,
         envelope: GeneralTypeEnvelope {
             type_key: type_key.to_string_lossy(),
             payload_version,
@@ -655,6 +680,10 @@ pub struct GeneralRow {
     pub owner: Option<[i32; 4]>,
     /// How far the row has fallen; stage 3's load and stage 4's tick own it.
     pub fall_distance: f64,
+    /// `Entity.getCustomName`; synced to tracking clients as `Entity.DATA_CUSTOM_NAME`.
+    pub custom_name: Option<Text>,
+    /// `Entity.isCustomNameVisible`; synced as `Entity.DATA_CUSTOM_NAME_VISIBLE`.
+    pub custom_name_visible: bool,
     /// The payload's schema version, as the record carried it and the writer
     /// returns it: no decoder owns it before stage 4.
     pub payload_version: u16,
@@ -878,6 +907,8 @@ impl Game<'_> {
             rotation: row.rotation,
             uuid: row.uuid,
             owner: row.owner,
+            custom_name: row.custom_name.clone(),
+            custom_name_visible: row.custom_name_visible,
             envelope: GeneralTypeEnvelope {
                 type_key: general_type_catalog().key(row.type_slot).to_owned(),
                 payload_version: row.payload_version,
@@ -1317,6 +1348,8 @@ impl Game<'_> {
             rotation: record.rotation,
             owner: record.owner,
             fall_distance: 0.0,
+            custom_name: record.custom_name,
+            custom_name_visible: record.custom_name_visible,
             payload_version: record.envelope.payload_version,
             payload_bytes: record.envelope.payload_bytes,
             mount,
@@ -1475,6 +1508,8 @@ mod tests {
             velocity: [0.0, 0.0, 0.0],
             rotation: [0.0, 0.0],
             owner: None,
+            custom_name: None,
+            custom_name_visible: false,
             uuid,
             envelope: GeneralTypeEnvelope {
                 type_key: type_key.to_owned(),
@@ -1763,6 +1798,8 @@ mod tests {
             rotation: [0.0, 0.0],
             owner: None,
             fall_distance: 0.0,
+            custom_name: None,
+            custom_name_visible: false,
             payload_version: 1,
             payload_bytes: Vec::new(),
             mount: None,

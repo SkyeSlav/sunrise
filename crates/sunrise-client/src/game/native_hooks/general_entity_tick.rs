@@ -209,6 +209,8 @@ mod tests {
                         rotation: [4.0, 5.0],
                         owner: None,
                         fall_distance: 6.0,
+                        custom_name: None,
+                        custom_name_visible: false,
                         payload_version: 1,
                         payload_bytes: Vec::new(),
                         mount: None,

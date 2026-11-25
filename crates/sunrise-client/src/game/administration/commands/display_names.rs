@@ -63,6 +63,21 @@ impl Game<'_> {
                 Text::translate("entity.minecraft.falling_block_type", &[block])
             }
             Target::Bolt(id) => self.bolt_plain_name(id),
+            // A general row keeps its name on the row, not in a saved compound.
+            Target::General(id) => {
+                match self
+                    .resident_entities
+                    .general
+                    .row(id)
+                    .and_then(|row| row.custom_name.as_ref())
+                {
+                    Some(name) => sunrise_client::scoreboard::remove_click_events(name),
+                    None => Text::translate(
+                        &format!("entity.{}", self.target_type(t).replace(':', ".")),
+                        &[],
+                    ),
+                }
+            }
             other => {
                 if let Some(name) = super::super::native_entities::target_id(other)
                     .and_then(|id| self.custom_name_of(id))

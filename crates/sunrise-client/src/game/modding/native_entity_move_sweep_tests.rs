@@ -244,6 +244,8 @@ fn every_walk_family_of_the_entity_lists_fires_its_case() {
                 velocity: [0.5, 0.0, 0.0],
                 rotation: [0.0, 90.0],
                 owner: None,
+                custom_name: None,
+                custom_name_visible: false,
                 uuid: [11, 12, 13, 14],
                 envelope: crate::game::general::GeneralTypeEnvelope {
                     type_key: "mymod:robot".to_owned(),

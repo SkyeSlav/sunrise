@@ -84,6 +84,8 @@ fn record_tag(type_key: &str, uuid: [i32; 4], payload: &[u8], riders: Vec<Tag>) 
         velocity: [0.0; 3],
         rotation: [0.0, 90.0],
         owner: None,
+        custom_name: None,
+        custom_name_visible: false,
         uuid,
         envelope: GeneralTypeEnvelope {
             type_key: type_key.to_owned(),
@@ -1853,5 +1855,153 @@ fn a_general_rider_fills_a_chest_boat_and_keeps_it_from_being_pushed() {
             assert_eq!(game.boats[0].velocity, Vec3::ZERO);
             assert_eq!(game.boats[1].velocity, pushed);
         }
+    });
+}
+
+/// `Entity.saveWithoutId` and `Entity.load`: a general record's `CustomName` and
+/// `CustomNameVisible` survive the save format, `CustomNameVisible` is written only when set,
+/// and a record saved without either loads with no name and false.
+#[test]
+fn a_general_records_custom_name_survives_save_and_load() {
+    let mut record = GeneralEntityRecord {
+        position: [0.5, 64.0, 0.5],
+        velocity: [0.0; 3],
+        rotation: [0.0; 2],
+        owner: None,
+        custom_name: Some(Text::colored("Grumbles", 0xFF5555)),
+        custom_name_visible: true,
+        uuid: [1, 2, 3, 4],
+        envelope: GeneralTypeEnvelope {
+            type_key: "mymod:robot".to_owned(),
+            payload_version: 3,
+            payload_bytes: Vec::new(),
+        },
+        passengers: Vec::new(),
+    };
+    let tag = record.to_tag();
+    assert_eq!(tag.get("CustomNameVisible"), Some(&Tag::Byte(1)));
+    assert_eq!(record_from_compound(&tag).unwrap(), record);
+
+    record.custom_name_visible = false;
+    let tag = record.to_tag();
+    assert_eq!(tag.get("CustomNameVisible"), None);
+    assert_eq!(record_from_compound(&tag).unwrap(), record);
+
+    // An old record never wrote either key.
+    record.custom_name = None;
+    let old = record.to_tag();
+    assert_eq!(old.get("CustomName"), None);
+    let loaded = record_from_compound(&old).unwrap();
+    assert_eq!(loaded.custom_name, None);
+    assert!(!loaded.custom_name_visible);
+}
+
+/// A live general row's name and visibility: loaded from its save, read through its handle
+/// (`EntityRef::name` and the styled `EntityRef::custom_name`), matched by `@e[name=...]` (an
+/// unnamed row is not), changed by a mod and saved again.
+#[test]
+#[ignore = "daily"]
+fn a_general_rows_custom_name_is_read_selected_and_saved() {
+    use crate::game::api_values::TryIntoApi;
+    with_types(|game| {
+        fixture_resident_column(&mut game.world, (0, 0));
+        let mut named = record_tag("mymod:robot", [1, 2, 3, 4], b"", Vec::new());
+        if let Tag::Compound(map) = &mut named {
+            map.insert("CustomName".into(), Tag::String("Grumbles".into()));
+            map.insert("CustomNameVisible".into(), Tag::Byte(1));
+        }
+        game.load_listed("mymod:robot", None, None, named).unwrap();
+        let plain = record_tag("mymod:robot", [4, 3, 2, 1], b"", Vec::new());
+        game.load_listed("mymod:robot", None, None, plain).unwrap();
+        let rows = &game.resident_entities.general.rows;
+        let (named_id, plain_id) = (rows[0].id, rows[1].id);
+        let (named, plain) = (
+            game.entity(named_id).unwrap(),
+            game.entity(plain_id).unwrap(),
+        );
+        game.build_registries();
+
+        assert_eq!(named.name(game).as_deref(), Some("Grumbles"));
+        assert_eq!(
+            named.custom_name(game).unwrap(),
+            Some(mod_api::Text::literal("Grumbles"))
+        );
+        assert_eq!(named.custom_name_visible(game), Some(true));
+        assert_ne!(plain.name(game).as_deref(), Some("Grumbles"));
+        assert_eq!(plain.custom_name(game).unwrap(), None);
+        assert_eq!(plain.custom_name_visible(game), Some(false));
+
+        // A mod names the unnamed row; the save and the selector follow.
+        let name: mod_api::Text = Text::colored("Rumbles", 0x55FF55).try_into_api().unwrap();
+        assert!(plain.set_custom_name(game, Some(name.clone())).unwrap());
+        assert!(plain.set_custom_name_visible(game, true));
+        assert_eq!(plain.name(game).as_deref(), Some("Rumbles"));
+        assert_eq!(plain.custom_name(game).unwrap(), Some(name));
+        let saved = game.general_tree_nbt(plain_id, false).unwrap();
+        let loaded = record_from_compound(&saved).unwrap();
+        assert_eq!(loaded.custom_name, Some(Text::colored("Rumbles", 0x55FF55)));
+        assert!(loaded.custom_name_visible);
+
+        assert!(plain.set_custom_name(game, None).unwrap());
+        assert!(plain.set_custom_name_visible(game, false));
+        assert_eq!(plain.custom_name(game).unwrap(), None);
+        let saved = game.general_tree_nbt(plain_id, false).unwrap();
+        assert_eq!(saved.get("CustomName"), None);
+        assert_eq!(saved.get("CustomNameVisible"), None);
+
+        assert!(game.as_console(|game| game.run_command("kill @e[name=Grumbles]")));
+        assert!(game.resident_entities.general.row(named_id).is_none());
+        assert!(game.resident_entities.general.row(plain_id).is_some());
+    });
+}
+
+/// The selectors every entity answers (`type=`, `distance=`, `@n`, a UUID) also reach a
+/// general row.
+#[test]
+#[ignore = "daily"]
+fn a_general_row_answers_distance_nearest_and_uuid_selectors() {
+    with_types(|game| {
+        for chunk in [(0, 0), (2, 0), (5, 0)] {
+            fixture_resident_column(&mut game.world, chunk);
+        }
+        for (at, uuid) in [
+            (0.5, [1, 2, 3, 4]),
+            (40.5, [5, 6, 7, 8]),
+            (80.5, [9, 10, 11, 12]),
+        ] {
+            let mut tag = record_tag("mymod:robot", uuid, b"", Vec::new());
+            if let Tag::Compound(map) = &mut tag {
+                map.insert(
+                    format::POSITION.into(),
+                    Tag::List(
+                        [at, 64.0, 0.5]
+                            .map(|p| Tag::Double(f64::to_bits(p)))
+                            .to_vec(),
+                    ),
+                );
+            }
+            game.load_listed("mymod:robot", None, None, tag).unwrap();
+        }
+        let rows = &game.resident_entities.general.rows;
+        let (near, far, last) = (rows[0].id, rows[1].id, rows[2].id);
+        game.build_registries();
+        // `distance=..5` from the origin reaches only the near row.
+        assert!(game.as_console(|game| {
+            game.run_command(
+                "execute positioned 0.5 64 0.5 run kill @e[type=mymod:robot,distance=..5]",
+            )
+        }));
+        assert!(game.resident_entities.general.row(near).is_none());
+        assert!(game.resident_entities.general.row(far).is_some());
+        // `@n` from beside the far row picks it.
+        assert!(game.as_console(|game| {
+            game.run_command("execute positioned 41 64 0.5 run kill @n[type=mymod:robot]")
+        }));
+        assert!(game.resident_entities.general.row(far).is_none());
+        // A UUID names one row.
+        assert!(
+            game.as_console(|game| game.run_command("kill 00000009-0000-000a-0000-000b0000000c"))
+        );
+        assert!(game.resident_entities.general.row(last).is_none());
     });
 }

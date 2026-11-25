@@ -11,6 +11,7 @@ use crate::game::general::general_type_catalog;
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use sunrise_client::join_seq::JoinSeq;
+use sunrise_client::text::Text;
 use sunrise_core::geometry::{Aabb, Vec3};
 use sunrise_mod_runtime::attachments::{Attachments, Holder};
 use sunrise_protocol::general_entity::{self, Message};
@@ -32,6 +33,10 @@ pub(in crate::game) struct RemoteGeneral {
     /// Client ticks since the spawn: `Entity.tickCount`, which wraps as Java's `int` does
     /// (read as `i32`).
     pub age: u32,
+    /// `Entity.DATA_CUSTOM_NAME`, as `SetEntityData` entry 2 last set it.
+    pub custom_name: Option<Text>,
+    /// `Entity.DATA_CUSTOM_NAME_VISIBLE`, as `SetEntityData` entry 3 last set it.
+    pub custom_name_visible: bool,
     /// Frozen synced fields, initialized on spawn and rebuilt at each attachment sync boundary.
     pub render_attachments: mod_api::EntityRenderAttachments,
 }
@@ -53,6 +58,8 @@ impl RemoteGeneral {
             rotation,
             previous_rotation: rotation,
             age: 0,
+            custom_name: None,
+            custom_name_visible: false,
             render_attachments,
         }
     }
@@ -472,6 +479,8 @@ mod tests {
                     velocity: [0.0; 3],
                     rotation: [0.0; 2],
                     owner: None,
+                    custom_name: None,
+                    custom_name_visible: false,
                     uuid: [1, 0, 0, 4],
                     envelope: GeneralTypeEnvelope {
                         type_key: PACKAGE.into(),
@@ -933,6 +942,104 @@ mod tests {
                 assert_eq!(held.keys().collect::<Vec<_>>(), [&15]);
                 assert_eq!(held[&15].position, [1.5, 70.0, 2.5]);
                 assert_eq!(held[&15].render_attachments.get(&fuel_key), Ok(Some(&42)));
+            })
+        });
+    }
+
+    /// `Entity.DATA_CUSTOM_NAME` (2) and `DATA_CUSTOM_NAME_VISIBLE` (3) reach a general row
+    /// through vanilla's `SetEntityData`, after its spawn and again when they change, and the
+    /// client's `EntityRef` reads them (`name`, the styled `custom_name` and
+    /// `custom_name_visible`); a name taken away reads as none and false.
+    #[test]
+    #[ignore = "daily"]
+    fn a_general_rows_synced_name_and_visibility_read_through_its_handle() {
+        use sunrise_core::nbt::Tag;
+        use sunrise_protocol::entity_data::{Value, serializer};
+
+        mod_platform::__private::initialize().unwrap();
+        let _phase = mod_platform::__private::RegistrationGuard::open();
+        let declare = || vec![mod_api::ModEntry::new("mymod", Box::new(Declare))];
+        mod_platform::testing::with_mods(declare().into(), || {
+            mod_platform::__private::part_tests::install_parts_fixture(&declare()).unwrap();
+            crate::game::item_entities::thrown_items_tests::with_remote_game(|game| {
+                game.handle_packet(C::Login(play::Login {
+                    player_id: 7,
+                    hardcore: false,
+                    levels: vec!["minecraft:overworld".into()],
+                    max_players: 20,
+                    chunk_radius: 8,
+                    simulation_distance: 8,
+                    reduced_debug_info: false,
+                    show_death_screen: true,
+                    limited_crafting: false,
+                    spawn: play::SpawnInfo {
+                        dimension_type: 0,
+                        dimension: "minecraft:overworld".into(),
+                        seed: 1,
+                        game_type: 0,
+                        previous_game_type: None,
+                        debug: false,
+                        flat: false,
+                        last_death: None,
+                        portal_cooldown: 0,
+                        sea_level: 63,
+                    },
+                    online_mode: false,
+                    enforces_secure_chat: false,
+                }))
+                .unwrap();
+                game.handle_packet(C::PlayerPosition(play::PlayerPosition {
+                    teleport: 1,
+                    position: [0.5, 70.0, 0.5],
+                    delta: [0.0; 3],
+                    yaw: 0.0,
+                    pitch: 0.0,
+                    relatives: 0,
+                }))
+                .unwrap();
+                game.handle_packet(spawn(12, "mymod:missile", [0.5, 70.0, 0.5]))
+                    .unwrap();
+                let row = game.entity(12).unwrap();
+                let data = |values: Vec<(u8, i32, Value)>| {
+                    C::SetEntityData(play::SetEntityData { id: 12, values })
+                };
+                let named = |name: Option<&str>, visible: bool| {
+                    data(vec![
+                        (
+                            2,
+                            serializer::OPTIONAL_COMPONENT,
+                            Value::OptText(name.map(|n| Tag::String(n.into()))),
+                        ),
+                        (3, serializer::BOOLEAN, Value::Bool(visible)),
+                    ])
+                };
+
+                // Before any data: no name, not visible.
+                assert_eq!(row.custom_name(game).unwrap(), None);
+                assert_eq!(row.custom_name_visible(game), Some(false));
+                assert_ne!(row.name(game).as_deref(), Some("Grumbles"));
+
+                game.handle_packet(named(Some("Grumbles"), true)).unwrap();
+                assert_eq!(row.name(game).as_deref(), Some("Grumbles"));
+                assert_eq!(
+                    row.custom_name(game).unwrap(),
+                    Some(mod_api::Text::literal("Grumbles"))
+                );
+                assert_eq!(row.custom_name_visible(game), Some(true));
+
+                game.handle_packet(named(Some("Rumbles"), false)).unwrap();
+                assert_eq!(row.name(game).as_deref(), Some("Rumbles"));
+                assert_eq!(
+                    row.custom_name(game).unwrap(),
+                    Some(mod_api::Text::literal("Rumbles"))
+                );
+                assert_eq!(row.custom_name_visible(game), Some(false));
+
+                game.handle_packet(named(None, false)).unwrap();
+                assert_ne!(row.name(game).as_deref(), Some("Rumbles"));
+                assert_eq!(rows(game)[&12].custom_name, None);
+                assert_eq!(row.custom_name(game).unwrap(), None);
+                assert_eq!(row.custom_name_visible(game), Some(false));
             })
         });
     }

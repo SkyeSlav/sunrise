@@ -180,6 +180,8 @@ impl Game<'_> {
             rotation: rotation.unwrap_or([0.0; 2]),
             uuid: sunrise_client::save::insecure_uuid(&mut sunrise_client::random_source::entity()),
             owner,
+            custom_name: None,
+            custom_name_visible: false,
             envelope: GeneralTypeEnvelope {
                 type_key: kind.to_owned(),
                 payload_version: catalog.payload_version(slot),

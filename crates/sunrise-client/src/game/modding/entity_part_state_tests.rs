@@ -205,6 +205,8 @@ fn robot_tag(uuid: i32) -> Tag {
         velocity: [0.0; 3],
         rotation: [0.0, 90.0],
         owner: None,
+        custom_name: None,
+        custom_name_visible: false,
         uuid: [uuid, 0, 0, 2],
         envelope: super::general::GeneralTypeEnvelope {
             type_key: "part_state:robot".to_owned(),

@@ -100,6 +100,13 @@ impl Game<'_> {
     /// (`Entity.DATA_CUSTOM_NAME`) and a player's profile name. API
     /// 386.
     pub(super) fn entity_name(&self, entity: EntityRef) -> Option<String> {
+        if let Some(row) = self.native_client_general(entity) {
+            return Some(match &row.custom_name {
+                Some(name) => sunrise_client::scoreboard::remove_click_events(name).plain(),
+                None => Text::translate(&format!("entity.{}", row.kind().replace(':', ".")), &[])
+                    .plain(),
+            });
+        }
         let t = self.native_entity_read_target(entity)?;
         if let Some(r) = &self.remote {
             let id = i32::try_from(entity.id()).ok()?;
@@ -119,18 +126,23 @@ impl Game<'_> {
         Some(self.target_name(t).plain())
     }
     /// `Entity.getCustomName`: the name `setCustomName` gave the entity, as stored (no click
-    /// events removed), or None. A mob's (styled, or the plain name a spawn gave it) and an
-    /// armor stand's live with them; a frame's, a falling block's, a lightning bolt's and a
-    /// cushion's with their own data; every other kind's in its saved `CustomName`. On a
-    /// client, the name the server synced for a mob, an armor stand, a lightning bolt or a display.
+    /// events removed), or None. A mob's (styled, or the plain name a spawn gave it), an
+    /// armor stand's and a general row's live with them; a frame's, a falling block's, a
+    /// lightning bolt's and a cushion's with their own data; every other kind's in its saved
+    /// `CustomName`. On a client, the name the server synced for a mob, an armor stand, a
+    /// general row, a lightning bolt or a display.
     pub(super) fn entity_custom_name(&self, entity: EntityRef) -> Option<Text> {
         let decode = sunrise_client::entity_nbt::decode_custom_name_text;
         if let Some(display) = self.native_client_display(entity) {
             return display.custom_name().cloned();
         }
+        if let Some(row) = self.native_client_general(entity) {
+            return row.custom_name.clone();
+        }
         match self.native_entity_read_target(entity)? {
             Target::Player | Target::Guest(_) => None,
             Target::Mob(id) => mob_custom_name(self.mobs.iter().find(|m| m.id == id)?),
+            Target::General(id) => self.resident_entities.general.row(id)?.custom_name.clone(),
             Target::Stand(id) => self
                 .armor_stands
                 .iter()
@@ -173,8 +185,8 @@ impl Game<'_> {
         }
     }
     /// Names the entity (`Entity.setCustomName`), or takes its name away
-    /// with `None`: its name, its saved `CustomName` and, for a mob or an
-    /// armor stand, what the players tracking it are sent. False for a
+    /// with `None`: its name, its saved `CustomName` and, for a mob, an
+    /// armor stand or a general row, what the players tracking it are sent. False for a
     /// player, a kind whose name Sunrise keeps nowhere yet (projectiles, the
     /// dragon and crystals, primed TNT, falling blocks, experience orbs,
     /// ominous item spawners), a stale handle or on a client.
@@ -192,6 +204,10 @@ impl Game<'_> {
             f.custom_name = saved.clone();
         } else if let Some(i) = self.bolts.iter().position(|b| b.id == id) {
             self.bolts.update(i, |b| b.custom_name = saved.clone());
+        } else if let Some(row) = self.resident_entities.general.row_mut(id) {
+            // A general row's name is saved from the row, and synced as entry 2.
+            row.custom_name = name;
+            return true;
         }
         self.put_saved(id, "CustomName", saved);
         true
@@ -199,6 +215,9 @@ impl Game<'_> {
     /// Whether the entity's name shows over it at any distance
     /// (`Entity.isCustomNameVisible`); false for the kinds that keep no name.
     pub(super) fn entity_custom_name_visible(&self, entity: EntityRef) -> Option<bool> {
+        if let Some(row) = self.native_client_general(entity) {
+            return Some(row.custom_name_visible);
+        }
         let t = self.native_entity_target(entity)?;
         let Some(id) = named_id(t) else {
             return Some(false);
@@ -209,6 +228,11 @@ impl Game<'_> {
                 .armor_stands
                 .iter()
                 .any(|a| a.id == id && a.name_visible),
+            Target::General(_) => self
+                .resident_entities
+                .general
+                .row(id)
+                .is_some_and(|row| row.custom_name_visible),
             _ => self
                 .persist_raw(id)
                 .is_some_and(|r| flag(r, "CustomNameVisible")),
@@ -216,7 +240,7 @@ impl Game<'_> {
     }
     /// Shows the entity's name at any distance, or only when looked at
     /// (`Entity.setCustomNameVisible`): saved, and sent to the players
-    /// tracking a mob or an armor stand. False where `set_custom_name` is.
+    /// tracking a mob, an armor stand or a general row. False where `set_custom_name` is.
     pub(super) fn entity_set_custom_name_visible(
         &mut self,
         entity: EntityRef,
@@ -229,6 +253,9 @@ impl Game<'_> {
             m.name_visible = visible;
         } else if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
             a.name_visible = visible;
+        } else if let Some(row) = self.resident_entities.general.row_mut(id) {
+            row.custom_name_visible = visible;
+            return true;
         }
         // `Entity.saveWithoutId` writes the flag only when set.
         let flag = visible.then_some(Tag::Byte(1));
@@ -315,7 +342,7 @@ pub(super) fn mob_custom_name(mob: &sunrise_client::mobs::Mob) -> Option<Text> {
 
 /// The id of an entity whose custom name the game keeps and saves
 /// (`target_name` reads it): the struct's own for mobs, armor stands and
-/// item frames, the saved compound's for the rest.
+/// item frames and general rows, the saved compound's for the rest.
 fn named_id(t: Target) -> Option<u32> {
     match t {
         Target::Mob(id)
@@ -328,7 +355,8 @@ fn named_id(t: Target) -> Option<u32> {
         | Target::Other(id)
         | Target::Fangs(id)
         | Target::Cloud(id)
-        | Target::Bolt(id) => Some(id),
+        | Target::Bolt(id)
+        | Target::General(id) => Some(id),
         _ => None,
     }
 }
