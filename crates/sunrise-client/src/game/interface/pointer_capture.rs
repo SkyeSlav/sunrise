@@ -161,6 +161,7 @@ impl Game<'_> {
                 || (!self.focused && !self.unclaimed_window && !self.scripted_run())
                 || self.server_packs.prompt.is_some()
                 || self.dialog_open()
+                || self.link_prompt.is_some()
                 || self.command_prompt.is_some())
         {
             return;

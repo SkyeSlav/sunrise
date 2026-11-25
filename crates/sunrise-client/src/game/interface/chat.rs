@@ -1591,6 +1591,8 @@ impl Game<'_> {
                 url: uri.to_owned(),
                 trusted,
             });
+            // `Minecraft.setScreen` releases the mouse for any screen, gameplay's included.
+            game.capture(false);
         });
         Ok(())
     }
@@ -1656,7 +1658,8 @@ impl Game<'_> {
         layout.draw(batch, atlas, self.cursor, &labels);
         self.draw_overlay_mounted_widgets(batch, "link_prompt");
     }
-    /// The prompt's answer: the link opens on yes; either way the chat is back.
+    /// The prompt's answer: the link opens on yes; either way the screen it opened over is
+    /// back, and a prompt opened over gameplay grabs the pointer again (`setScreen(null)`).
     pub(super) fn answer_link_prompt(&mut self, yes: bool) {
         let Some(prompt) = self.link_prompt.take() else {
             return;
@@ -1664,6 +1667,9 @@ impl Game<'_> {
         self.refresh_screen_widgets();
         if yes {
             super::packs::open_uri(&prompt.url);
+        }
+        if self.screen == Screen::Playing && !self.screen_over_playing() {
+            self.capture(true);
         }
     }
     pub(super) fn link_prompt_click(&mut self) -> bool {
@@ -3456,6 +3462,29 @@ mod link_and_path_tests {
             );
             game.answer_link_prompt(false);
             assert!(game.link_prompt.is_none());
+        });
+    }
+
+    /// Asked during gameplay, the prompt releases the pointer so the player can answer it,
+    /// and answering grabs it again, as `Minecraft.setScreen` does.
+    #[test]
+    #[ignore = "daily"]
+    fn a_link_asked_during_gameplay_releases_the_pointer_until_answered() {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            game.options.execution_role = super::super::execution_role::ExecutionRole::Client;
+            let (_event_loop, window) =
+                super::super::native_entity_refs::tests::test_window([640, 480]);
+            game.window = Some(window);
+            game.title = None;
+            game.screen = Screen::Playing;
+            game.focused = true;
+            game.captured = true;
+            assert_eq!(game.confirm_link("https://example.com", false), Ok(()));
+            assert!(game.link_prompt.is_some());
+            assert!(!game.captured, "the prompt releases the pointer");
+            game.answer_link_prompt(false);
+            assert!(game.screen == Screen::Playing);
+            assert!(game.captured, "answering grabs it again");
         });
     }
 
