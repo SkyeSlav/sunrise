@@ -548,7 +548,7 @@ impl Enchantments {
             defaults,
             files.iter().map(|(id, value)| (id.as_str(), value)),
         )?;
-        enchantments.install_providers(providers::load_from_resources(root, overlay));
+        enchantments.install_providers(providers::load_from_resources(root, overlay)?);
         Ok(enchantments)
     }
 

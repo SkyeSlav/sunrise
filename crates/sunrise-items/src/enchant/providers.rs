@@ -144,18 +144,25 @@ impl EnchantmentProvider {
     ) -> Levels {
         match self {
             Self::Single { enchantment, level } => {
-                let sampled = level.sample(random).unwrap_or(1);
-                let max_level = enchantments
-                    .get(enchantment)
-                    .map_or(255, |e| (e.max_level as i32).max(1));
-                let clamped = sampled.clamp(1, max_level) as u32;
+                // `Holder<Enchantment>`: an enchantment that is not registered draws nothing.
+                let Some(enchantment_def) = enchantments.get(enchantment) else {
+                    return Vec::new();
+                };
+                // vanilla's `IntProvider.sample` throws on an invalid bound; no upgrade is made.
+                let Ok(sampled) = level.sample(random) else {
+                    return Vec::new();
+                };
+                // `Mth.clamp(sample, getMinLevel(), getMaxLevel())`: `Math.min(Math.max(..))`.
+                let clamped = sampled.max(1).min(enchantment_def.max_level as i32) as u32;
                 vec![(Arc::clone(enchantment), clamped)]
             }
             Self::ByCost {
                 enchantments: set,
                 cost,
             } => {
-                let cost = cost.sample(random).unwrap_or(0);
+                let Ok(cost) = cost.sample(random) else {
+                    return Vec::new();
+                };
                 let pool = match set {
                     EnchantmentSet::Tag(tag) => enchantments.tag(tag),
                     EnchantmentSet::Ids(ids) => ids.as_slice(),
@@ -168,9 +175,9 @@ impl EnchantmentProvider {
                 max_cost_span,
             } => {
                 let top = *min_cost + (special_multiplier * *max_cost_span as f32) as i32;
-                let cost = random
-                    .next_int_between_inclusive(*min_cost, top)
-                    .unwrap_or(*min_cost);
+                let Ok(cost) = random.next_int_between_inclusive(*min_cost, top) else {
+                    return Vec::new();
+                };
                 let pool = match set {
                     EnchantmentSet::Tag(tag) => enchantments.tag(tag),
                     EnchantmentSet::Ids(ids) => ids.as_slice(),
@@ -225,19 +232,18 @@ fn decode_int_range(field: &str, value: &Value, min: i32, max: i32) -> Result<i3
 }
 
 /// Load `enchantment_provider` definitions from resource files and `overlay`
-/// when there is no staged `PackRegistryDefinitions` snapshot.
+/// when there is no staged `PackRegistryDefinitions` snapshot. Like
+/// `RegistryDataLoader`, a decode error refuses the whole load.
 pub(crate) fn load_from_resources(
     root: &Path,
     overlay: &PackOverlay<'_>,
-) -> BTreeMap<String, EnchantmentProvider> {
+) -> crate::Result<BTreeMap<String, EnchantmentProvider>> {
     crate::items::data_files(root, "enchantment_provider", overlay)
         .into_iter()
-        .filter_map(|(id, value)| match EnchantmentProvider::decode(&value) {
-            Ok(provider) => Some((id, provider)),
-            Err(error) => {
-                log::warn!("Sunrise: invalid enchantment provider {id}: {error}");
-                None
-            }
+        .map(|(id, value)| {
+            EnchantmentProvider::decode(&value)
+                .map(|provider| (id.clone(), provider))
+                .map_err(|error| format!("enchantment provider {id}: {error}"))
         })
         .collect()
 }
@@ -389,5 +395,30 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(rng.next_long(), rng_after.next_long());
+    }
+
+    #[test]
+    fn an_invalid_provider_file_refuses_the_whole_load() {
+        let root = std::env::temp_dir().join(format!(
+            "sunrise-enchantment-provider-load-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("data/demo/enchantment_provider");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("good.json"),
+            json!({"type": "minecraft:single", "enchantment": "minecraft:sharpness", "level": 1})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("bad.json"),
+            json!({"type": "minecraft:unknown"}).to_string(),
+        )
+        .unwrap();
+        let loaded = load_from_resources(&root, &PackOverlay::default());
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(loaded.is_err());
     }
 }
