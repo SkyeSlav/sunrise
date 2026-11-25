@@ -30,6 +30,38 @@ the edited level, the edit commits immediately, even if another level has a tran
 When a bulk edit and a `LevelRef::set_block` write touch the same position, they replay in
 call order. Only the ordinary write can spill contents or notify neighbors.
 
+The game's bulk block edit API is paired with `LevelRef::move_blocks` for moving regions with
+their block entities and scheduled ticks.
+
+## Moving blocks across levels
+
+`level.move_blocks(host, to, area, offset, transform, strict)` moves the blocks in `area`
+(`BoundingBox`) from `level` to `to` (the same level, including overlapping source and
+destination boxes, or another open server level), displaced by `offset` and turned by
+`transform` (`BlockTransform`: `StructureRotation`, `StructureMirror` and `pivot`, matching
+`StructureTemplate.placeInWorld`).
+
+The move follows vanilla's `/clone … move` (`CloneCommands.clone` with `Mode.MOVE`) step for
+step, with no area size cap:
+
+1. Preflight checks that every chunk in both source and destination boxes is loaded
+   (`MoveBlocksError::NotLoaded { level }`) and that every block entity can be taken out,
+   transformed and put back (`MoveBlocksError::BlockEntityRefused { at }`), before writing
+   anything to either level.
+2. Source cells are read in `z, y, x` order into solid, block-entity and other-block lists;
+   source cells are cleared (barrier with `2 | 816`, then air with `3`, or `2 | 816` under
+   `strict`).
+3. Destination cells receive barriers (`2 | 816`) in reverse order, then the transformed states
+   (`2`, or `2 | 816` under `strict`) in solid, block-entity, other order.
+4. Every block entity moves once as the same holder with its data, components and attachments
+   (never cloned or dropped), and its state is re-applied.
+5. Unless `strict`, neighbour updates (`updateNeighboursOnBlockSet`) run in reverse order.
+6. Pending scheduled block ticks are copied via `LevelTicks.copyAreaFrom`, preserving remaining
+   delay, priority and sub-tick order while leaving source ticks in place.
+
+`block_changed` fires for each `setBlock` write the move makes. A successful move returns
+`MovedBlocks { blocks, block_entities }`.
+
 ## Stream column heights and blocks
 
 `LevelRef::visit_surface_heights(host, columns, heightmap, visit)` works on both sides
