@@ -5709,6 +5709,8 @@ dependencies = [
  "sunrise-mod-api-macros",
  "sunrise-mod-vocab",
  "sunrise-threads",
+ "tar",
+ "ureq",
  "xxhash-rust",
 ]
 

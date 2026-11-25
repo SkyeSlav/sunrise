@@ -1028,15 +1028,18 @@ mod tests {
             let base_stone = view
                 .tags()
                 .key(&mod_api::Identifier::parse("base_stone_overworld").unwrap())
-                .unwrap();
+                .unwrap()
+                .typed();
             let climbable = view
                 .tags()
                 .key(&mod_api::Identifier::parse("minecraft:climbable").unwrap())
-                .unwrap();
+                .unwrap()
+                .typed();
             let water_tag = view
                 .tags()
                 .key(&mod_api::Identifier::parse("minecraft:water").unwrap())
-                .unwrap();
+                .unwrap()
+                .typed();
             assert_eq!(stone.is_in_tag(view.tags(), base_stone), Some(true));
             assert_eq!(
                 stone.is_in_tag(view.tags(), base_stone),

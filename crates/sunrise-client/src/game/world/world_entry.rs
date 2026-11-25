@@ -646,6 +646,12 @@ impl Game<'_> {
             return Err(errors.join("\n").into());
         }
         let providers = providers?;
+        // Bind the world-owned registries' ordered tags against the admitted entries
+        // (including datapack and mod biomes, enchantments, structures, and world clocks).
+        bind_world_registry_tags(&mut items, root, &tag_files, &overlay, &biomes.table)?;
+        if reload {
+            items.retain_unbound_tags(self.items());
+        }
         let sources = sources?;
         let (mut loot, context) = loot?;
         let recipes = Recipes::from_resolved(root, &items, &overlay, &sources)?;
@@ -1148,6 +1154,61 @@ impl Game<'_> {
             },
         );
     }
+}
+
+/// Bind the world-owned registries' ordered tags (enchantments, biomes, structures,
+/// and world clocks) onto `items` against the admitted entries.
+pub(super) fn bind_world_registry_tags(
+    items: &mut Items,
+    root: &std::path::Path,
+    tag_files: &sunrise_world::loot::PackOverlay<'_>,
+    overlay: &sunrise_world::loot::PackOverlay<'_>,
+    biomes: &Biomes,
+) -> Result<()> {
+    items.bind_enchantment_tags(root, tag_files)?;
+    items.bind_registry_tags(
+        root,
+        tag_files,
+        sunrise_client::items::TagRegistry::Biome,
+        "worldgen/biome",
+        |id| biomes.contains(id),
+    )?;
+    let mut structures: std::collections::HashSet<String> = items
+        .component_registry
+        .ids("minecraft:worldgen/structure")
+        .iter()
+        .cloned()
+        .collect();
+    for (id, _) in overlay.kind("worldgen/structure") {
+        structures.insert(id.to_owned());
+    }
+    items.bind_registry_tags(
+        root,
+        tag_files,
+        sunrise_client::items::TagRegistry::Structure,
+        "worldgen/structure",
+        |id| structures.contains(id),
+    )?;
+    let mut clocks: std::collections::HashSet<String> = items
+        .component_registry
+        .ids("minecraft:world_clock")
+        .iter()
+        .cloned()
+        .collect();
+    for id in mod_api::__private::world_clock_declarations() {
+        clocks.insert(id.to_owned());
+    }
+    for (id, _) in overlay.kind("world_clock") {
+        clocks.insert(id.to_owned());
+    }
+    items.bind_registry_tags(
+        root,
+        tag_files,
+        sunrise_client::items::TagRegistry::WorldClock,
+        "world_clock",
+        |id| clocks.contains(id),
+    )?;
+    Ok(())
 }
 
 /// [`Game::level_suffocation`] from the fields it reads, for a caller that holds other fields: the

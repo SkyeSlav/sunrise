@@ -1738,7 +1738,11 @@ impl<'a: 'b, 'b, T: std::ops::DerefMut<Target = Ticks>> mod_api::LevelWriteHost
 super::native_tags::impl_tags!(
     super::GameLevel<'_>,
     level,
-    level.native_authoritative.then_some(level.items)
+    level.native_authoritative.then_some(level.items),
+    level
+        .native_authoritative
+        .then_some(level.biome_keys)
+        .flatten()
 );
 super::native_tags::impl_tags!(super::native_hooks::HitLevel<'_>, level, level.0.tags());
 

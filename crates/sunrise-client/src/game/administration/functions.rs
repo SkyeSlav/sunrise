@@ -2522,7 +2522,8 @@ mod tests {
             let candidate = mod_api::__private::tag_key(
                 &mod_api::Identifier::parse("reload_test:candidate").unwrap(),
             )
-            .unwrap();
+            .unwrap()
+            .typed::<mod_api::BlockKey>();
             let live_stone = mod_platform::__private::part_tests::block_key("minecraft:stone");
             assert_eq!(
                 super::super::native_tags::block_in_tag(Some(game.items()), live_stone, candidate),

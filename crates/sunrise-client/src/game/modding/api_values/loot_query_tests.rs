@@ -107,7 +107,7 @@ impl ItemPart for Ability {
             .key(&mod_api::Identifier::parse("test:ability_tools").unwrap())
             .expect("tag key resolves");
         assert_eq!(
-            context.tags().is_in_tag(event.stack.item(), tag),
+            context.tags().is_in_tag(event.stack.item(), tag.typed()),
             Some(true)
         );
         if event.ability == "shears_dig" {

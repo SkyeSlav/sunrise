@@ -41,17 +41,19 @@ fn reload_resolves_parts_against_reloaded_tags() {
         let name = stone_key.id(game).expect("stone is registered").to_owned();
         let dir = std::env::temp_dir().join(format!("sunrise-key-tags-{}", std::process::id()));
         game.session_lock = Some(sunrise_client::save::SessionLock::acquire(&dir).unwrap());
-        let reload_tag = *reload_tag.get().unwrap();
+        let reload_tag = (*reload_tag.get().unwrap()).typed();
         let base_stone_tag = mod_api::Tags::key(
             &*game,
             &mod_api::Identifier::parse("base_stone_overworld").unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .typed();
         let logs_tag = mod_api::Tags::key(
             &*game,
             &mod_api::Identifier::parse("minecraft:logs").unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .typed();
         assert_eq!(stone_key.is_in_tag(&*game, reload_tag), Some(false));
         assert_eq!(stone_key.is_in_tag(&*game, base_stone_tag), Some(true));
         game.load_server_loot();

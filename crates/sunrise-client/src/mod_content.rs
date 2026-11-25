@@ -3211,7 +3211,7 @@ fn place_in_biomes(
         Some(doc) => doc,
         None => read_json(&base.join(BIOMES))?,
     };
-    let biome_tags = bundle(biome_tags, BIOME_TAGS)?;
+    let biome_tags = seed_convention_tags("worldgen/biome", bundle(biome_tags, BIOME_TAGS)?)?;
     let placed: BTreeSet<String> = bundle(placed, PLACED_FEATURES)?.into_keys().collect();
     let feature_tags = bundle(None, FEATURE_TAGS)?;
     let (entity_categories, entity_tags) = modifier_entities(base, overlay, tags)?;
@@ -3301,6 +3301,38 @@ fn modifier_tags(
                 fs::read_to_string(out_path(overlay, file))?,
             );
         }
+    }
+    seed_convention_tags(registry, result)
+}
+
+/// Layers `over` (vanilla/mod tag JSONs) on top of the built-in `c:` / `neoforge:`
+/// convention tags for `registry`, matching the world's tag layering order.
+fn seed_convention_tags(
+    registry: &str,
+    over: BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>> {
+    let mut result: BTreeMap<String, String> =
+        sunrise_world::tag_layers::convention::json_entries(registry)
+            .iter()
+            .cloned()
+            .collect();
+    let no_conditions = sunrise_world::conditions::LoadConditions::default();
+    for (id, json) in over {
+        let Some(base_json) = result.get(&id).map(String::as_str) else {
+            result.insert(id, json);
+            continue;
+        };
+        let tag: J = serde_json::from_str(&json).map_err(|e| format!("tag {id}: {e}"))?;
+        if matches!(tag.get("replace"), Some(J::Bool(true))) {
+            result.insert(id, json);
+            continue;
+        }
+        let layers = [load_conditions::TagLayers {
+            values: tag_list(&tag, "values"),
+            remove: tag_list(&tag, "remove"),
+        }];
+        let merged = merge_tag(Some(base_json), &layers, false, &id, &no_conditions)?;
+        result.insert(id, merged);
     }
     Ok(result)
 }
@@ -3414,8 +3446,8 @@ pub fn biome_modifiers_over_packs(
         }
     }
     let mut doc = J::Obj(start.into_iter().map(|(id, t)| (id, J::Str(t))).collect());
-    // Pack tag files after the root's, as the worldgen loader merges them.
-    let mut biome_tags = read(BIOME_TAGS)?;
+    // Pack tag files after the root's, over the built-in convention tags, as the worldgen loader merges them.
+    let mut biome_tags = seed_convention_tags("worldgen/biome", read(BIOME_TAGS)?)?;
     for (id, pack, json) in packs.tags("biome_tags") {
         let tag: J = match serde_json::from_str(json) {
             Ok(tag) => tag,
@@ -3425,14 +3457,17 @@ pub fn biome_modifiers_over_packs(
             }
         };
         let (values, remove) = (tag_list(&tag, "values"), tag_list(&tag, "remove"));
-        let old = match tag.get("replace") {
-            Some(J::Bool(true)) => None,
-            _ => biome_tags.get(id).map(String::as_str),
+        let replaced = matches!(tag.get("replace"), Some(J::Bool(true)));
+        let old = if replaced {
+            None
+        } else {
+            biome_tags.get(id).map(String::as_str)
         };
         let layers = [load_conditions::TagLayers { values, remove }];
         let merged = merge_tag(
             old,
             &layers,
+            replaced,
             id,
             &sunrise_world::conditions::LoadConditions::new(
                 saved.enabled_mods.iter().map(String::as_str),
@@ -3692,7 +3727,12 @@ impl Known {
             Some(tag) => {
                 let (tns, path) = tag.split_once(':').unwrap_or(("minecraft", tag));
                 let rel = format!("data/{tns}/tags/{kind}/{path}.json");
-                if self.tag_files.contains(&rel) {
+                if self.tag_files.contains(&rel)
+                    || sunrise_world::tag_layers::convention::has_tag(
+                        kind,
+                        &format!("{tns}:{path}"),
+                    )
+                {
                     return true;
                 }
                 match kind {

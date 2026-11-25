@@ -1,12 +1,16 @@
 //! One membership implementation for full-game and in-write tag services.
-use mod_api::{BlockKey, FluidKey, Identifier, ItemKey, TagKey, TagMembers};
+use mod_api::{BlockKey, DamageTypeKey, FluidKey, Identifier, ItemKey, TagKey, TagMembers};
 use sunrise_items::items::{Items, TagRegistry};
 use sunrise_world::loot::LootTags;
 
-pub(super) fn is_in_tag(items: Option<&Items>, item: ItemKey, tag: TagKey) -> Option<bool> {
+pub(super) fn is_in_tag(
+    items: Option<&Items>,
+    item: ItemKey,
+    tag: TagKey<ItemKey>,
+) -> Option<bool> {
     let items = items.filter(|items| items.tags_loaded(TagRegistry::Item))?;
     let item = mod_api::__private::item_key_id(item)?;
-    mod_api::__private::with_tag_name(tag, |name| {
+    mod_api::__private::with_tag_name(tag.untyped(), |name| {
         Some(
             items
                 .item_tags
@@ -20,10 +24,12 @@ pub(super) fn is_in_tag(items: Option<&Items>, item: ItemKey, tag: TagKey) -> Op
 pub(super) fn damage_type_in_tag(
     items: Option<&Items>,
     damage_type: &str,
-    tag: TagKey,
+    tag: TagKey<DamageTypeKey>,
 ) -> Option<bool> {
     let items = items?;
-    mod_api::__private::with_tag_name(tag, |name| items.damage_type_in_tag(damage_type, name?))
+    mod_api::__private::with_tag_name(tag.untyped(), |name| {
+        items.damage_type_in_tag(damage_type, name?)
+    })
 }
 pub(super) fn item_tags(tags: &dyn LootTags, item: ItemKey) -> Option<Vec<Identifier>> {
     let item = mod_api::__private::item_key_id(item)?;
@@ -35,20 +41,28 @@ pub(super) fn item_tag_names(tags: &dyn LootTags) -> Option<Vec<Identifier>> {
     tags.item_tag_names()?.matching(|_| true)
 }
 
-pub(super) fn block_in_tag(items: Option<&Items>, block: BlockKey, tag: TagKey) -> Option<bool> {
+pub(super) fn block_in_tag(
+    items: Option<&Items>,
+    block: BlockKey,
+    tag: TagKey<BlockKey>,
+) -> Option<bool> {
     let items = items.filter(|items| items.tags_loaded(TagRegistry::Block))?;
     let block = mod_api::__private::block_key_id(block)?;
-    mod_api::__private::with_tag_name(tag, |name| Some(items.block_in_tag(name?, block)))
+    mod_api::__private::with_tag_name(tag.untyped(), |name| Some(items.block_in_tag(name?, block)))
 }
-pub(super) fn fluid_in_tag(items: Option<&Items>, fluid: FluidKey, tag: TagKey) -> Option<bool> {
+pub(super) fn fluid_in_tag(
+    items: Option<&Items>,
+    fluid: FluidKey,
+    tag: TagKey<FluidKey>,
+) -> Option<bool> {
     let items = items.filter(|items| items.tags_loaded(TagRegistry::Fluid))?;
     let fluid = mod_api::__private::fluid_id(fluid)?;
-    mod_api::__private::with_tag_name(tag, |name| Some(items.fluid_in_tag(name?, fluid)))
+    mod_api::__private::with_tag_name(tag.untyped(), |name| Some(items.fluid_in_tag(name?, fluid)))
 }
-pub(super) fn snapshot_members<K>(
+pub(super) fn snapshot_members<K, T>(
     items: Option<&Items>,
     registry: TagRegistry,
-    tag: TagKey,
+    tag: TagKey<T>,
     key: impl FnMut(&str) -> Option<K>,
 ) -> TagMembers<K> {
     let Some(items) = items.filter(|items| items.tags_loaded(registry)) else {
@@ -58,15 +72,15 @@ pub(super) fn snapshot_members<K>(
 }
 
 /// Map complete ordered membership from either a host snapshot or a loot table.
-pub(super) fn members<K, I: IntoIterator>(
-    tag: TagKey,
+pub(super) fn members<K, T, I: IntoIterator>(
+    tag: TagKey<T>,
     read: impl FnOnce(&str) -> Option<I>,
     mut key: impl FnMut(&str) -> Option<K>,
 ) -> TagMembers<K>
 where
     I::Item: AsRef<str>,
 {
-    mod_api::__private::with_tag_name(tag, |name| {
+    mod_api::__private::with_tag_name(tag.untyped(), |name| {
         let Some(name) = name else {
             return TagMembers::Unavailable;
         };
@@ -85,15 +99,31 @@ where
 // Only that choice differs; key resolution, ordered reads and membership stay above.
 macro_rules! impl_tags {
     ($ty:ty, $this:ident, $items:expr) => {
+        $crate::game::native_tags::impl_tags!(
+            $ty,
+            $this,
+            $items,
+            None::<&mod_api::__private::BiomeKeys>
+        );
+    };
+    ($ty:ty, $this:ident, $items:expr, $biome_keys:expr) => {
         impl mod_api::Tags for $ty {
             fn key(&self, id: &mod_api::Identifier) -> Option<mod_api::TagKey> {
                 mod_api::__private::tag_key(id)
             }
-            fn is_in_tag(&self, item: mod_api::ItemKey, tag: mod_api::TagKey) -> Option<bool> {
+            fn is_in_tag(
+                &self,
+                item: mod_api::ItemKey,
+                tag: mod_api::TagKey<mod_api::ItemKey>,
+            ) -> Option<bool> {
                 let $this = self;
                 $crate::game::native_tags::is_in_tag($items, item, tag)
             }
-            fn damage_type_in_tag(&self, damage_type: &str, tag: mod_api::TagKey) -> Option<bool> {
+            fn damage_type_in_tag(
+                &self,
+                damage_type: &str,
+                tag: mod_api::TagKey<mod_api::DamageTypeKey>,
+            ) -> Option<bool> {
                 let $this = self;
                 $crate::game::native_tags::damage_type_in_tag($items, damage_type, tag)
             }
@@ -107,15 +137,26 @@ macro_rules! impl_tags {
                 let items: Option<&sunrise_items::items::Items> = $items;
                 $crate::game::native_tags::item_tag_names(items?)
             }
-            fn block_in_tag(&self, block: mod_api::BlockKey, tag: mod_api::TagKey) -> Option<bool> {
+            fn block_in_tag(
+                &self,
+                block: mod_api::BlockKey,
+                tag: mod_api::TagKey<mod_api::BlockKey>,
+            ) -> Option<bool> {
                 let $this = self;
                 $crate::game::native_tags::block_in_tag($items, block, tag)
             }
-            fn fluid_in_tag(&self, fluid: mod_api::FluidKey, tag: mod_api::TagKey) -> Option<bool> {
+            fn fluid_in_tag(
+                &self,
+                fluid: mod_api::FluidKey,
+                tag: mod_api::TagKey<mod_api::FluidKey>,
+            ) -> Option<bool> {
                 let $this = self;
                 $crate::game::native_tags::fluid_in_tag($items, fluid, tag)
             }
-            fn items(&self, tag: mod_api::TagKey) -> mod_api::TagMembers<mod_api::ItemKey> {
+            fn items(
+                &self,
+                tag: mod_api::TagKey<mod_api::ItemKey>,
+            ) -> mod_api::TagMembers<mod_api::ItemKey> {
                 let $this = self;
                 $crate::game::native_tags::snapshot_members(
                     $items,
@@ -124,7 +165,10 @@ macro_rules! impl_tags {
                     mod_api::__private::item_key,
                 )
             }
-            fn fluids(&self, tag: mod_api::TagKey) -> mod_api::TagMembers<mod_api::FluidKey> {
+            fn fluids(
+                &self,
+                tag: mod_api::TagKey<mod_api::FluidKey>,
+            ) -> mod_api::TagMembers<mod_api::FluidKey> {
                 let $this = self;
                 $crate::game::native_tags::snapshot_members(
                     $items,
@@ -133,7 +177,10 @@ macro_rules! impl_tags {
                     mod_api::__private::fluid_key,
                 )
             }
-            fn blocks(&self, tag: mod_api::TagKey) -> mod_api::TagMembers<mod_api::BlockKey> {
+            fn blocks(
+                &self,
+                tag: mod_api::TagKey<mod_api::BlockKey>,
+            ) -> mod_api::TagMembers<mod_api::BlockKey> {
                 let $this = self;
                 $crate::game::native_tags::snapshot_members(
                     $items,
@@ -142,11 +189,111 @@ macro_rules! impl_tags {
                     mod_api::__private::block_key,
                 )
             }
+            fn entity_types(
+                &self,
+                tag: mod_api::TagKey<mod_api::EntityTypeKey>,
+            ) -> mod_api::TagMembers<mod_api::EntityTypeKey> {
+                let $this = self;
+                $crate::game::native_tags::snapshot_members(
+                    $items,
+                    sunrise_items::items::TagRegistry::EntityType,
+                    tag,
+                    mod_api::__private::resolved_entity_type_key,
+                )
+            }
+            fn biomes(
+                &self,
+                tag: mod_api::TagKey<mod_api::BiomeKey>,
+            ) -> mod_api::TagMembers<mod_api::BiomeKey> {
+                let $this = self;
+                let Some(biome_keys): Option<&mod_api::__private::BiomeKeys> = $biome_keys else {
+                    return mod_api::TagMembers::Unavailable;
+                };
+                $crate::game::native_tags::snapshot_members(
+                    $items,
+                    sunrise_items::items::TagRegistry::Biome,
+                    tag,
+                    |id| biome_keys.view(id).ok().map(|view| view.key().clone()),
+                )
+            }
+            fn enchantments(
+                &self,
+                tag: mod_api::TagKey<mod_api::EnchantmentKey>,
+            ) -> mod_api::TagMembers<mod_api::EnchantmentKey> {
+                let $this = self;
+                $crate::game::native_tags::snapshot_members(
+                    $items,
+                    sunrise_items::items::TagRegistry::Enchantment,
+                    tag,
+                    mod_api::__private::enchantment_key,
+                )
+            }
+            fn structures(
+                &self,
+                tag: mod_api::TagKey<mod_api::StructureKey>,
+            ) -> mod_api::TagMembers<mod_api::StructureKey> {
+                let $this = self;
+                $crate::game::native_tags::snapshot_members(
+                    $items,
+                    sunrise_items::items::TagRegistry::Structure,
+                    tag,
+                    |id| {
+                        mod_api::Identifier::parse(id)
+                            .ok()
+                            .map(mod_api::StructureKey)
+                    },
+                )
+            }
+            fn potions(
+                &self,
+                tag: mod_api::TagKey<mod_api::PotionKey>,
+            ) -> mod_api::TagMembers<mod_api::PotionKey> {
+                let $this = self;
+                $crate::game::native_tags::snapshot_members(
+                    $items,
+                    sunrise_items::items::TagRegistry::Potion,
+                    tag,
+                    |id| mod_api::Identifier::parse(id).ok().map(mod_api::PotionKey),
+                )
+            }
+            fn damage_types(
+                &self,
+                tag: mod_api::TagKey<mod_api::DamageTypeKey>,
+            ) -> mod_api::TagMembers<mod_api::Identifier> {
+                let $this = self;
+                $crate::game::native_tags::snapshot_members(
+                    $items,
+                    sunrise_items::items::TagRegistry::DamageType,
+                    tag,
+                    |id| mod_api::Identifier::parse(id).ok(),
+                )
+            }
+            fn world_clocks(
+                &self,
+                tag: mod_api::TagKey<mod_api::WorldClockKey>,
+            ) -> mod_api::TagMembers<mod_api::WorldClockKey> {
+                let $this = self;
+                $crate::game::native_tags::snapshot_members(
+                    $items,
+                    sunrise_items::items::TagRegistry::WorldClock,
+                    tag,
+                    |id| {
+                        mod_api::Identifier::parse(id)
+                            .ok()
+                            .map(mod_api::WorldClockKey)
+                    },
+                )
+            }
         }
     };
 }
 pub(super) use impl_tags;
-impl_tags!(super::Game<'_>, game, game.native_tag_items());
+impl_tags!(
+    super::Game<'_>,
+    game,
+    game.native_tag_items(),
+    game.loaded_biome_keys()
+);
 
 #[cfg(test)]
 pub(in crate::game) const PACK_BINDING_CASES: [(&str, &[u8], bool); 3] = [
@@ -170,6 +317,10 @@ pub(in crate::game) const PACK_BINDING_CASES: [(&str, &[u8], bool); 3] = [
 #[cfg(test)]
 #[path = "native_damage_tag_tests.rs"]
 mod native_damage_tag_tests;
+
+#[cfg(test)]
+#[path = "native_convention_tags_tests.rs"]
+mod native_convention_tags_tests;
 
 #[cfg(test)]
 mod tests {
@@ -220,10 +371,12 @@ mod tests {
         let birch = mod_api::__private::block_key("minecraft:birch_log").unwrap();
         let stone_state = mod_api::__private::block_state_from_ordinal(stone, 0);
         let tag = mod_api::__private::tag_key(&mod_api::Identifier::parse("test:blocks").unwrap())
-            .unwrap();
+            .unwrap()
+            .typed();
         let missing =
             mod_api::__private::tag_key(&mod_api::Identifier::parse("test:empty").unwrap())
-                .unwrap();
+                .unwrap()
+                .typed();
         let mut table = Items::for_tests(Default::default());
         assert_eq!(TagView(Some(&table)).blocks(tag), TagMembers::Unavailable);
         assert_eq!(stone.is_in_tag(&TagView(Some(&table)), tag), None);
@@ -283,33 +436,36 @@ mod tests {
         let absent = tag("test:absent_fluid");
         let mut table = Items::empty();
         table.set_tags(TagRegistry::Block, Default::default());
-        assert_eq!(TagView(Some(&table)).fluids(empty), TagMembers::Unavailable);
-        assert_eq!(water.is_in_tag(&TagView(Some(&table)), empty), None);
+        assert_eq!(
+            TagView(Some(&table)).fluids(empty.typed()),
+            TagMembers::Unavailable
+        );
+        assert_eq!(water.is_in_tag(&TagView(Some(&table)), empty.typed()), None);
         table.set_tags(
             TagRegistry::Fluid,
             [("test:empty_fluid".into(), vec![])].into(),
         );
         let view = TagView(Some(&table));
-        assert_eq!(view.fluids(empty), TagMembers::Members(vec![]));
-        assert_eq!(view.fluids(absent), TagMembers::Missing);
-        assert_eq!(view.items(absent), TagMembers::Unavailable);
-        assert_eq!(water.is_in_tag(&view, empty), Some(false));
-        assert_eq!(water.is_in_tag(&view, absent), Some(false));
-        assert_eq!(water.is_in_tag(&TagView(None), empty), None);
+        assert_eq!(view.fluids(empty.typed()), TagMembers::Members(vec![]));
+        assert_eq!(view.fluids(absent.typed()), TagMembers::Missing);
+        assert_eq!(view.items(absent.typed()), TagMembers::Unavailable);
+        assert_eq!(water.is_in_tag(&view, empty.typed()), Some(false));
+        assert_eq!(water.is_in_tag(&view, absent.typed()), Some(false));
+        assert_eq!(water.is_in_tag(&TagView(None), empty.typed()), None);
         table.set_tags(
             TagRegistry::Fluid,
             [("test:empty_fluid".into(), vec!["minecraft:water".into()])].into(),
         );
         let view = TagView(Some(&table));
-        assert_eq!(water.is_in_tag(&view, empty), Some(true));
-        assert_eq!(water_state.is_in_tag(&view, empty), Some(true));
+        assert_eq!(water.is_in_tag(&view, empty.typed()), Some(true));
+        assert_eq!(water_state.is_in_tag(&view, empty.typed()), Some(true));
         table.set_tags(
             TagRegistry::Fluid,
             [("test:empty_fluid".into(), vec!["minecraft:lava".into()])].into(),
         );
         let view = TagView(Some(&table));
-        assert_eq!(water.is_in_tag(&view, empty), Some(false));
-        assert_eq!(water_state.is_in_tag(&view, empty), Some(false));
+        assert_eq!(water.is_in_tag(&view, empty.typed()), Some(false));
+        assert_eq!(water_state.is_in_tag(&view, empty.typed()), Some(false));
     }
 
     #[test]
@@ -319,10 +475,13 @@ mod tests {
         mod_api::__private::resolve_items(["minecraft:air", "minecraft:stone"]).unwrap();
         let air = mod_api::__private::item_key("minecraft:air").unwrap();
         let stone = mod_api::__private::item_key("minecraft:stone").unwrap();
-        let tag = mod_api::__private::tag_key(&mod_api::Identifier::parse("x").unwrap()).unwrap();
+        let tag = mod_api::__private::tag_key(&mod_api::Identifier::parse("x").unwrap())
+            .unwrap()
+            .typed();
         let missing =
             mod_api::__private::tag_key(&mod_api::Identifier::parse("minecraft:y").unwrap())
-                .unwrap();
+                .unwrap()
+                .typed();
         let mut table = Items::for_tests(
             [(
                 "minecraft:x".to_owned(),
@@ -376,8 +535,11 @@ mod tests {
         ) {
             return;
         }
-        let tag =
-            |name| mod_api::__private::tag_key(&mod_api::Identifier::parse(name).unwrap()).unwrap();
+        let tag = |name| {
+            mod_api::__private::tag_key(&mod_api::Identifier::parse(name).unwrap())
+                .unwrap()
+                .typed()
+        };
         let fire = tag("minecraft:is_fire");
         let mut table = Items::empty();
         let view = TagView(Some(&table));
@@ -439,10 +601,12 @@ mod tests {
         let stick = mod_api::__private::item_key("minecraft:stick").unwrap();
         let stone = mod_api::__private::item_key("minecraft:stone").unwrap();
         let tag = mod_api::__private::tag_key(&mod_api::Identifier::parse("test:reload").unwrap())
-            .unwrap();
+            .unwrap()
+            .typed();
         let missing =
             mod_api::__private::tag_key(&mod_api::Identifier::parse("test:missing").unwrap())
-                .unwrap();
+                .unwrap()
+                .typed();
         let mut table = Items::empty();
         assert_eq!(TagView(Some(&table)).items(tag), TagMembers::Unavailable);
         table.set_tags(

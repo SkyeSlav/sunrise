@@ -871,11 +871,23 @@ pub struct Items {
     /// place, first occurrence kept), the order `TagSlotDisplay` resolves.
     pub item_tag_order: HashMap<String, Vec<String>>,
     pub(crate) item_tag_names: Option<ItemTagNames>,
-    tags_loaded: [bool; 3],
+    tags_loaded: [bool; 10],
     /// Block tags in the same order.
     pub block_tag_order: HashMap<String, Vec<String>>,
     /// Fluid tags in the same order.
     pub fluid_tag_order: HashMap<String, Vec<String>>,
+    /// Biome tags in `TagLoader` order (`worldgen/biome`).
+    pub biome_tag_order: HashMap<String, Vec<String>>,
+    /// Enchantment tags in `TagLoader` order (`enchantment`).
+    pub enchantment_tag_order: HashMap<String, Vec<String>>,
+    /// Structure tags in `TagLoader` order (`worldgen/structure`).
+    pub structure_tag_order: HashMap<String, Vec<String>>,
+    /// Potion tags in `TagLoader` order (`potion`).
+    pub potion_tag_order: HashMap<String, Vec<String>>,
+    /// Damage type tags in `TagLoader` order (`damage_type`).
+    pub damage_type_tag_order: HashMap<String, Vec<String>>,
+    /// World clock tags in `TagLoader` order (`world_clock`).
+    pub world_clock_tag_order: HashMap<String, Vec<String>>,
     pub entity_type_tags: Arc<EntityTypeTags>,
     loot: Arc<sunrise_world::loot::LootTables>,
     loot_bindings: sunrise_world::loot::types::Bindings,
@@ -922,6 +934,7 @@ impl Items {
         ids.tags.sort();
         Arc::make_mut(&mut self.enchantments).entity_tags = tags.members().clone();
         self.entity_type_tags = Arc::new(tags);
+        self.tags_loaded[TagRegistry::EntityType as usize] = true;
     }
 
     /// The states' names [`Self::block_tag_flags`] was built against.
@@ -1106,6 +1119,13 @@ pub enum TagRegistry {
     Block,
     Item,
     Fluid,
+    EntityType,
+    Biome,
+    Enchantment,
+    Structure,
+    Potion,
+    DamageType,
+    WorldClock,
 }
 /// An entity type id or `#tag` as the set of entity type ids it names.
 fn entity_spec(tags: &HashMap<String, HashSet<String>>, spec: &str) -> HashSet<String> {
@@ -1579,6 +1599,72 @@ impl Items {
             })?,
         );
         self.set_tags(TagRegistry::Fluid, fluid_tag_list(root, overlay)?);
+        self.tags_loaded[TagRegistry::EntityType as usize] = true;
+        let builtin = tag_layers::builtin_ids(root)?;
+        for (registry, kind, reg_key) in [
+            (TagRegistry::Potion, "potion", "minecraft:potion"),
+            (
+                TagRegistry::Structure,
+                "worldgen/structure",
+                "minecraft:worldgen/structure",
+            ),
+            (
+                TagRegistry::WorldClock,
+                "world_clock",
+                "minecraft:world_clock",
+            ),
+            (
+                TagRegistry::Biome,
+                "worldgen/biome",
+                "minecraft:worldgen/biome",
+            ),
+            (
+                TagRegistry::Enchantment,
+                "enchantment",
+                "minecraft:enchantment",
+            ),
+        ] {
+            let exported = self.component_registry.ids(reg_key);
+            let fallback = builtin.get(kind);
+            let tags = tag_layers::load(root, kind, overlay, |id| {
+                if !exported.is_empty() {
+                    exported
+                        .binary_search_by(|known| known.as_str().cmp(id))
+                        .is_ok()
+                } else if let Some(ids) = fallback {
+                    ids.contains(id)
+                } else {
+                    false
+                }
+            })?;
+            self.set_tags(registry, tags);
+        }
+        Ok(())
+    }
+
+    /// Rebind one registry's ordered tags against an authoritative world-owned predicate.
+    pub fn bind_registry_tags(
+        &mut self,
+        root: &Path,
+        overlay: &PackOverlay,
+        registry: TagRegistry,
+        kind: &str,
+        contains: impl Fn(&str) -> bool,
+    ) -> Result<()> {
+        self.set_tags(registry, tag_layers::load(root, kind, overlay, contains)?);
+        Ok(())
+    }
+
+    /// Bind `enchantment` tags against the currently installed enchantment definitions.
+    pub fn bind_enchantment_tags(&mut self, root: &Path, overlay: &PackOverlay) -> Result<()> {
+        let known: HashSet<&str> = self
+            .enchantments
+            .list
+            .iter()
+            .map(|entry| entry.id.as_ref())
+            .collect();
+        let tags = tag_layers::load(root, "enchantment", overlay, |id| known.contains(id))?;
+        self.set_tags(TagRegistry::Enchantment, tags);
         Ok(())
     }
 
@@ -1598,6 +1684,7 @@ impl Items {
             crate::enchant::Enchantments::load_definitions(root, overlay, defaults)?,
             load_instruments(root, overlay),
         );
+        self.bind_enchantment_tags(root, overlay)?;
         Ok(())
     }
 
@@ -1709,6 +1796,42 @@ impl Items {
         if self.fluid_tag_order.is_empty() {
             self.set_tags(TagRegistry::Fluid, previous.fluid_tag_order.clone());
         }
+        for (registry, current, prev) in [
+            (
+                TagRegistry::Biome,
+                self.biome_tag_order.is_empty(),
+                &previous.biome_tag_order,
+            ),
+            (
+                TagRegistry::Enchantment,
+                self.enchantment_tag_order.is_empty(),
+                &previous.enchantment_tag_order,
+            ),
+            (
+                TagRegistry::Structure,
+                self.structure_tag_order.is_empty(),
+                &previous.structure_tag_order,
+            ),
+            (
+                TagRegistry::Potion,
+                self.potion_tag_order.is_empty(),
+                &previous.potion_tag_order,
+            ),
+            (
+                TagRegistry::DamageType,
+                self.damage_type_tag_order.is_empty(),
+                &previous.damage_type_tag_order,
+            ),
+            (
+                TagRegistry::WorldClock,
+                self.world_clock_tag_order.is_empty(),
+                &previous.world_clock_tag_order,
+            ),
+        ] {
+            if current && previous.tags_loaded(registry) {
+                self.set_tags(registry, prev.clone());
+            }
+        }
     }
 
     /// Ordered bindings for data loaders, keyed by the vanilla registry directory.
@@ -1723,23 +1846,58 @@ impl Items {
 
     /// Replace one registry's tags with `tags`, each tag's members in order.
     pub fn set_tags(&mut self, registry: TagRegistry, tags: HashMap<String, Vec<String>>) {
-        let (sets, order) = match registry {
-            TagRegistry::Block => (&mut self.block_tags, &mut self.block_tag_order),
-            TagRegistry::Item => {
-                self.item_tag_names = Some(ItemTagNames::bind(&tags));
-                (&mut self.item_tags, &mut self.item_tag_order)
+        match registry {
+            TagRegistry::Block | TagRegistry::Item | TagRegistry::Fluid => {
+                let (sets, order) = match registry {
+                    TagRegistry::Block => (&mut self.block_tags, &mut self.block_tag_order),
+                    TagRegistry::Item => {
+                        self.item_tag_names = Some(ItemTagNames::bind(&tags));
+                        (&mut self.item_tags, &mut self.item_tag_order)
+                    }
+                    TagRegistry::Fluid => (&mut self.fluid_tags, &mut self.fluid_tag_order),
+                    _ => unreachable!(),
+                };
+                *sets = tags
+                    .iter()
+                    .map(|(tag, members)| (tag.clone(), members.iter().cloned().collect()))
+                    .collect();
+                *order = tags;
+                self.tags_loaded[registry as usize] = true;
+                if registry == TagRegistry::Block {
+                    let names = self.block_state_names();
+                    self.rebuild_block_tag_flags(names);
+                }
             }
-            TagRegistry::Fluid => (&mut self.fluid_tags, &mut self.fluid_tag_order),
-        };
-        *sets = tags
-            .iter()
-            .map(|(tag, members)| (tag.clone(), members.iter().cloned().collect()))
-            .collect();
-        *order = tags;
-        self.tags_loaded[registry as usize] = true;
-        if registry == TagRegistry::Block {
-            let names = self.block_state_names();
-            self.rebuild_block_tag_flags(names);
+            TagRegistry::EntityType => {
+                self.set_entity_type_tags(EntityTypeTags::from_ordered(
+                    tags,
+                    self.entity_type_tags.ids().clone(),
+                ));
+            }
+            TagRegistry::Biome => {
+                self.biome_tag_order = tags;
+                self.tags_loaded[registry as usize] = true;
+            }
+            TagRegistry::Enchantment => {
+                self.enchantment_tag_order = tags;
+                self.tags_loaded[registry as usize] = true;
+            }
+            TagRegistry::Structure => {
+                self.structure_tag_order = tags;
+                self.tags_loaded[registry as usize] = true;
+            }
+            TagRegistry::Potion => {
+                self.potion_tag_order = tags;
+                self.tags_loaded[registry as usize] = true;
+            }
+            TagRegistry::DamageType => {
+                self.damage_type_tag_order = tags;
+                self.tags_loaded[registry as usize] = true;
+            }
+            TagRegistry::WorldClock => {
+                self.world_clock_tag_order = tags;
+                self.tags_loaded[registry as usize] = true;
+            }
         }
     }
     /// Whether `block` is in the block tag `tag` (`minecraft:fire`, no `#`).
@@ -1760,6 +1918,13 @@ impl Items {
             TagRegistry::Block => &self.block_tag_order,
             TagRegistry::Item => &self.item_tag_order,
             TagRegistry::Fluid => &self.fluid_tag_order,
+            TagRegistry::EntityType => self.entity_type_tags.ordered(),
+            TagRegistry::Biome => &self.biome_tag_order,
+            TagRegistry::Enchantment => &self.enchantment_tag_order,
+            TagRegistry::Structure => &self.structure_tag_order,
+            TagRegistry::Potion => &self.potion_tag_order,
+            TagRegistry::DamageType => &self.damage_type_tag_order,
+            TagRegistry::WorldClock => &self.world_clock_tag_order,
         };
         order.get(tag).map(Vec::as_slice)
     }

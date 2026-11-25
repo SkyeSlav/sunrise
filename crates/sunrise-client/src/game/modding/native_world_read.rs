@@ -386,8 +386,11 @@ mod tests {
         ]);
         let stone = part_tests::block_key("stone");
         let machine = part_tests::block_key("test:machine");
-        let tag =
-            |name| mod_api::__private::tag_key(&mod_api::Identifier::parse(name).unwrap()).unwrap();
+        let tag = |name| {
+            mod_api::__private::tag_key(&mod_api::Identifier::parse(name).unwrap())
+                .unwrap()
+                .typed::<mod_api::BlockKey>()
+        };
         let machines = tag("test:machines");
         let base_stone = tag("base_stone_overworld");
         let qualified_base_stone = tag("minecraft:base_stone_overworld");
@@ -532,7 +535,8 @@ mod tests {
                 let tags = host.tags();
                 let oak_tag = tags
                     .key(&mod_api::Identifier::parse("minecraft:oak_logs").unwrap())
-                    .unwrap();
+                    .unwrap()
+                    .typed();
                 let mod_api::TagMembers::Members(keys) = tags.items(oak_tag) else {
                     panic!("the oak logs tag is loaded");
                 };
@@ -603,13 +607,13 @@ mod tests {
                     tags.key(&mod_api::Identifier::parse(name).unwrap())
                         .unwrap()
                 };
-                let base_stone_tag = key("minecraft:base_stone_overworld");
-                assert_eq!(base_stone_tag, key("base_stone_overworld"));
-                let logs_tag = key("minecraft:logs");
-                let missing_tag = key("nope:missing");
-                let water_tag = key("minecraft:water");
-                assert_eq!(water_tag, key("water"));
-                let lava_tag = key("minecraft:lava");
+                let base_stone_tag = key("minecraft:base_stone_overworld").typed();
+                assert_eq!(base_stone_tag, key("base_stone_overworld").typed());
+                let logs_tag = key("minecraft:logs").typed();
+                let missing_tag = key("nope:missing").typed();
+                let water_tag = key("minecraft:water").typed();
+                assert_eq!(water_tag, key("water").typed());
+                let lava_tag = key("minecraft:lava").typed();
 
                 assert_eq!(stone_key.is_in_tag(tags, base_stone_tag), Some(true));
                 assert_eq!(stone_key.is_in_tag(tags, logs_tag), Some(false));
@@ -805,7 +809,8 @@ mod tests {
             let tags = host.tags();
             let oak_tag = tags
                 .key(&mod_api::Identifier::parse("minecraft:oak_logs").unwrap())
-                .unwrap();
+                .unwrap()
+                .typed();
             let item = host
                 .item_key(&mod_api::Identifier::parse("minecraft:oak_log").unwrap())
                 .unwrap();

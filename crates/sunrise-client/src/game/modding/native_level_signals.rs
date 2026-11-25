@@ -15,7 +15,12 @@ pub(super) struct ReadLevel<'g, 'a> {
     pub level: mod_api::LevelRef,
 }
 
-super::native_tags::impl_tags!(ReadLevel<'_, '_>, level, level.game.native_tag_items());
+super::native_tags::impl_tags!(
+    ReadLevel<'_, '_>,
+    level,
+    level.game.native_tag_items(),
+    level.game.loaded_biome_keys()
+);
 
 /// The output side passed to Parts is opposite SignalGetter's input direction.
 /// Both the shared view and the write context apply the same output bound.

@@ -78,7 +78,7 @@ pub(crate) fn check_namespace(name: &str, manifest: &Manifest) -> Result<(), Str
     let owned = own || manifest.namespaces.iter().any(|n| n == namespace);
     // Vanilla's own files stay vanilla's; a mod may only add to its
     // tags and atlases, and to the convention tags mods share.
-    let shared = matches!(namespace, "minecraft" | "c");
+    let shared = matches!(namespace, "minecraft" | "c" | "neoforge");
     let atlas = top == "assets" && namespace == "minecraft" && rest.starts_with("atlases/");
     let mut extension = false;
     if top == "data" && namespace == "sunrise" && rest.starts_with("tags/") {
@@ -113,7 +113,7 @@ pub(crate) fn check_namespace(name: &str, manifest: &Manifest) -> Result<(), Str
         || name == RECIPE_PRIORITIES_PATH;
     if !allowed {
         return Err(format!(
-            "{name}: a mod adds files in its own namespaces ({top}/{id}/ and those listed in namespaces), to vanilla and convention (c) tags, to vanilla's atlases, or to declared shared resource paths"
+            "{name}: a mod adds files in its own namespaces ({top}/{id}/ and those listed in namespaces), to vanilla and convention (c, neoforge) tags, to vanilla's atlases, or to declared shared resource paths"
         ));
     }
 

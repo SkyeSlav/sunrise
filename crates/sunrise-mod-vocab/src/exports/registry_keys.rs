@@ -1,6 +1,7 @@
 pub use content::registry_entry::RegistryEntry;
 pub use content::registry_keys::{RegistryName, UnknownFluid};
 mod __private {
+    pub use crate::content::registry_keys::enchantment_key;
     pub use crate::content::registry_keys::{
         resolve_block_entity_types, resolve_enchantments, resolve_entity_types, resolve_menus,
     };

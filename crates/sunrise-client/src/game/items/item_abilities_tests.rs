@@ -36,7 +36,7 @@ impl ItemPart for Abilities {
             .key(&Identifier::parse("minecraft:swords").unwrap())
             .expect("swords tag resolves");
         assert_eq!(
-            context.tags().is_in_tag(expected_key, swords),
+            context.tags().is_in_tag(expected_key, swords.typed()),
             Some(self.item == "minecraft:diamond_sword")
         );
         if self.item == "minecraft:shears" && SHEARING.contains(&event.ability) {

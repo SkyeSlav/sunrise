@@ -17,6 +17,7 @@ pub(crate) mod chunk_refusal;
 pub(crate) mod chunk_request;
 pub(crate) mod chunk_snapshot;
 pub(crate) mod clock_adjustment;
+pub(crate) mod convention_tags;
 pub(crate) mod criteria;
 pub(crate) mod custom_spawners;
 pub(crate) mod data_maps;

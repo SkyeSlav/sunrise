@@ -1387,7 +1387,7 @@ are public server collect hooks.
 The fence: files go in the mod's own namespaces (`assets/<id>/`,
 `data/<id>/`, and those its manifest lists), plus additions to vanilla tags
 (`data/minecraft/tags/`), to the convention tags NeoForge and Fabric mods
-share (`data/c/tags/`), and sources added to vanilla's atlases
+share (`data/c/tags/` and `data/neoforge/tags/`), and sources added to vanilla's atlases
 (`assets/minecraft/atlases/`), which follow vanilla's own as a reload appends them.
 Packages of every kind may also add to the declared [`sunrise:` extension tags](extension-tags.md),
 by writing exactly the listed registry and tag path under `data/sunrise/tags/`.
@@ -1427,7 +1427,7 @@ left in place.
 #### Tags and enchantments
 
 Tags merge as a data pack's do. Every mod's file for one tag (vanilla's `data/minecraft/tags/`, the convention
-`data/c/tags/`, or another mod's) adds its values after vanilla's and the mods' before it, in load order. A file with
+`data/c/tags/` and `data/neoforge/tags/`, or another mod's) adds its values after vanilla's and the mods' before it, in load order. A file with
 `"replace": true` first drops what came before it, vanilla's entries and the earlier mods', and the mods after it
 add theirs, as a higher data pack does. Since the result depends on load order, the game says so in the log:
 "mod towns replaces data/minecraft/tags/worldgen/biome/has_structure/village_plains.json: vanilla's entries and those
@@ -1608,9 +1608,9 @@ declare a [biome region](content-mods/biome-regions.md) instead.
 
 The modifiers rewrite the biomes when the content root builds, and the generator orders every biome's features as
 vanilla's `FeatureSorter` does, so an added feature takes its place in that order (its random seed follows from it). A
-biome no modifier names keeps its text, and a world without mods keeps vanilla's biomes byte for byte. A modifier
-naming a biome, biome tag, feature, feature tag, entity type or entity type tag the game doesn't have (another mod's, a
-`#c:` convention tag), or of an unsupported type (a mod's own serializer), is skipped with a warning
+biome no modifier names keeps its text, and a world without mods keeps vanilla's biomes byte for byte. Built-in `c:`
+and `neoforge:` convention tags resolve automatically beneath vanilla, pack, and mod tag files. A modifier
+naming a biome, biome tag, feature, feature tag, entity type or entity type tag the game doesn't have (such as another mod's), or of an unsupported type (a mod's own serializer), is skipped with a warning
 naming the mod and file; the mods load. A malformed modifier of a type
 that is read (an unknown step, a missing field, `minCount > maxCount`) stops the build, and the game starts without
 content mods ("content mods not loaded: ..." in the log). Feature selectors read vanilla feature tags, not a mod's `placed_feature` tags. Modifiers are reapplied after the world's data packs, so a pack

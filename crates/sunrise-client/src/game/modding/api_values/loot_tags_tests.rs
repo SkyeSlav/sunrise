@@ -47,7 +47,8 @@ impl ModLootFunction for TagReaderRule {
         let tags = context.tags();
         let tag = tags
             .key(&mod_api::Identifier::parse(&self.tag).unwrap())
-            .unwrap();
+            .unwrap()
+            .typed();
         let count = match tags.items(tag) {
             mod_api::TagMembers::Members(members) if members.is_empty() => 1,
             mod_api::TagMembers::Members(members) => {
@@ -81,12 +82,14 @@ impl mod_api::ModLootCondition for TagReader {
         let tags = context.tags();
         let tag = tags
             .key(&mod_api::Identifier::parse("test:ingredients").unwrap())
-            .unwrap();
+            .unwrap()
+            .typed();
         let stick = mod_api::__private::item_key("minecraft:stick").unwrap();
         let holds = tags.is_in_tag(stick, tag).unwrap();
         let missing = tags
             .key(&mod_api::Identifier::parse("test:missing").unwrap())
-            .unwrap();
+            .unwrap()
+            .typed();
         assert_eq!(tags.is_in_tag(stick, missing), Some(false));
         assert_eq!(tags.items(missing), mod_api::TagMembers::Missing);
         Ok(holds)
@@ -239,7 +242,11 @@ impl ModLootFunction for DamageTagReader {
         context: &mut dyn LootTypeContext,
     ) -> Result<(), String> {
         let tags = context.tags();
-        let key = |id| tags.key(&mod_api::Identifier::parse(id).unwrap()).unwrap();
+        let key = |id| {
+            tags.key(&mod_api::Identifier::parse(id).unwrap())
+                .unwrap()
+                .typed()
+        };
         let (heat, absent) = (key("dmg:heat"), key("dmg:absent"));
         self.0.lock().unwrap().push([
             tags.damage_type_in_tag("dmg:hot", heat),

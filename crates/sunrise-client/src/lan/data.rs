@@ -2335,14 +2335,20 @@ mod tests {
         // Tag conditions are ignored: the final replace restores stone after dirt.
         assert_eq!(sent("minecraft:block", "minecraft:mineable/pickaxe"), [0]);
         assert_eq!(sent("minecraft:block", "test:more"), [0]);
-        // No pack tags for items: the registry stays as it was read.
+        // No pack tags for items: the root's tag stays as it was read alongside built-in c: tags.
         let items = tags
             .registries
             .iter()
             .find(|r| r.registry == "minecraft:item")
             .unwrap();
-        assert_eq!(items.tags.len(), 1);
-        assert_eq!(items.tags[0].ids, [0]);
+        let non_convention: Vec<_> = items
+            .tags
+            .iter()
+            .filter(|t| !t.name.starts_with("c:") && !t.name.starts_with("neoforge:"))
+            .collect();
+        assert_eq!(non_convention.len(), 1);
+        assert_eq!(non_convention[0].name, "minecraft:sticks");
+        assert_eq!(non_convention[0].ids, [0]);
         assert_eq!(
             tags.registries
                 .iter()
