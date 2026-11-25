@@ -1029,6 +1029,7 @@ fn a_body_standing_on_a_collider_turning_about_a_far_pivot_is_carried_along_the_
             });
         }
         let item = game.dropped.iter().find(|i| i.id == rider).unwrap();
+        let item_bounds = item.bounds();
         assert!(
             near(item.position, Vec3::new(8.0, 70.0, 7.5), 0.1),
             "carried along the arc about the far pivot: {:?}",
@@ -1037,7 +1038,7 @@ fn a_body_standing_on_a_collider_turning_about_a_far_pivot_is_carried_along_the_
         let placed = game.placed_moving_colliders();
         let collider = &placed.placed().find(|p| p.id == holder).unwrap().collider;
         assert!(
-            !collider.intersects(item.bounds()),
+            !collider.intersects(item_bounds),
             "rider must not be embedded after turning about a far pivot"
         );
     });
