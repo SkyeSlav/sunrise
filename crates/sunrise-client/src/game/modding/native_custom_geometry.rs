@@ -393,8 +393,10 @@ impl Game<'_> {
         draw.quads(quads)
     }
     /// Submit quads drawn by a mod pipeline: the handle is checked against the published
-    /// pipelines once, non-finite quads are skipped individually without rejecting valid quads
-    /// in the same slice, and quad storage grows dynamically into the GPU buffers.
+    /// pipelines once, non-[`mod_api::PrimitiveTopology::Quads`] pipelines are refused with
+    /// [`PipelineDrawError::TopologyMismatch`], non-finite quads are skipped individually without
+    /// rejecting valid quads in the same slice, and quad storage grows dynamically into the GPU
+    /// buffers.
     pub(super) fn native_world_draw_pipeline_quads(
         &self,
         draw: &mut WorldGeometry,
@@ -407,6 +409,15 @@ impl Game<'_> {
             .mod_pipelines
             .slot(pipeline)
             .map_err(PipelineDrawError::Pipeline)?;
+        let base_topology = self
+            .pack
+            .render
+            .mod_pipelines
+            .topology(slot)
+            .unwrap_or(mod_api::PrimitiveTopology::Quads);
+        if draw.effective_topology(base_topology) != mod_api::PrimitiveTopology::Quads {
+            return Err(PipelineDrawError::TopologyMismatch);
+        }
         draw.pipeline_quads(slot, quads);
         Ok(())
     }

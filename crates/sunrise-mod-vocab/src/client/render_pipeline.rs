@@ -35,8 +35,17 @@ pub struct RenderPipeline {
     pub defines: Vec<(String, Option<String>)>,
     /// What the pipeline's draws are made of.
     pub vertex_format: PipelineVertexFormat,
-    /// Fixed-function blend, depth, depth-write, culling, colour-write, and polygon-mode state.
+    /// Fixed-function blend, depth, depth-write, depth-bias, culling, colour-write, polygon-mode,
+    /// and primitive-topology state.
     pub state: PipelineState,
+    /// Per-target colour blend and write-mask overrides for multi-target (MRT) passes, indexed
+    /// `0..MAX_COLOR_TARGETS` (`ColorTargetState.MAX_COLOR_TARGETS = 8`). Empty by default,
+    /// meaning a single target 0 derived from [`PipelineState::blend`] and
+    /// [`PipelineState::color_write`]. Configured via [`Self::color_target`].
+    pub color_targets: Vec<Option<ColorTargetState>>,
+    /// First out-of-range index passed to [`Self::color_target`], kept so registration refuses
+    /// `index >= MAX_COLOR_TARGETS` without panicking or over-allocating.
+    invalid_color_target_index: Option<usize>,
     /// Whether this pipeline opts in to order-independent transparency
     /// (`RenderLevelStage::OitTranslucent`, NeoForge's `registerOitPipelineSet`). When `true`
     /// and `state.blend != PipelineBlend::Opaque`, the engine translates three OIT variants at
@@ -81,6 +90,8 @@ impl RenderPipeline {
             defines: Vec::new(),
             vertex_format: PipelineVertexFormat::PositionTexColor,
             state: PipelineState::new(blend, depth),
+            color_targets: Vec::new(),
+            invalid_color_target_index: None,
             order_independent: false,
             optional: false,
             texture: None,
@@ -135,6 +146,48 @@ impl RenderPipeline {
         Ok(())
     }
 
+    /// Validate fixed-function pipeline state declared on this pipeline: finite depth-bias
+    /// slope scale, colour-target indices `< MAX_COLOR_TARGETS` (8), and identical blend
+    /// functions across all active blended colour targets (`RenderPipeline.java:385-397`).
+    /// Called by the engine during pipeline registration freeze.
+    pub fn validate_state(&self) -> Result<(), String> {
+        if let Some(ds) = self.state.depth_stencil
+            && !ds.depth_bias_slope_scale.is_finite()
+        {
+            return Err(format!(
+                "invalid depth_bias_slope_scale {:?}: must be finite",
+                ds.depth_bias_slope_scale
+            ));
+        }
+        if let Some(index) = self.invalid_color_target_index {
+            return Err(format!(
+                "color target index {index} exceeds MAX_COLOR_TARGETS ({MAX_COLOR_TARGETS})"
+            ));
+        }
+        if self.color_targets.len() > MAX_COLOR_TARGETS {
+            return Err(format!(
+                "color target count {} exceeds MAX_COLOR_TARGETS ({MAX_COLOR_TARGETS})",
+                self.color_targets.len()
+            ));
+        }
+        let mut last_blend: Option<BlendFunction> = None;
+        for target in self.color_targets.iter().flatten() {
+            if let Some(blend_fn) = target.blend.to_blend_function() {
+                match last_blend {
+                    None => last_blend = Some(blend_fn),
+                    Some(prev) if prev != blend_fn => {
+                        return Err(
+                            "blend functions must be the same for all active color targets (RenderPipeline.java:392)"
+                                .to_owned(),
+                        );
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Replace all fixed-function state fields at once ([`PipelineState`]).
     pub fn state(mut self, state: PipelineState) -> Self {
         self.state = state;
@@ -144,19 +197,63 @@ impl RenderPipeline {
     /// Set how fragments join the colour target ([`PipelineState::blend`]).
     pub fn blend(mut self, blend: PipelineBlend) -> Self {
         self.state.blend = blend;
+        if let Some(Some(slot0)) = self.color_targets.first_mut() {
+            slot0.blend = blend;
+        }
         self
     }
 
-    /// Set depth testing behaviour ([`PipelineState::depth`]).
+    /// Set depth testing behaviour from a coarse [`WorldDepth`] (`Tested` ->
+    /// [`DepthCompare::GreaterEqual`], `ThroughWalls` -> [`DepthCompare::Always`]).
     pub fn depth(mut self, depth: WorldDepth) -> Self {
-        self.state.depth = depth;
+        let compare = DepthCompare::from_world_depth(depth);
+        match &mut self.state.depth_stencil {
+            Some(ds) => ds.compare = compare,
+            None => self.state.depth_stencil = Some(DepthState::new(compare, false)),
+        }
         self
     }
 
-    /// Set whether fragments write to the depth buffer (`DepthStencilState` write). Default:
-    /// `false`.
+    /// Set the depth comparison function (`DepthStencilState.depthTest`).
+    pub fn depth_compare(mut self, compare: DepthCompare) -> Self {
+        match &mut self.state.depth_stencil {
+            Some(ds) => ds.compare = compare,
+            None => self.state.depth_stencil = Some(DepthState::new(compare, false)),
+        }
+        self
+    }
+
+    /// Set whether fragments write to the depth buffer (`DepthStencilState.writeDepth`).
+    /// Default: `false`.
     pub fn depth_write(mut self, write: bool) -> Self {
-        self.state.depth_write = write;
+        match &mut self.state.depth_stencil {
+            Some(ds) => ds.write = write,
+            None => {
+                self.state.depth_stencil = Some(DepthState::new(DepthCompare::GreaterEqual, write))
+            }
+        }
+        self
+    }
+
+    /// Set depth bias (`DepthStencilState.depthBiasConstant` and `depthBiasScaleFactor`).
+    /// Positive values lift fragments toward the near plane in Sunrise's reversed-Z world pass
+    /// (and are negated automatically on standard-Z shader-pack targets). Non-finite
+    /// `slope_scale` is refused at registration.
+    pub fn depth_bias(mut self, constant: i32, slope_scale: f32) -> Self {
+        let ds = self
+            .state
+            .depth_stencil
+            .get_or_insert_with(|| DepthState::new(DepthCompare::GreaterEqual, false));
+        ds.depth_bias_constant = constant;
+        ds.depth_bias_slope_scale = slope_scale;
+        self
+    }
+
+    /// Replace the full depth-stencil state (`withDepthStencilState`). Passing `None` declares a
+    /// depthless pipeline (`RenderPipeline.wantsDepthTexture() == false`) for offscreen, post, or
+    /// GUI passes with no depth attachment.
+    pub fn depth_stencil(mut self, depth_stencil: Option<DepthState>) -> Self {
+        self.state.depth_stencil = depth_stencil;
         self
     }
 
@@ -170,13 +267,61 @@ impl RenderPipeline {
     /// [`ColorWrite::ALL`].
     pub fn color_write(mut self, write: ColorWrite) -> Self {
         self.state.color_write = write;
+        if let Some(Some(slot0)) = self.color_targets.first_mut() {
+            slot0.write = write;
+        }
         self
+    }
+
+    /// Configure colour target `index` (`0..MAX_COLOR_TARGETS`, vanilla's
+    /// `withColorTargetState(index, state)` / `withUnusedColorTargetState(index)`). Passing
+    /// `index >= MAX_COLOR_TARGETS` (8) or differing blend functions across active targets is
+    /// refused at registration (`RenderPipeline.java:385-397`).
+    pub fn color_target(mut self, index: usize, state: Option<ColorTargetState>) -> Self {
+        if index >= MAX_COLOR_TARGETS {
+            if self.invalid_color_target_index.is_none() {
+                self.invalid_color_target_index = Some(index);
+            }
+            return self;
+        }
+        if self.color_targets.len() <= index {
+            self.color_targets.resize(index + 1, None);
+        }
+        self.color_targets[index] = state;
+        if index == 0
+            && let Some(ct) = state
+        {
+            self.state.blend = ct.blend;
+            self.state.color_write = ct.write;
+        }
+        self
+    }
+
+    /// The effective colour target slots: [`Self::color_targets`] when explicitly configured,
+    /// otherwise a single slot 0 built from [`PipelineState::blend`] and
+    /// [`PipelineState::color_write`].
+    pub fn effective_color_targets(&self) -> Vec<Option<ColorTargetState>> {
+        if self.color_targets.is_empty() {
+            vec![Some(ColorTargetState::new(
+                self.state.blend,
+                self.state.color_write,
+            ))]
+        } else {
+            self.color_targets.clone()
+        }
     }
 
     /// Set triangle fill or wireframe mode (`PolygonMode`). Default: [`PolygonMode::Fill`].
     /// [`PolygonMode::Line`] requires the device's wireframe feature.
     pub fn polygon(mut self, polygon: PolygonMode) -> Self {
         self.state.polygon = polygon;
+        self
+    }
+
+    /// Set how vertices are assembled into primitives (`withPrimitiveTopology`). Default:
+    /// [`PrimitiveTopology::Quads`].
+    pub fn topology(mut self, topology: PrimitiveTopology) -> Self {
+        self.state.topology = topology;
         self
     }
 
@@ -810,6 +955,313 @@ pub enum PipelineVertexFormat {
     PositionTexColor,
 }
 
+/// Maximum number of colour targets a [`RenderPipeline`] can declare
+/// (`ColorTargetState.MAX_COLOR_TARGETS`).
+pub const MAX_COLOR_TARGETS: usize = 8;
+
+/// Depth comparison operator (`com.mojang.renderpearl.api.pipeline.CompareOp`).
+///
+/// Sunrise uses reversed-Z in world passes (`1.0` near, `0.0` far, matching vanilla 26.3's
+/// `DepthStencilState.DEFAULT = GREATER_THAN_OR_EQUAL`). On standard-Z shader-pack targets
+/// (`0.0` near, `1.0` far), the renderer flips `Less*` ↔ `Greater*` automatically via
+/// [`Self::flip_for_standard_z`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline depth comparison operator.
+pub enum DepthCompare {
+    /// Always pass (`CompareOp.ALWAYS_PASS`).
+    Always,
+    /// Pass when incoming depth `<` stored depth (`CompareOp.LESS_THAN`).
+    Less,
+    /// Pass when incoming depth `<=` stored depth (`CompareOp.LESS_THAN_OR_EQUAL`).
+    LessEqual,
+    /// Pass when incoming depth `==` stored depth (`CompareOp.EQUAL`).
+    Equal,
+    /// Pass when incoming depth `!=` stored depth (`CompareOp.NOT_EQUAL`).
+    NotEqual,
+    /// Pass when incoming depth `>=` stored depth (`CompareOp.GREATER_THAN_OR_EQUAL`, default
+    /// for reversed-Z world passes).
+    GreaterEqual,
+    /// Pass when incoming depth `>` stored depth (`CompareOp.GREATER_THAN`).
+    Greater,
+    /// Never pass (`CompareOp.NEVER_PASS`).
+    Never,
+}
+
+impl DepthCompare {
+    /// Map a coarse [`WorldDepth`] to Sunrise's reversed-Z [`DepthCompare`].
+    pub const fn from_world_depth(depth: WorldDepth) -> Self {
+        match depth {
+            WorldDepth::ThroughWalls => Self::Always,
+            WorldDepth::Tested => Self::GreaterEqual,
+            _ => Self::GreaterEqual,
+        }
+    }
+
+    /// Flip `Less*` ↔ `Greater*` when targeting a standard-Z (`0.0` near, `1.0` far) render
+    /// target such as a translated shader pack's `depthtex0`.
+    pub const fn flip_for_standard_z(self) -> Self {
+        match self {
+            Self::Less => Self::Greater,
+            Self::LessEqual => Self::GreaterEqual,
+            Self::GreaterEqual => Self::LessEqual,
+            Self::Greater => Self::Less,
+            Self::Always => Self::Always,
+            Self::Equal => Self::Equal,
+            Self::NotEqual => Self::NotEqual,
+            Self::Never => Self::Never,
+        }
+    }
+}
+
+/// Canonical bit representation of `f32` normalizing `-0.0` to `+0.0` so `DepthState` and
+/// `PipelineState` satisfy `Eq` and `Hash`.
+const fn canonical_f32_bits(value: f32) -> u32 {
+    if value == 0.0 { 0 } else { value.to_bits() }
+}
+
+/// Depth test, depth write, and depth bias state
+/// (`com.mojang.renderpearl.api.pipeline.DepthStencilState`).
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+// no wire: local client render-pipeline depth-stencil state.
+pub struct DepthState {
+    /// Depth comparison function in Sunrise's reversed-Z world space.
+    pub compare: DepthCompare,
+    /// Whether fragments write to the depth buffer (`DepthStencilState.writeDepth`).
+    pub write: bool,
+    /// Constant depth bias in depth-buffer units (`wgpu::DepthBiasState::constant`,
+    /// `DepthStencilState.depthBiasConstant`). Default: `0`.
+    pub depth_bias_constant: i32,
+    /// Slope-scaled depth bias factor (`wgpu::DepthBiasState::slope_scale`,
+    /// `DepthStencilState.depthBiasScaleFactor`). Must be finite (refused at registration
+    /// otherwise). Default: `0.0`.
+    pub depth_bias_slope_scale: f32,
+}
+
+impl DepthState {
+    /// Vanilla's `DepthStencilState.DEFAULT`: `GreaterEqual`, depth write enabled, zero bias.
+    pub const DEFAULT: Self = Self {
+        compare: DepthCompare::GreaterEqual,
+        write: true,
+        depth_bias_constant: 0,
+        depth_bias_slope_scale: 0.0,
+    };
+
+    /// Construct a depth state with zero depth bias.
+    pub const fn new(compare: DepthCompare, write: bool) -> Self {
+        Self {
+            compare,
+            write,
+            depth_bias_constant: 0,
+            depth_bias_slope_scale: 0.0,
+        }
+    }
+
+    /// Set constant and slope-scaled depth bias.
+    pub const fn depth_bias(mut self, constant: i32, slope_scale: f32) -> Self {
+        self.depth_bias_constant = constant;
+        self.depth_bias_slope_scale = slope_scale;
+        self
+    }
+}
+
+impl PartialEq for DepthState {
+    fn eq(&self, other: &Self) -> bool {
+        self.compare == other.compare
+            && self.write == other.write
+            && self.depth_bias_constant == other.depth_bias_constant
+            && canonical_f32_bits(self.depth_bias_slope_scale)
+                == canonical_f32_bits(other.depth_bias_slope_scale)
+    }
+}
+
+impl Eq for DepthState {}
+
+impl std::hash::Hash for DepthState {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.compare.hash(state);
+        self.write.hash(state);
+        self.depth_bias_constant.hash(state);
+        canonical_f32_bits(self.depth_bias_slope_scale).hash(state);
+    }
+}
+
+/// Blending factor (`com.mojang.renderpearl.api.pipeline.BlendFactor`).
+///
+/// Note: WebGPU/wgpu maps both `ConstantColor`/`ConstantAlpha` to its `Constant` factor (and
+/// `OneMinusConstantColor`/`OneMinusConstantAlpha` to `OneMinusConstant`), selecting RGB for the
+/// colour equation and A for the alpha equation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline blend factor.
+pub enum BlendFactor {
+    ConstantAlpha,
+    ConstantColor,
+    DstAlpha,
+    DstColor,
+    One,
+    OneMinusConstantAlpha,
+    OneMinusConstantColor,
+    OneMinusDstAlpha,
+    OneMinusDstColor,
+    OneMinusSrcAlpha,
+    OneMinusSrcColor,
+    SrcAlpha,
+    SrcAlphaSaturate,
+    SrcColor,
+    Zero,
+}
+
+/// Blending operation (`com.mojang.renderpearl.api.pipeline.BlendOp`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline blend operation.
+pub enum BlendOp {
+    Add,
+    Subtract,
+    ReverseSubtract,
+    Min,
+    Max,
+}
+
+/// One channel's blend equation (`com.mojang.renderpearl.api.pipeline.BlendEquation`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline blend equation.
+pub struct BlendEquation {
+    pub src: BlendFactor,
+    pub dst: BlendFactor,
+    pub op: BlendOp,
+}
+
+impl BlendEquation {
+    /// Construct a blend equation with explicit source factor, destination factor, and op.
+    pub const fn new(src: BlendFactor, dst: BlendFactor, op: BlendOp) -> Self {
+        Self { src, dst, op }
+    }
+
+    /// Construct an additive (`BlendOp::Add`) blend equation.
+    pub const fn add(src: BlendFactor, dst: BlendFactor) -> Self {
+        Self {
+            src,
+            dst,
+            op: BlendOp::Add,
+        }
+    }
+}
+
+/// Separate colour and alpha blend equations (`com.mojang.renderpearl.api.pipeline.BlendFunction`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline custom blend function.
+pub struct BlendFunction {
+    pub color: BlendEquation,
+    pub alpha: BlendEquation,
+}
+
+impl BlendFunction {
+    /// `BlendFunction.LIGHTNING`: `SrcAlpha`, `One` (both colour and alpha).
+    pub const LIGHTNING: Self = Self::symmetric(BlendFactor::SrcAlpha, BlendFactor::One);
+    /// `BlendFunction.GLINT`: colour `(SrcColor, One)`, alpha `(Zero, One)`.
+    pub const GLINT: Self = Self::separate(
+        BlendFactor::SrcColor,
+        BlendFactor::One,
+        BlendFactor::Zero,
+        BlendFactor::One,
+    );
+    /// `BlendFunction.OVERLAY`: colour `(SrcAlpha, One)`, alpha `(One, Zero)`.
+    pub const OVERLAY: Self = Self::separate(
+        BlendFactor::SrcAlpha,
+        BlendFactor::One,
+        BlendFactor::One,
+        BlendFactor::Zero,
+    );
+    /// `BlendFunction.TRANSLUCENT`: colour `(SrcAlpha, OneMinusSrcAlpha)`, alpha `(One, OneMinusSrcAlpha)`.
+    pub const TRANSLUCENT: Self = Self::separate(
+        BlendFactor::SrcAlpha,
+        BlendFactor::OneMinusSrcAlpha,
+        BlendFactor::One,
+        BlendFactor::OneMinusSrcAlpha,
+    );
+    /// `BlendFunction.TRANSLUCENT_PREMULTIPLIED_ALPHA`: `(One, OneMinusSrcAlpha)` on colour and alpha.
+    pub const TRANSLUCENT_PREMULTIPLIED_ALPHA: Self = Self::separate(
+        BlendFactor::One,
+        BlendFactor::OneMinusSrcAlpha,
+        BlendFactor::One,
+        BlendFactor::OneMinusSrcAlpha,
+    );
+    /// `BlendFunction.ADDITIVE`: `(One, One)` on colour and alpha.
+    pub const ADDITIVE: Self = Self::symmetric(BlendFactor::One, BlendFactor::One);
+    /// `BlendFunction.ENTITY_OUTLINE_BLIT`: colour `(SrcAlpha, OneMinusSrcAlpha)`, alpha `(Zero, One)`.
+    pub const ENTITY_OUTLINE_BLIT: Self = Self::separate(
+        BlendFactor::SrcAlpha,
+        BlendFactor::OneMinusSrcAlpha,
+        BlendFactor::Zero,
+        BlendFactor::One,
+    );
+    /// `BlendFunction.INVERT`: colour `(OneMinusDstColor, OneMinusSrcColor)`, alpha `(One, Zero)`.
+    pub const INVERT: Self = Self::separate(
+        BlendFactor::OneMinusDstColor,
+        BlendFactor::OneMinusSrcColor,
+        BlendFactor::One,
+        BlendFactor::Zero,
+    );
+    /// `BlendFunction.MAX`: `(One, One, BlendOp::Max)` on colour and alpha.
+    pub const MAX: Self = Self::symmetric_with_op(BlendFactor::One, BlendFactor::One, BlendOp::Max);
+
+    /// Construct from explicit colour and alpha equations.
+    pub const fn new(color: BlendEquation, alpha: BlendEquation) -> Self {
+        Self { color, alpha }
+    }
+
+    /// Construct with separate colour and alpha additive equations.
+    pub const fn separate(
+        src_color: BlendFactor,
+        dst_color: BlendFactor,
+        src_alpha: BlendFactor,
+        dst_alpha: BlendFactor,
+    ) -> Self {
+        Self {
+            color: BlendEquation::add(src_color, dst_color),
+            alpha: BlendEquation::add(src_alpha, dst_alpha),
+        }
+    }
+
+    /// Construct with separate colour and alpha equations and explicit operations.
+    pub const fn separate_with_ops(
+        src_color: BlendFactor,
+        dst_color: BlendFactor,
+        color_op: BlendOp,
+        src_alpha: BlendFactor,
+        dst_alpha: BlendFactor,
+        alpha_op: BlendOp,
+    ) -> Self {
+        Self {
+            color: BlendEquation::new(src_color, dst_color, color_op),
+            alpha: BlendEquation::new(src_alpha, dst_alpha, alpha_op),
+        }
+    }
+
+    /// Construct with identical additive colour and alpha equations.
+    pub const fn symmetric(src: BlendFactor, dst: BlendFactor) -> Self {
+        let eq = BlendEquation::add(src, dst);
+        Self {
+            color: eq,
+            alpha: eq,
+        }
+    }
+
+    /// Construct with identical colour and alpha equations and an explicit operation.
+    pub const fn symmetric_with_op(src: BlendFactor, dst: BlendFactor, op: BlendOp) -> Self {
+        let eq = BlendEquation::new(src, dst, op);
+        Self {
+            color: eq,
+            alpha: eq,
+        }
+    }
+}
+
 /// How a pipeline's fragments join the frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -817,10 +1269,144 @@ pub enum PipelineVertexFormat {
 pub enum PipelineBlend {
     /// Solid colour written directly without alpha blending (vanilla's no-blend target state).
     Opaque,
-    /// Laid over the frame by the fragment's alpha, as [`crate::WorldQuad`] is.
+    /// Laid over the frame by the fragment's alpha, as [`crate::WorldQuad`] is
+    /// ([`BlendFunction::TRANSLUCENT`]).
     Translucent,
-    /// Added to the frame, scaled by the fragment's alpha.
+    /// Added to the frame, scaled by the fragment's alpha (colour `SrcAlpha + One`, alpha
+    /// `Zero + One`).
     Additive,
+    /// Explicit colour and alpha blend equations (`BlendFunction.java`).
+    Custom(BlendFunction),
+}
+
+impl PipelineBlend {
+    /// Convert this blend mode into its underlying [`BlendFunction`], or `None` for
+    /// [`Self::Opaque`].
+    pub const fn to_blend_function(self) -> Option<BlendFunction> {
+        match self {
+            Self::Opaque => None,
+            Self::Translucent => Some(BlendFunction::TRANSLUCENT),
+            Self::Additive => Some(BlendFunction::separate(
+                BlendFactor::SrcAlpha,
+                BlendFactor::One,
+                BlendFactor::Zero,
+                BlendFactor::One,
+            )),
+            Self::Custom(func) => Some(func),
+        }
+    }
+}
+
+/// Per-target blending and channel write mask (`ColorTargetState.java`). The target texture
+/// format comes from the active render pass rather than the pipeline descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline colour target state.
+pub struct ColorTargetState {
+    /// How fragments join this colour target.
+    pub blend: PipelineBlend,
+    /// Which colour channels fragments write to this target.
+    pub write: ColorWrite,
+}
+
+impl ColorTargetState {
+    /// `ColorTargetState.DEFAULT`: opaque (no blend), write all RGBA channels.
+    pub const DEFAULT: Self = Self {
+        blend: PipelineBlend::Opaque,
+        write: ColorWrite::ALL,
+    };
+
+    /// Construct a colour target state with explicit blend mode and write mask.
+    pub const fn new(blend: PipelineBlend, write: ColorWrite) -> Self {
+        Self { blend, write }
+    }
+
+    /// Construct a colour target state with `blend` and [`ColorWrite::ALL`].
+    pub const fn blended(blend: PipelineBlend) -> Self {
+        Self {
+            blend,
+            write: ColorWrite::ALL,
+        }
+    }
+}
+
+impl Default for ColorTargetState {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// How vertices are assembled into primitives (`com.mojang.renderpearl.api.pipeline.PrimitiveTopology`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+// no wire: local client render-pipeline primitive topology.
+pub enum PrimitiveTopology {
+    /// Vanilla's quad-expanded wide lines (`PrimitiveTopology.LINES`: 4 vertices -> 6 indices
+    /// per line quad via the engine's shared quad index buffer).
+    Lines,
+    /// 1-pixel hardware line list (`PrimitiveTopology.DEBUG_LINES`).
+    DebugLines,
+    /// 1-pixel hardware line strip (`PrimitiveTopology.DEBUG_LINE_STRIP`).
+    DebugLineStrip,
+    /// Individual points (`PrimitiveTopology.POINTS`).
+    Points,
+    /// Independent triangles (`PrimitiveTopology.TRIANGLES`).
+    Triangles,
+    /// Connected triangle strip (`PrimitiveTopology.TRIANGLE_STRIP`).
+    TriangleStrip,
+    /// Triangle fan (`PrimitiveTopology.TRIANGLE_FAN`, e.g. `SkyRenderer.java:88,95,338`),
+    /// emulated on WebGPU/wgpu via an engine-generated fan index buffer (`0, i, i + 1` for
+    /// `i` in `1..vertex_count - 1`).
+    TriangleFan,
+    /// Quads expanded 4 vertices -> 6 indices via the engine's shared quad index buffer
+    /// (`PrimitiveTopology.QUADS`). Default for [`RenderPipeline::new`] / `pipeline_quads`.
+    #[default]
+    Quads,
+}
+
+impl PrimitiveTopology {
+    /// Vertices per primitive (`PrimitiveTopology.primitiveLength`).
+    pub const fn primitive_length(self) -> u32 {
+        match self {
+            Self::Lines | Self::DebugLines | Self::DebugLineStrip => 2,
+            Self::Points => 1,
+            Self::Triangles | Self::TriangleStrip | Self::TriangleFan => 3,
+            Self::Quads => 4,
+        }
+    }
+
+    /// Vertex advance per additional primitive (`PrimitiveTopology.primitiveStride`).
+    pub const fn primitive_stride(self) -> u32 {
+        match self {
+            Self::Lines | Self::DebugLines => 2,
+            Self::DebugLineStrip | Self::Points | Self::TriangleStrip | Self::TriangleFan => 1,
+            Self::Triangles => 3,
+            Self::Quads => 4,
+        }
+    }
+
+    /// Whether consecutive primitives share vertices (`PrimitiveTopology.connectedPrimitives`).
+    pub const fn connected_primitives(self) -> bool {
+        matches!(
+            self,
+            Self::DebugLineStrip | Self::TriangleStrip | Self::TriangleFan
+        )
+    }
+
+    /// Number of indices produced for `vertex_count` vertices when drawing with engine-generated
+    /// index buffers (`Quads` and `Lines`: `(vertex_count / 4) * 6`; `TriangleFan`:
+    /// `(vertex_count - 2) * 3`; all native topologies: `vertex_count`).
+    pub const fn index_count(self, vertex_count: u32) -> u32 {
+        match self {
+            Self::Lines | Self::Quads => (vertex_count / 4) * 6,
+            Self::TriangleFan => vertex_count.saturating_sub(2).saturating_mul(3),
+            Self::DebugLines
+            | Self::DebugLineStrip
+            | Self::Points
+            | Self::Triangles
+            | Self::TriangleStrip => vertex_count,
+        }
+    }
 }
 
 /// Which colour channels a pipeline writes (`ColorTargetState` write mask).
@@ -881,18 +1467,17 @@ pub enum PolygonMode {
     Line,
 }
 
-/// Fixed-function rasterization, depth, blend, and colour-write state of a [`RenderPipeline`]
-/// (vanilla's `RenderPipeline` state).
+/// Fixed-function rasterization, depth, blend, colour-write, and topology state of a
+/// [`RenderPipeline`] (vanilla's `RenderPipeline` state).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 // no wire: local client render-pipeline fixed state.
 pub struct PipelineState {
-    /// How fragments join the colour target.
+    /// How fragments join colour target 0 (and default MRT targets).
     pub blend: PipelineBlend,
-    /// Whether nearer world surfaces hide the draw.
-    pub depth: WorldDepth,
-    /// Whether fragments write to the depth buffer (`DepthStencilState` write). Default: `false`.
-    pub depth_write: bool,
+    /// Depth test, depth write, and depth bias state (`DepthStencilState.java`). `None`
+    /// indicates a depthless pass (`RenderPipeline.wantsDepthTexture() == false`).
+    pub depth_stencil: Option<DepthState>,
     /// Whether back faces are culled (`withCull`). Default: `false` (two-sided).
     pub cull: bool,
     /// Which colour channels fragments write (`ColorTargetState` write mask). Default:
@@ -900,19 +1485,26 @@ pub struct PipelineState {
     pub color_write: ColorWrite,
     /// Triangle fill or wireframe (`PolygonMode`). Default: [`PolygonMode::Fill`].
     pub polygon: PolygonMode,
+    /// How vertices are assembled into primitives (`PrimitiveTopology.java`). Default:
+    /// [`PrimitiveTopology::Quads`].
+    pub topology: PrimitiveTopology,
 }
 
 impl PipelineState {
-    /// Default state for `blend` and `depth` (`depth_write: false`, `cull: false`,
-    /// `color_write: ColorWrite::ALL`, `polygon: PolygonMode::Fill`).
+    /// Default state for `blend` and `depth` (`depth_stencil: Some(DepthState::new(compare,
+    /// false))`, `cull: false`, `color_write: ColorWrite::ALL`, `polygon: PolygonMode::Fill`,
+    /// `topology: PrimitiveTopology::Quads`).
     pub const fn new(blend: PipelineBlend, depth: WorldDepth) -> Self {
         Self {
             blend,
-            depth,
-            depth_write: false,
+            depth_stencil: Some(DepthState::new(
+                DepthCompare::from_world_depth(depth),
+                false,
+            )),
             cull: false,
             color_write: ColorWrite::ALL,
             polygon: PolygonMode::Fill,
+            topology: PrimitiveTopology::Quads,
         }
     }
 }
@@ -923,7 +1515,7 @@ impl PipelineState {
 /// Every field is optional: `None` leaves the underlying pipeline's value unchanged. Because a
 /// modifier is pure data, applying it is idempotent by construction and the renderer caches each
 /// `(pipeline, modifier stack)` variant lazily.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 // no wire: local client pipeline-modifier registration descriptor.
 pub struct PipelineModifier {
@@ -932,17 +1524,48 @@ pub struct PipelineModifier {
     pub id: Identifier,
     /// Override [`PipelineState::blend`]. Ignored for OIT variants where OIT supplies blending.
     pub blend: Option<PipelineBlend>,
-    /// Override [`PipelineState::depth`].
-    pub depth: Option<WorldDepth>,
-    /// Override [`PipelineState::depth_write`]. Ignored for OIT variants where depth is read-only.
+    /// Override [`DepthState::compare`] on depth-attached pipelines (and `WorldDepth` on plain
+    /// world primitives).
+    pub depth_compare: Option<DepthCompare>,
+    /// Override [`DepthState::write`] on depth-attached pipelines. Ignored for OIT variants
+    /// where depth is read-only.
     pub depth_write: Option<bool>,
+    /// Override `(depth_bias_constant, depth_bias_slope_scale)` on depth-attached pipelines.
+    /// Non-finite slope scale is refused at registration.
+    pub depth_bias: Option<(i32, f32)>,
     /// Override [`PipelineState::cull`].
     pub cull: Option<bool>,
     /// Override [`PipelineState::color_write`].
     pub color_write: Option<ColorWrite>,
     /// Override [`PipelineState::polygon`].
     pub polygon: Option<PolygonMode>,
+    /// Override [`PipelineState::topology`].
+    pub topology: Option<PrimitiveTopology>,
 }
+
+impl PartialEq for PipelineModifier {
+    fn eq(&self, other: &Self) -> bool {
+        let bias_eq = match (self.depth_bias, other.depth_bias) {
+            (None, None) => true,
+            (Some((ac, as_)), Some((bc, bs))) => {
+                ac == bc && canonical_f32_bits(as_) == canonical_f32_bits(bs)
+            }
+            _ => false,
+        };
+        self.owner == other.owner
+            && self.id == other.id
+            && self.blend == other.blend
+            && self.depth_compare == other.depth_compare
+            && self.depth_write == other.depth_write
+            && bias_eq
+            && self.cull == other.cull
+            && self.color_write == other.color_write
+            && self.polygon == other.polygon
+            && self.topology == other.topology
+    }
+}
+
+impl Eq for PipelineModifier {}
 
 impl PipelineModifier {
     /// Describe a modifier with no overrides set.
@@ -951,11 +1574,13 @@ impl PipelineModifier {
             owner: String::new(),
             id,
             blend: None,
-            depth: None,
+            depth_compare: None,
             depth_write: None,
+            depth_bias: None,
             cull: None,
             color_write: None,
             polygon: None,
+            topology: None,
         }
     }
 
@@ -970,15 +1595,29 @@ impl PipelineModifier {
         self
     }
 
-    /// Override [`PipelineState::depth`].
+    /// Override depth testing from a coarse [`WorldDepth`] (`Tested` ->
+    /// [`DepthCompare::GreaterEqual`], `ThroughWalls` -> [`DepthCompare::Always`]).
     pub fn depth(mut self, depth: WorldDepth) -> Self {
-        self.depth = Some(depth);
+        self.depth_compare = Some(DepthCompare::from_world_depth(depth));
         self
     }
 
-    /// Override [`PipelineState::depth_write`].
+    /// Override [`DepthState::compare`].
+    pub fn depth_compare(mut self, compare: DepthCompare) -> Self {
+        self.depth_compare = Some(compare);
+        self
+    }
+
+    /// Override [`DepthState::write`].
     pub fn depth_write(mut self, write: bool) -> Self {
         self.depth_write = Some(write);
+        self
+    }
+
+    /// Override [`DepthState::depth_bias_constant`] and [`DepthState::depth_bias_slope_scale`].
+    /// Non-finite `slope_scale` is refused at registration.
+    pub fn depth_bias(mut self, constant: i32, slope_scale: f32) -> Self {
+        self.depth_bias = Some((constant, slope_scale));
         self
     }
 
@@ -1000,16 +1639,42 @@ impl PipelineModifier {
         self
     }
 
-    /// Apply this modifier's non-`None` overrides to `state`.
+    /// Override [`PipelineState::topology`].
+    pub fn topology(mut self, topology: PrimitiveTopology) -> Self {
+        self.topology = Some(topology);
+        self
+    }
+
+    /// Validate modifier fields at registration freeze (e.g. finite `depth_bias` slope scale).
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some((_, slope_scale)) = self.depth_bias
+            && !slope_scale.is_finite()
+        {
+            return Err(format!(
+                "invalid depth_bias slope_scale {slope_scale:?}: must be finite"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Apply this modifier's non-`None` overrides to `state`. Depth overrides (`depth_compare`,
+    /// `depth_write`, `depth_bias`) apply only when `state.depth_stencil` is `Some`.
     pub const fn apply(&self, mut state: PipelineState) -> PipelineState {
         if let Some(blend) = self.blend {
             state.blend = blend;
         }
-        if let Some(depth) = self.depth {
-            state.depth = depth;
-        }
-        if let Some(depth_write) = self.depth_write {
-            state.depth_write = depth_write;
+        if let Some(mut ds) = state.depth_stencil {
+            if let Some(compare) = self.depth_compare {
+                ds.compare = compare;
+            }
+            if let Some(depth_write) = self.depth_write {
+                ds.write = depth_write;
+            }
+            if let Some((constant, slope_scale)) = self.depth_bias {
+                ds.depth_bias_constant = constant;
+                ds.depth_bias_slope_scale = slope_scale;
+            }
+            state.depth_stencil = Some(ds);
         }
         if let Some(cull) = self.cull {
             state.cull = cull;
@@ -1020,17 +1685,22 @@ impl PipelineModifier {
         if let Some(polygon) = self.polygon {
             state.polygon = polygon;
         }
+        if let Some(topology) = self.topology {
+            state.topology = topology;
+        }
         state
     }
 
     /// Whether this modifier overrides no state fields.
     pub const fn is_noop(&self) -> bool {
         self.blend.is_none()
-            && self.depth.is_none()
+            && self.depth_compare.is_none()
             && self.depth_write.is_none()
+            && self.depth_bias.is_none()
             && self.cull.is_none()
             && self.color_write.is_none()
             && self.polygon.is_none()
+            && self.topology.is_none()
     }
 }
 
@@ -1119,6 +1789,9 @@ impl PipelineQuad {
 pub enum PipelineDrawError {
     /// The handle is stale, or names no usable pipeline.
     Pipeline(RenderPipelineError),
+    /// The pipeline's effective [`PrimitiveTopology`] does not match the draw call (for example,
+    /// submitting a non-[`PrimitiveTopology::Quads`] pipeline to `pipeline_quads`).
+    TopologyMismatch,
 }
 
 impl crate::RegisterRenderPipelinesEvent<'_> {
@@ -1466,39 +2139,62 @@ mod tests {
             .blend(PipelineBlend::Opaque)
             .depth(WorldDepth::Tested)
             .depth_write(true)
+            .depth_bias(10, 1.5)
             .cull(true)
             .color_write(ColorWrite::COLOR)
             .polygon(PolygonMode::Line)
+            .topology(PrimitiveTopology::Triangles)
             .order_independent();
         assert_eq!(
             p.state,
             PipelineState {
                 blend: PipelineBlend::Opaque,
-                depth: WorldDepth::Tested,
-                depth_write: true,
+                depth_stencil: Some(DepthState {
+                    compare: DepthCompare::GreaterEqual,
+                    write: true,
+                    depth_bias_constant: 10,
+                    depth_bias_slope_scale: 1.5,
+                }),
                 cull: true,
                 color_write: ColorWrite::COLOR,
                 polygon: PolygonMode::Line,
+                topology: PrimitiveTopology::Triangles,
             }
         );
         assert!(p.order_independent);
+        assert_eq!(p.validate_state(), Ok(()));
 
         let noop = PipelineModifier::new(Identifier::parse("example:noop").unwrap());
         assert!(noop.is_noop());
         assert_eq!(noop.apply(p.state), p.state);
 
         let xray = PipelineModifier::new(Identifier::parse("example:xray").unwrap())
-            .depth(WorldDepth::ThroughWalls)
+            .depth_compare(DepthCompare::LessEqual)
             .depth_write(false)
-            .polygon(PolygonMode::Fill);
+            .depth_bias(4, 0.5)
+            .polygon(PolygonMode::Fill)
+            .topology(PrimitiveTopology::DebugLines);
         assert!(!xray.is_noop());
         let modified = xray.apply(p.state);
-        assert_eq!(modified.depth, WorldDepth::ThroughWalls);
-        assert!(!modified.depth_write);
+        assert_eq!(
+            modified.depth_stencil,
+            Some(DepthState {
+                compare: DepthCompare::LessEqual,
+                write: false,
+                depth_bias_constant: 4,
+                depth_bias_slope_scale: 0.5,
+            })
+        );
         assert_eq!(modified.polygon, PolygonMode::Fill);
+        assert_eq!(modified.topology, PrimitiveTopology::DebugLines);
         assert_eq!(modified.blend, PipelineBlend::Opaque);
         assert!(modified.cull);
         assert_eq!(modified.color_write, ColorWrite::COLOR);
+
+        // Depthless pipeline stays depthless even under depth-overriding modifiers.
+        let depthless = pipeline("example:post").depth_stencil(None);
+        assert_eq!(depthless.state.depth_stencil, None);
+        assert_eq!(xray.apply(depthless.state).depth_stencil, None);
 
         let mut modifiers = Vec::new();
         let mut event = crate::RegisterPipelineModifiersEvent {
@@ -1508,5 +2204,103 @@ mod tests {
         event.register(xray);
         assert_eq!(modifiers.len(), 1);
         assert_eq!(modifiers[0].owner(), "mod_b");
+    }
+
+    #[test]
+    fn validate_state_refuses_bad_depth_bias_out_of_range_target_and_mixed_mrt_blends() {
+        // Non-finite depth bias slope scale refused.
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let err = pipeline("example:bad_bias")
+                .depth_bias(0, bad)
+                .validate_state()
+                .unwrap_err();
+            assert!(err.contains("depth_bias_slope_scale"), "{err}");
+            let mod_err = PipelineModifier::new(Identifier::parse("example:bad_mod").unwrap())
+                .depth_bias(0, bad)
+                .validate()
+                .unwrap_err();
+            assert!(mod_err.contains("depth_bias"), "{mod_err}");
+        }
+
+        // Color target index >= MAX_COLOR_TARGETS (8) refused.
+        let out_of_range = pipeline("example:bad_slot")
+            .color_target(MAX_COLOR_TARGETS, Some(ColorTargetState::DEFAULT));
+        assert!(out_of_range.validate_state().is_err());
+
+        // Differing blend functions across active MRT targets refused (RenderPipeline.java:392).
+        let mixed = pipeline("example:mixed_mrt")
+            .color_target(
+                0,
+                Some(ColorTargetState::blended(PipelineBlend::Translucent)),
+            )
+            .color_target(
+                1,
+                Some(ColorTargetState::blended(PipelineBlend::Custom(
+                    BlendFunction::INVERT,
+                ))),
+            );
+        assert!(mixed.validate_state().is_err());
+
+        // Same blend function (including Opaque + unused slots) accepted across 8 targets.
+        let valid_mrt = pipeline("example:valid_mrt")
+            .color_target(
+                0,
+                Some(ColorTargetState::blended(PipelineBlend::Translucent)),
+            )
+            .color_target(1, None)
+            .color_target(2, Some(ColorTargetState::DEFAULT))
+            .color_target(
+                7,
+                Some(ColorTargetState::blended(PipelineBlend::Custom(
+                    BlendFunction::TRANSLUCENT,
+                ))),
+            );
+        assert_eq!(valid_mrt.validate_state(), Ok(()));
+        assert_eq!(valid_mrt.effective_color_targets().len(), 8);
+    }
+
+    #[test]
+    fn depth_compare_flips_for_standard_z_and_topology_index_counts_match_vanilla() {
+        assert_eq!(
+            DepthCompare::GreaterEqual.flip_for_standard_z(),
+            DepthCompare::LessEqual
+        );
+        assert_eq!(
+            DepthCompare::Greater.flip_for_standard_z(),
+            DepthCompare::Less
+        );
+        assert_eq!(
+            DepthCompare::LessEqual.flip_for_standard_z(),
+            DepthCompare::GreaterEqual
+        );
+        assert_eq!(
+            DepthCompare::Less.flip_for_standard_z(),
+            DepthCompare::Greater
+        );
+        assert_eq!(
+            DepthCompare::Always.flip_for_standard_z(),
+            DepthCompare::Always
+        );
+        assert_eq!(
+            DepthCompare::Equal.flip_for_standard_z(),
+            DepthCompare::Equal
+        );
+        assert_eq!(
+            DepthCompare::NotEqual.flip_for_standard_z(),
+            DepthCompare::NotEqual
+        );
+        assert_eq!(
+            DepthCompare::Never.flip_for_standard_z(),
+            DepthCompare::Never
+        );
+
+        assert_eq!(PrimitiveTopology::Quads.index_count(8), 12);
+        assert_eq!(PrimitiveTopology::Lines.index_count(8), 12);
+        assert_eq!(PrimitiveTopology::TriangleFan.index_count(5), 9);
+        assert_eq!(PrimitiveTopology::TriangleFan.index_count(2), 0);
+        assert_eq!(PrimitiveTopology::Triangles.index_count(6), 6);
+        assert_eq!(PrimitiveTopology::DebugLines.index_count(4), 4);
+        assert_eq!(PrimitiveTopology::DebugLineStrip.index_count(4), 4);
+        assert_eq!(PrimitiveTopology::Points.index_count(3), 3);
     }
 }

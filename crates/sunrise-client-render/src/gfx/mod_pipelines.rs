@@ -15,7 +15,10 @@ use super::expression_blocks::{VANILLA_OFFSETS, VANILLA_SIZES, block_entry};
 use super::world_primitives::{Upload, VertexPages};
 use crate::mod_pipelines::{Built, BuiltTexture, ModifierStacks, Pipelines};
 use glam::Mat4;
-use mod_api::{Identifier, PipelineBlend, PipelineState, PolygonMode, WorldDepth};
+use mod_api::{
+    BlendFactor, BlendOp, ColorTargetState, ColorWrite, DepthCompare, Identifier, PipelineBlend,
+    PipelineState, PolygonMode, PrimitiveTopology,
+};
 use sunrise_mod_pipeline::{
     ENTRY, OIT_STAGE_SAMPLERS, Options as PipelineOptions, SPRITE_RECT_BINDING,
 };
@@ -142,12 +145,147 @@ pub(crate) fn fallback_vanilla_blocks(
     bytes
 }
 
-/// Target attachment and depth-compare state for [`ModPipelines::build_render_pipeline`].
+/// Target attachment and Z-direction state for [`ModPipelines::build_render_pipeline`].
 #[derive(Clone, Copy)]
-struct TargetState {
-    color_format: wgpu::TextureFormat,
-    depth_compare: wgpu::CompareFunction,
+struct TargetState<'a> {
+    color_formats: &'a [wgpu::TextureFormat],
+    standard_z: bool,
     write_mask: wgpu::ColorWrites,
+}
+
+fn wgpu_compare(compare: DepthCompare) -> wgpu::CompareFunction {
+    match compare {
+        DepthCompare::Always => wgpu::CompareFunction::Always,
+        DepthCompare::Less => wgpu::CompareFunction::Less,
+        DepthCompare::LessEqual => wgpu::CompareFunction::LessEqual,
+        DepthCompare::Equal => wgpu::CompareFunction::Equal,
+        DepthCompare::NotEqual => wgpu::CompareFunction::NotEqual,
+        DepthCompare::GreaterEqual => wgpu::CompareFunction::GreaterEqual,
+        DepthCompare::Greater => wgpu::CompareFunction::Greater,
+        DepthCompare::Never => wgpu::CompareFunction::Never,
+        _ => wgpu::CompareFunction::GreaterEqual,
+    }
+}
+
+fn wgpu_blend_factor(factor: BlendFactor) -> wgpu::BlendFactor {
+    match factor {
+        BlendFactor::Zero => wgpu::BlendFactor::Zero,
+        BlendFactor::One => wgpu::BlendFactor::One,
+        BlendFactor::SrcColor => wgpu::BlendFactor::Src,
+        BlendFactor::OneMinusSrcColor => wgpu::BlendFactor::OneMinusSrc,
+        BlendFactor::SrcAlpha => wgpu::BlendFactor::SrcAlpha,
+        BlendFactor::OneMinusSrcAlpha => wgpu::BlendFactor::OneMinusSrcAlpha,
+        BlendFactor::DstColor => wgpu::BlendFactor::Dst,
+        BlendFactor::OneMinusDstColor => wgpu::BlendFactor::OneMinusDst,
+        BlendFactor::DstAlpha => wgpu::BlendFactor::DstAlpha,
+        BlendFactor::OneMinusDstAlpha => wgpu::BlendFactor::OneMinusDstAlpha,
+        BlendFactor::SrcAlphaSaturate => wgpu::BlendFactor::SrcAlphaSaturated,
+        BlendFactor::ConstantColor | BlendFactor::ConstantAlpha => wgpu::BlendFactor::Constant,
+        BlendFactor::OneMinusConstantColor | BlendFactor::OneMinusConstantAlpha => {
+            wgpu::BlendFactor::OneMinusConstant
+        }
+        _ => wgpu::BlendFactor::One,
+    }
+}
+
+fn wgpu_blend_op(op: BlendOp) -> wgpu::BlendOperation {
+    match op {
+        BlendOp::Add => wgpu::BlendOperation::Add,
+        BlendOp::Subtract => wgpu::BlendOperation::Subtract,
+        BlendOp::ReverseSubtract => wgpu::BlendOperation::ReverseSubtract,
+        BlendOp::Min => wgpu::BlendOperation::Min,
+        BlendOp::Max => wgpu::BlendOperation::Max,
+        _ => wgpu::BlendOperation::Add,
+    }
+}
+
+fn wgpu_blend_state(blend: PipelineBlend) -> Option<wgpu::BlendState> {
+    let func = blend.to_blend_function()?;
+    Some(wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu_blend_factor(func.color.src),
+            dst_factor: wgpu_blend_factor(func.color.dst),
+            operation: wgpu_blend_op(func.color.op),
+        },
+        alpha: wgpu::BlendComponent {
+            src_factor: wgpu_blend_factor(func.alpha.src),
+            dst_factor: wgpu_blend_factor(func.alpha.dst),
+            operation: wgpu_blend_op(func.alpha.op),
+        },
+    })
+}
+
+fn wgpu_color_writes(write: ColorWrite) -> wgpu::ColorWrites {
+    let mut mask = wgpu::ColorWrites::empty();
+    if write.color {
+        mask |= wgpu::ColorWrites::COLOR;
+    }
+    if write.alpha {
+        mask |= wgpu::ColorWrites::ALPHA;
+    }
+    mask
+}
+
+fn wgpu_topology(topology: PrimitiveTopology) -> wgpu::PrimitiveTopology {
+    match topology {
+        PrimitiveTopology::Quads
+        | PrimitiveTopology::Lines
+        | PrimitiveTopology::Triangles
+        | PrimitiveTopology::TriangleFan => wgpu::PrimitiveTopology::TriangleList,
+        PrimitiveTopology::TriangleStrip => wgpu::PrimitiveTopology::TriangleStrip,
+        PrimitiveTopology::DebugLines => wgpu::PrimitiveTopology::LineList,
+        PrimitiveTopology::DebugLineStrip => wgpu::PrimitiveTopology::LineStrip,
+        PrimitiveTopology::Points => wgpu::PrimitiveTopology::PointList,
+        _ => wgpu::PrimitiveTopology::TriangleList,
+    }
+}
+
+/// Generate triangle-list indices (`[0, i, i + 1]` for `i` in `1..vertex_count - 1`) to emulate
+/// [`PrimitiveTopology::TriangleFan`] on WebGPU/wgpu.
+pub(crate) fn fan_indices_for(vertex_count: u32) -> Vec<u32> {
+    if vertex_count < 3 {
+        return Vec::new();
+    }
+    let triangles = (vertex_count - 2) as usize;
+    let mut indices = Vec::with_capacity(triangles * 3);
+    for i in 1..(vertex_count - 1) {
+        indices.extend_from_slice(&[0, i, i + 1]);
+    }
+    indices
+}
+
+/// Engine-generated index buffer emulating [`PrimitiveTopology::TriangleFan`] as a triangle list.
+#[derive(Default)]
+pub(crate) struct FanIndices {
+    buffer: Option<wgpu::Buffer>,
+    vertex_capacity: u32,
+}
+
+impl FanIndices {
+    /// Ensure the GPU fan index buffer covers at least `vertex_count` vertices and return it.
+    pub(crate) fn ensure(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        vertex_count: u32,
+    ) -> &wgpu::Buffer {
+        let needed = vertex_count.max(3);
+        if self.buffer.is_none() || needed > self.vertex_capacity {
+            let capacity = needed.next_power_of_two().max(64);
+            let data = fan_indices_for(capacity);
+            let bytes: &[u8] = bytemuck::cast_slice(&data);
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Mod pipeline triangle-fan indices"),
+                size: bytes.len() as u64,
+                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            queue.write_buffer(&buffer, 0, bytes);
+            self.buffer = Some(buffer);
+            self.vertex_capacity = capacity;
+        }
+        self.buffer.as_ref().expect("fan index buffer created")
+    }
 }
 
 /// Cached lazy variant for one `(pipeline, modifier_stack)` pair.
@@ -201,6 +339,7 @@ struct Compiled {
     /// differs from the pack's gamma encoding, `pack_fragment_shader` holds the undecoded stage).
     pack_fragment_shader: Option<wgpu::ShaderModule>,
     state: PipelineState,
+    color_targets: Vec<Option<ColorTargetState>>,
     /// Lazy modifier variants indexed by interned `modifier_stack` id (`0` unused; base is used).
     variants: Vec<Option<CachedVariant>>,
     /// Compiled OIT variants (`DepthBounds`, `Transmittance`, `Accumulate`) when opted in and
@@ -224,6 +363,8 @@ pub struct ModPipelines {
     pack_vanilla: wgpu::Buffer,
     vertices: VertexPages,
     oit_vertices: VertexPages,
+    #[allow(dead_code)]
+    fan_indices: FanIndices,
     /// The load `pipelines` was built from; 0 before any.
     generation: u64,
     /// OIT target generation last bound into `CompiledOitStage::group`; 0 before any.
@@ -273,6 +414,7 @@ impl ModPipelines {
             pack_vanilla,
             vertices: VertexPages::default(),
             oit_vertices: VertexPages::default(),
+            fan_indices: FanIndices::default(),
             generation: 0,
             oit_generation: 0,
             pipelines: Vec::new(),
@@ -289,7 +431,8 @@ impl ModPipelines {
         vertex_shader: &wgpu::ShaderModule,
         fragment_shader: &wgpu::ShaderModule,
         state: PipelineState,
-        target: TargetState,
+        color_targets: &[Option<ColorTargetState>],
+        target: TargetState<'_>,
     ) -> Result<wgpu::RenderPipeline, String> {
         if state.polygon == PolygonMode::Line
             && !device
@@ -298,30 +441,66 @@ impl ModPipelines {
         {
             return Err("PolygonMode::Line requires the POLYGON_MODE_LINE device feature".into());
         }
-        let blend_state = match state.blend {
-            PipelineBlend::Opaque => None,
-            PipelineBlend::Additive => Some(wgpu::BlendState {
-                color: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::SrcAlpha,
-                    dst_factor: wgpu::BlendFactor::One,
-                    operation: wgpu::BlendOperation::Add,
-                },
-                alpha: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::Zero,
-                    dst_factor: wgpu::BlendFactor::One,
-                    operation: wgpu::BlendOperation::Add,
-                },
-            }),
-            _ => Some(wgpu::BlendState::ALPHA_BLENDING),
+        let targets: Vec<Option<wgpu::ColorTargetState>> = if color_targets.is_empty() {
+            let blend = wgpu_blend_state(state.blend);
+            let write_mask = wgpu_color_writes(state.color_write) & target.write_mask;
+            target
+                .color_formats
+                .iter()
+                .map(|&format| {
+                    Some(wgpu::ColorTargetState {
+                        format,
+                        blend,
+                        write_mask,
+                    })
+                })
+                .collect()
+        } else {
+            target
+                .color_formats
+                .iter()
+                .enumerate()
+                .map(|(idx, &format)| {
+                    let ct = color_targets.get(idx).copied().flatten()?;
+                    let (blend, write) = if idx == 0 {
+                        (state.blend, state.color_write)
+                    } else {
+                        (ct.blend, ct.write)
+                    };
+                    Some(wgpu::ColorTargetState {
+                        format,
+                        blend: wgpu_blend_state(blend),
+                        write_mask: wgpu_color_writes(write) & target.write_mask,
+                    })
+                })
+                .collect()
         };
-        let mut write_mask = wgpu::ColorWrites::empty();
-        if state.color_write.color {
-            write_mask |= wgpu::ColorWrites::COLOR;
-        }
-        if state.color_write.alpha {
-            write_mask |= wgpu::ColorWrites::ALPHA;
-        }
-        write_mask &= target.write_mask;
+        let depth_stencil = state.depth_stencil.map(|ds| {
+            let compare = if target.standard_z {
+                ds.compare.flip_for_standard_z()
+            } else {
+                ds.compare
+            };
+            let (constant, slope_scale) = if target.standard_z {
+                (
+                    ds.depth_bias_constant.saturating_neg(),
+                    -ds.depth_bias_slope_scale,
+                )
+            } else {
+                (ds.depth_bias_constant, ds.depth_bias_slope_scale)
+            };
+            wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(ds.write),
+                depth_compare: Some(wgpu_compare(compare)),
+                stencil: Default::default(),
+                bias: wgpu::DepthBiasState {
+                    constant,
+                    slope_scale,
+                    clamp: 0.0,
+                },
+            }
+        });
 
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
@@ -335,7 +514,7 @@ impl ModPipelines {
                 buffers: &[Some(PipelineVertex::buffer_layout())],
             },
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
+                topology: wgpu_topology(state.topology),
                 cull_mode: state.cull.then_some(wgpu::Face::Back),
                 polygon_mode: match state.polygon {
                     PolygonMode::Line => wgpu::PolygonMode::Line,
@@ -343,26 +522,13 @@ impl ModPipelines {
                 },
                 ..Default::default()
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(state.depth_write),
-                depth_compare: Some(match state.depth {
-                    WorldDepth::ThroughWalls => wgpu::CompareFunction::Always,
-                    _ => target.depth_compare,
-                }),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
+            depth_stencil,
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: fragment_shader,
                 entry_point: Some(ENTRY),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target.color_format,
-                    blend: blend_state,
-                    write_mask,
-                })],
+                targets: &targets,
             }),
             multiview_mask: None,
             cache: None,
@@ -392,6 +558,17 @@ impl ModPipelines {
             return Err("PolygonMode::Line requires the POLYGON_MODE_LINE device feature".into());
         }
         let targets = super::oit::stage_targets(stage);
+        let (depth_compare, bias) = match state.depth_stencil {
+            Some(ds) => (
+                wgpu_compare(ds.compare),
+                wgpu::DepthBiasState {
+                    constant: ds.depth_bias_constant,
+                    slope_scale: ds.depth_bias_slope_scale,
+                    clamp: 0.0,
+                },
+            ),
+            None => (wgpu::CompareFunction::GreaterEqual, Default::default()),
+        };
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -404,7 +581,7 @@ impl ModPipelines {
                 buffers: &[Some(PipelineVertex::buffer_layout())],
             },
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
+                topology: wgpu_topology(state.topology),
                 cull_mode: state.cull.then_some(wgpu::Face::Back),
                 polygon_mode: match state.polygon {
                     PolygonMode::Line => wgpu::PolygonMode::Line,
@@ -416,12 +593,9 @@ impl ModPipelines {
                 format: wgpu::TextureFormat::Depth32Float,
                 // OIT passes attach depth read-only (`depth_ops: None`).
                 depth_write_enabled: Some(false),
-                depth_compare: Some(match state.depth {
-                    WorldDepth::ThroughWalls => wgpu::CompareFunction::Always,
-                    _ => wgpu::CompareFunction::GreaterEqual,
-                }),
+                depth_compare: Some(depth_compare),
                 stencil: Default::default(),
-                bias: Default::default(),
+                bias,
             }),
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
@@ -756,9 +930,10 @@ impl ModPipelines {
             &vertex_shader,
             &fragment_shader,
             built.state,
+            &built.color_targets,
             TargetState {
-                color_format: self.color_format,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
+                color_formats: &[self.color_format],
+                standard_z: false,
                 write_mask: wgpu::ColorWrites::ALL,
             },
         )?;
@@ -785,6 +960,7 @@ impl ModPipelines {
             fragment_shader,
             pack_fragment_shader,
             state: built.state,
+            color_targets: built.color_targets.clone(),
             variants: Vec::new(),
             oit,
             #[cfg(test)]
@@ -792,7 +968,7 @@ impl ModPipelines {
         })
     }
 
-    /// Ensure pack-target variants (`colortex0` format + GL `[0..1]` `LessEqual` depth) exist
+    /// Ensure pack-target variants (`colortex0` format + GL `[0..1]` standard-Z depth) exist
     /// for all loaded mod pipelines.
     pub fn ensure_pack_pipelines(
         &mut self,
@@ -808,9 +984,10 @@ impl ModPipelines {
         {
             return;
         }
+        let color_formats = [format];
         let target = TargetState {
-            color_format: format,
-            depth_compare: wgpu::CompareFunction::LessEqual,
+            color_formats: &color_formats,
+            standard_z: true,
             write_mask: if rgb {
                 wgpu::ColorWrites::COLOR
             } else {
@@ -834,6 +1011,7 @@ impl ModPipelines {
                     &c.vertex_shader,
                     frag,
                     c.state,
+                    &c.color_targets,
                     target,
                 ) {
                     Ok(pipeline) => Some(pipeline),
@@ -1003,6 +1181,7 @@ impl ModPipelines {
             return;
         }
         let label = stacks.label(stack_id, &compiled.id.to_string(), defs);
+        let color_formats = [color_format];
         match Self::build_render_pipeline(
             device,
             &label,
@@ -1010,9 +1189,10 @@ impl ModPipelines {
             &compiled.vertex_shader,
             &compiled.fragment_shader,
             modified,
+            &compiled.color_targets,
             TargetState {
-                color_format,
-                depth_compare: wgpu::CompareFunction::GreaterEqual,
+                color_formats: &color_formats,
+                standard_z: false,
                 write_mask: wgpu::ColorWrites::ALL,
             },
         ) {
@@ -1050,9 +1230,19 @@ impl ModPipelines {
             return;
         }
         let modified = stacks.apply(stack_id, compiled.state, defs);
-        if modified.depth == compiled.state.depth
+        let depth_key = |ds: Option<mod_api::DepthState>| {
+            ds.map(|d| {
+                (
+                    d.compare,
+                    d.depth_bias_constant,
+                    d.depth_bias_slope_scale.to_bits(),
+                )
+            })
+        };
+        if depth_key(modified.depth_stencil) == depth_key(compiled.state.depth_stencil)
             && modified.cull == compiled.state.cull
             && modified.polygon == compiled.state.polygon
+            && modified.topology == compiled.state.topology
         {
             oit_stage.variants[idx] = Some(CachedVariant::Base);
             return;
@@ -1413,6 +1603,9 @@ impl ModPipelines {
             let Some(Some(compiled)) = self.pipelines.get(run.slot) else {
                 continue;
             };
+            if compiled.state.depth_stencil.is_none() {
+                continue;
+            }
             let pipeline = match pack_list {
                 Some(list) => match list.get(run.slot) {
                     Some(Some(p)) => p,
@@ -1486,7 +1679,7 @@ mod tests {
     use super::*;
     use crate::gfx::world_primitives::{self, STAGES, WorldPrimitives};
     use glam::Vec3;
-    use mod_api::{Identifier, RenderPipeline};
+    use mod_api::{BlendFunction, Identifier, RenderPipeline, WorldDepth};
 
     const SIZE: u32 = 64;
     /// The frame before any quad: a quarter grey, stored as 64 in 8 bits.
@@ -2550,6 +2743,341 @@ void main() {
             [255.0, 0.0, 0.0, 128.0],
             1.0,
             "Opaque writes raw colour without alpha blending",
+        );
+    }
+
+    #[test]
+    fn fan_indices_emulate_triangle_fan_from_vertex_zero() {
+        assert_eq!(fan_indices_for(0), Vec::<u32>::new());
+        assert_eq!(fan_indices_for(2), Vec::<u32>::new());
+        assert_eq!(fan_indices_for(3), vec![0, 1, 2]);
+        assert_eq!(fan_indices_for(5), vec![0, 1, 2, 0, 2, 3, 0, 3, 4]);
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn depth_bias_lifts_coplanar_quad_over_wall_and_strict_greater_rejects_without_bias() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some(gpu) = device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let registered = [
+            RenderPipeline::new(
+                Identifier::parse("test:unbiased").unwrap(),
+                Identifier::parse("test:core/unbiased").unwrap(),
+                PipelineBlend::Opaque,
+                WorldDepth::Tested,
+            )
+            .depth_compare(DepthCompare::Greater)
+            .optional(),
+            RenderPipeline::new(
+                Identifier::parse("test:biased").unwrap(),
+                Identifier::parse("test:core/biased").unwrap(),
+                PipelineBlend::Opaque,
+                WorldDepth::Tested,
+            )
+            .depth_compare(DepthCompare::Greater)
+            .depth_bias(100, 1.0)
+            .optional(),
+        ];
+        let set = Pipelines::build(&registered, 93, |file| match file {
+            "assets/test/shaders/core/unbiased.vsh" | "assets/test/shaders/core/biased.vsh" => {
+                Ok(Some(VSH.to_owned()))
+            }
+            "assets/test/shaders/core/unbiased.fsh" | "assets/test/shaders/core/biased.fsh" => {
+                Ok(Some(PASS.to_owned()))
+            }
+            other => Ok(stub_asset(other)),
+        })
+        .unwrap();
+        // render() clears depth to the wall at z = 5.0.
+        // Left half: coplanar at z = 5.0 with DepthCompare::Greater and no bias -> rejected.
+        // Right half: coplanar at z = 5.0 with DepthCompare::Greater and positive bias -> lifted.
+        let vertices = [
+            quad([0.0, 0.0, 32.0, 64.0], 5.0, [255, 0, 0, 255]),
+            quad([32.0, 0.0, 64.0, 64.0], 5.0, [0, 255, 0, 255]),
+        ]
+        .concat();
+        let runs = [
+            PipelineRun {
+                slot: 0,
+                stage: 0,
+                quads: 1,
+                modifier_stack: 0,
+            },
+            PipelineRun {
+                slot: 1,
+                stage: 0,
+                quads: 1,
+                modifier_stack: 0,
+            },
+        ];
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut primitives = WorldPrimitives::new(&gpu.0, (format, false));
+        let at = render(
+            &gpu,
+            &mut primitives,
+            format,
+            Batch {
+                set: Some(&set),
+                vertices: &vertices,
+                runs: &runs,
+                time: 0.0,
+                ..Default::default()
+            },
+            STAGES - 1,
+        );
+        assert_near(
+            at(16, 32),
+            [64.0, 64.0, 64.0, 255.0],
+            1.0,
+            "coplanar quad without bias fails strict Greater against wall",
+        );
+        assert_near(
+            at(48, 32),
+            [0.0, 255.0, 0.0, 255.0],
+            1.0,
+            "positive depth bias lifts coplanar quad over wall",
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn custom_blend_invert_produces_exact_inverted_pixels() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some(gpu) = device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let registered = [RenderPipeline::new(
+            Identifier::parse("test:invert").unwrap(),
+            Identifier::parse("test:core/invert").unwrap(),
+            PipelineBlend::Custom(BlendFunction::INVERT),
+            WorldDepth::ThroughWalls,
+        )
+        .optional()];
+        let set = Pipelines::build(&registered, 94, |file| match file {
+            "assets/test/shaders/core/invert.vsh" => Ok(Some(VSH.to_owned())),
+            "assets/test/shaders/core/invert.fsh" => Ok(Some(PASS.to_owned())),
+            other => Ok(stub_asset(other)),
+        })
+        .unwrap();
+        // Clear is 64/255; BlendFunction::INVERT with red (255, 0, 0, 255):
+        // R = 1*(1 - 64/255) + (64/255)*0 = 191/255, G = B = 64/255, A = 255.
+        let vertices = quad([0.0, 0.0, 64.0, 64.0], 2.0, [255, 0, 0, 255]);
+        let runs = [PipelineRun {
+            slot: 0,
+            stage: 0,
+            quads: 1,
+            modifier_stack: 0,
+        }];
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut primitives = WorldPrimitives::new(&gpu.0, (format, false));
+        let at = render(
+            &gpu,
+            &mut primitives,
+            format,
+            Batch {
+                set: Some(&set),
+                vertices: &vertices,
+                runs: &runs,
+                time: 0.0,
+                ..Default::default()
+            },
+            STAGES - 1,
+        );
+        assert_near(
+            at(32, 32),
+            [191.0, 64.0, 64.0, 255.0],
+            1.5,
+            "BlendFunction::INVERT inverts cleared destination with red source",
+        );
+    }
+
+    #[test]
+    #[ignore = "daily"]
+    fn depthless_triangles_debug_lines_and_triangle_fan_draw_expected_pixels() {
+        use wgpu::util::DeviceExt;
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let registered = [
+            RenderPipeline::new(
+                Identifier::parse("test:tri").unwrap(),
+                Identifier::parse("test:core/tri").unwrap(),
+                PipelineBlend::Opaque,
+                WorldDepth::ThroughWalls,
+            )
+            .depth_stencil(None)
+            .topology(PrimitiveTopology::Triangles)
+            .optional(),
+            RenderPipeline::new(
+                Identifier::parse("test:fan").unwrap(),
+                Identifier::parse("test:core/fan").unwrap(),
+                PipelineBlend::Opaque,
+                WorldDepth::ThroughWalls,
+            )
+            .depth_stencil(None)
+            .topology(PrimitiveTopology::TriangleFan)
+            .optional(),
+            RenderPipeline::new(
+                Identifier::parse("test:line").unwrap(),
+                Identifier::parse("test:core/line").unwrap(),
+                PipelineBlend::Opaque,
+                WorldDepth::ThroughWalls,
+            )
+            .depth_stencil(None)
+            .topology(PrimitiveTopology::DebugLines)
+            .optional(),
+        ];
+        let set = Pipelines::build(&registered, 95, |file| match file {
+            "assets/test/shaders/core/tri.vsh"
+            | "assets/test/shaders/core/fan.vsh"
+            | "assets/test/shaders/core/line.vsh" => Ok(Some(VSH.to_owned())),
+            "assets/test/shaders/core/tri.fsh"
+            | "assets/test/shaders/core/fan.fsh"
+            | "assets/test/shaders/core/line.fsh" => Ok(Some(PASS.to_owned())),
+            other => Ok(stub_asset(other)),
+        })
+        .unwrap();
+
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut mod_pipelines = ModPipelines::new(&device, (format, false));
+        mod_pipelines.build(&device, &set, None).unwrap();
+        let blocks = fallback_vanilla_blocks(view_proj(), [SIZE, SIZE], 0.0);
+        queue.write_buffer(&mod_pipelines.vanilla, 0, &blocks);
+
+        // Build test vertices:
+        // - Triangle on top-left (x=0..32, y=0..32) in red.
+        // - 4-vertex TriangleFan covering top-right (x=32..64, y=0..32) in green.
+        // - Horizontal DebugLines across y=48 (x=4..60) in blue.
+        let tri_quad = quad([0.0, 0.0, 32.0, 32.0], 2.0, [255, 0, 0, 255]);
+        let tri_verts = [tri_quad[0], tri_quad[1], tri_quad[2]];
+        let fan_verts = quad([32.0, 0.0, 64.0, 32.0], 2.0, [0, 255, 0, 255]);
+        let line_quad = quad([4.0, 48.5, 60.0, 49.5], 2.0, [0, 0, 255, 255]);
+        let line_verts = [line_quad[0], line_quad[3]];
+
+        let tri_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(&tri_verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let fan_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(&fan_verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let line_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(&line_verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let fan_idx = mod_pipelines.fan_indices.ensure(&device, &queue, 4).clone();
+
+        let color = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: SIZE,
+                height: SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let color_view = color.create_view(&Default::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: CLEAR,
+                            g: CLEAR,
+                            b: CLEAR,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            // Draw Triangles
+            let tri_c = mod_pipelines.pipelines[0].as_ref().unwrap();
+            pass.set_pipeline(&tri_c.pipeline);
+            pass.set_bind_group(0, &tri_c.group, &[]);
+            pass.set_vertex_buffer(0, tri_buf.slice(..));
+            pass.draw(0..3, 0..1);
+
+            // Draw TriangleFan via engine-generated fan index buffer
+            let fan_c = mod_pipelines.pipelines[1].as_ref().unwrap();
+            pass.set_pipeline(&fan_c.pipeline);
+            pass.set_bind_group(0, &fan_c.group, &[]);
+            pass.set_vertex_buffer(0, fan_buf.slice(..));
+            pass.set_index_buffer(fan_idx.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..PrimitiveTopology::TriangleFan.index_count(4), 0, 0..1);
+
+            // Draw DebugLines
+            let line_c = mod_pipelines.pipelines[2].as_ref().unwrap();
+            pass.set_pipeline(&line_c.pipeline);
+            pass.set_bind_group(0, &line_c.group, &[]);
+            pass.set_vertex_buffer(0, line_buf.slice(..));
+            pass.draw(0..2, 0..1);
+        }
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(SIZE * SIZE * 4),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            color.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(SIZE * 4),
+                    rows_per_image: None,
+                },
+            },
+            color.size(),
+        );
+        queue.submit([encoder.finish()]);
+        readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let bytes = readback.slice(..).get_mapped_range().unwrap().to_vec();
+        let at = |x: u32, y: u32| -> [f32; 4] {
+            let i = ((y * SIZE + x) * 4) as usize;
+            std::array::from_fn(|c| f32::from(bytes[i + c]))
+        };
+        assert_near(
+            at(8, 24),
+            [255.0, 0.0, 0.0, 255.0],
+            1.0,
+            "depthless Triangles draws red triangle",
+        );
+        assert_near(
+            at(56, 8),
+            [0.0, 255.0, 0.0, 255.0],
+            1.0,
+            "depthless TriangleFan draws second fan triangle via engine fan index buffer",
+        );
+        assert_near(
+            at(32, 48),
+            [0.0, 0.0, 255.0, 255.0],
+            1.0,
+            "depthless DebugLines draws horizontal blue line",
         );
     }
 }

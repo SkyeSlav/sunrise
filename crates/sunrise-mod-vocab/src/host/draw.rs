@@ -539,10 +539,12 @@ pub trait WorldDrawContext {
     }
     /// Submit world quads drawn by the mod pipeline `pipeline`: its shader gets each
     /// quad's texture coordinate and colour, and its blend and depth modes apply. Checks
-    /// `RenderPipelineRef` validity and staleness ([`PipelineDrawError::Pipeline`]), skips
-    /// any quad with non-finite coordinates or UVs individually without rejecting valid quads
-    /// in the same slice, and lets quad storage grow dynamically into the GPU buffers. Within
-    /// a stage, pipeline quads draw after its plain quads and lines, in the order submitted.
+    /// `RenderPipelineRef` validity and staleness ([`PipelineDrawError::Pipeline`]), refuses
+    /// pipelines whose effective [`PrimitiveTopology`] is not [`PrimitiveTopology::Quads`]
+    /// ([`PipelineDrawError::TopologyMismatch`]), skips any quad with non-finite coordinates or
+    /// UVs individually without rejecting valid quads in the same slice, and lets quad storage
+    /// grow dynamically into the GPU buffers. Within a stage, pipeline quads draw after its
+    /// plain quads and lines, in the order submitted.
     fn pipeline_quads(
         &mut self,
         pipeline: RenderPipelineRef,
@@ -652,7 +654,9 @@ pub trait PrepareRenderBuffersContext {
     ) -> Result<PreparedWorldDraw, DrawError>;
 
     /// Prepare a batch of mod-pipeline quads for `stage` (standard pass stages or
-    /// [`RenderLevelStage::OitTranslucent`]). At `OitTranslucent`, a pipeline without
+    /// [`RenderLevelStage::OitTranslucent`]). Refuses pipelines whose effective
+    /// [`PrimitiveTopology`] is not [`PrimitiveTopology::Quads`]
+    /// ([`PipelineDrawError::TopologyMismatch`]). At `OitTranslucent`, a pipeline without
     /// [`RenderPipeline::order_independent`] or with [`PipelineBlend::Opaque`] is refused with
     /// [`PipelineDrawError::Pipeline`] (`RenderPipelineError::Invalid`), logged once per mod and
     /// pipeline. Individual quads with non-finite coordinates or UVs are skipped.
