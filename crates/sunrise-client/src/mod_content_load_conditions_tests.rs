@@ -387,7 +387,10 @@ fn content_mod_worldgen_bundles_and_additions_evaluate_load_conditions() {
     fs::write(base.join("worldgen/features.json"), "{}").unwrap();
     fs::write(
         base.join("worldgen/template_pools.json"),
-        r#"{"minecraft:test_pool":{"name":"minecraft:test_pool","fallback":"minecraft:empty","elements":[]}}"#,
+        serde_json::json!({
+            "minecraft:test_pool": r#"{"name":"minecraft:test_pool","fallback":"minecraft:empty","elements":[]}"#
+        })
+        .to_string(),
     )
     .unwrap();
     let package = folder_mod(
@@ -424,13 +427,9 @@ fn content_mod_worldgen_bundles_and_additions_evaluate_load_conditions() {
     let pools_on: serde_json::Value =
         serde_json::from_slice(&fs::read(out_on.join("worldgen/template_pools.json")).unwrap())
             .unwrap();
-    assert_eq!(
-        pools_on["minecraft:test_pool"]["elements"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+    let pool_on: serde_json::Value =
+        serde_json::from_str(pools_on["minecraft:test_pool"].as_str().unwrap()).unwrap();
+    assert_eq!(pool_on["elements"].as_array().unwrap().len(), 1);
 
     let inventory_off =
         sunrise_mod_package::enabled::EnabledMods::new([("boiler".into(), mod_api::Side::Both)]);
@@ -450,13 +449,9 @@ fn content_mod_worldgen_bundles_and_additions_evaluate_load_conditions() {
     let pools_off: serde_json::Value =
         serde_json::from_slice(&fs::read(out_off.join("worldgen/template_pools.json")).unwrap())
             .unwrap();
-    assert_eq!(
-        pools_off["minecraft:test_pool"]["elements"]
-            .as_array()
-            .unwrap()
-            .len(),
-        0
-    );
+    let pool_off: serde_json::Value =
+        serde_json::from_str(pools_off["minecraft:test_pool"].as_str().unwrap()).unwrap();
+    assert_eq!(pool_off["elements"].as_array().unwrap().len(), 0);
 
     // Malformed condition JSON fails atomically.
     let broken = folder_mod(
