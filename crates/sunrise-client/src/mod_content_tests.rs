@@ -2396,10 +2396,16 @@ fn content_root_carries_a_structure_mod() {
     assert!(!root.join("worldgen/structure/huts/hut.nbt").exists());
     let tags: BTreeMap<String, String> =
         serde_json::from_slice(&fs::read(root.join("worldgen/biome_tags.json")).unwrap()).unwrap();
+    // `#c:is_plains` stays: NeoForge generates that biome tag, so the reference resolves;
+    // `othermod:glade` names a biome nobody installed and goes.
     let hut: serde_json::Value = serde_json::from_str(&tags["huts:has_hut"]).unwrap();
     assert_eq!(
         hut["values"],
-        serde_json::json!(["#minecraft:is_overworld", "minecraft:plains"])
+        serde_json::json!([
+            "#minecraft:is_overworld",
+            "#c:is_plains",
+            "minecraft:plains"
+        ])
     );
     // The additions join vanilla's entries at the end and are no set or pool
     // of their own.
