@@ -374,13 +374,22 @@ impl Game<'_> {
         let content = sunrise_client::lan::data::component_nbt(&message.component());
         let name = sunrise_client::lan::data::component_nbt(&name.component());
         if let Some(host) = &self.lan {
-            let bind = |chat_type: &str| sunrise_protocol::packets::play::ChatTypeBound {
-                chat_type: host.hub.chat_type_id(chat_type).network_id() as i32,
-                name: name.clone(),
-                target: Some(team_name.clone()),
+            // ChatType.bind throws for a missing type: the command fails.
+            let bind = |chat_type: &str| {
+                host.hub.chat_type_id(chat_type).map(|id| {
+                    sunrise_protocol::packets::play::ChatTypeBound {
+                        chat_type: id.network_id() as i32,
+                        name: name.clone(),
+                        target: Some(team_name.clone()),
+                    }
+                })
             };
-            let incoming = bind("team_msg_command_incoming");
-            let outgoing = bind("team_msg_command_outgoing");
+            let (Some(incoming), Some(outgoing)) = (
+                bind("team_msg_command_incoming"),
+                bind("team_msg_command_outgoing"),
+            ) else {
+                return Err(err("command.failed", &[]));
+            };
             for &conn in &receivers {
                 if let Some(index) = host.hub.guests.connection_index(conn) {
                     let bound = if Some(conn) == sender {

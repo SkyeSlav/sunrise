@@ -4257,7 +4257,9 @@ impl Game<'_> {
                     }
                     _ => 0,
                 };
-                self.lan_broadcast_command_chat(sender, &name, id, &message, None);
+                if !self.lan_broadcast_command_chat(sender, &name, id, &message, None) {
+                    return Err(err("command.failed", &[]));
+                }
                 Ok(1)
             }
             _ => {
@@ -4265,6 +4267,19 @@ impl Game<'_> {
                 let name = self.source_display_name();
                 let targets = self.entities(ctx, "targets", true)?;
                 let count = targets.len() as i32;
+                // ChatType.bind throws for a missing type before anything is sent.
+                let incoming_type = match &self.lan {
+                    Some(host) => {
+                        let (Some(incoming), Some(_)) = (
+                            host.hub.chat_type_id("msg_command_incoming"),
+                            host.hub.chat_type_id("msg_command_outgoing"),
+                        ) else {
+                            return Err(err("command.failed", &[]));
+                        };
+                        Some(incoming)
+                    }
+                    None => None,
+                };
                 for target in targets {
                     let target_name = match target {
                         Target::Player => self.player_display_name(),
@@ -4302,9 +4317,8 @@ impl Game<'_> {
                             // The target's copy is private chat with the incoming whisper
                             // type, shown only to players who show chat (`Hub::whisper`).
                             let bound = sunrise_protocol::packets::play::ChatTypeBound {
-                                chat_type: host
-                                    .hub
-                                    .chat_type_id("msg_command_incoming")
+                                chat_type: incoming_type
+                                    .expect("a hub's incoming type was checked above")
                                     .network_id() as i32,
                                 name: sunrise_client::lan::data::component_nbt(&name.component()),
                                 target: None,
